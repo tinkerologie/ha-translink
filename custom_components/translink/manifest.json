@@ -5,10 +5,10 @@
     "@ruaan-deysel"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/ruaan-deysel/ha-translink",
+  "documentation": "https://github.com/tinkerologie/ha-translink",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/ruaan-deysel/ha-translink/issues",
+  "issue_tracker": "https://github.com/tinkerologie/ha-translink/issues",
   "quality_scale": "gold",
   "requirements": [
     "pydantic>=2.0.0"
