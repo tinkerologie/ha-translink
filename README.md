@@ -29,11 +29,11 @@ It brings the complete real-time experience of the official Translink app into H
 
 ### Option 1: HACS (Recommended)
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ruaan-deysel&repository=ha-translink&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tinkerologie&repository=ha-translink&category=integration)
 
 1. Open **HACS** in Home Assistant.
 2. Select **Integrations** > Three dots in top right > **Custom repositories**.
-3. Add `https://github.com/ruaan-deysel/ha-translink` with category **Integration**.
+3. Add `https://github.com/tinkerologie/ha-translink` with category **Integration**.
 4. Click **Download**, then restart Home Assistant.
 5. Go to **Settings > Devices & Services > Add Integration** and search for **Translink**.
 

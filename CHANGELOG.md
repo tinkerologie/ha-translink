@@ -10,6 +10,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Changed
 
+- Update repository URLs and documentation references to tinkerologie organization.
+
 ### Fixed
 
 ## [2026.10.4] - 2026-10-08
@@ -28,6 +30,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
   - Extracted and indexed normalized base trip IDs across feeds, allowing real-time GPS locations, speed, bearing, and live arrival delays to accurately track trains, buses, ferries, and trams in real time on the Map.
 
 ### Changed
+
+- Update repository URLs and documentation references to tinkerologie organization.
 - **Home Assistant 2026.10 Compatibility & Standards**:
   - Modernized platform setup entry signatures across all entity platforms (`device_tracker`, `sensor`, `event`, and `diagnostics`) with `TranslinkConfigEntry` type annotations.
   - Aligned `TrackerEntity` location accuracy reporting to use `float` values (`15.0`) in accordance with the latest Home Assistant core specifications.
@@ -36,6 +40,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 ## [2026.10.3] - 2026-10-06
 
 ### Changed
+
+- Update repository URLs and documentation references to tinkerologie organization.
 - **Brand Logos and Icons**:
   - Updated integration brand icons and logos (`icon.png`, `icon@2x.png`, `logo.png`, `logo@2x.png`) to the official Translink 3-blade swirl emblem with high-resolution transparency.
 
