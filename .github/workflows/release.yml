@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - main
     paths:
       - custom_components/translink/manifest.json
       - CHANGELOG.md
