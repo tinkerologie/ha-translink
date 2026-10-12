@@ -20,7 +20,8 @@ updates:
           - minor
           - patch
 
-  - package-ecosystem: pip
+  # uv: Dependabot updates pyproject.toml and uv.lock together, for version and security updates.
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: daily
