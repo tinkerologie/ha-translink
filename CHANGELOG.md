@@ -10,6 +10,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Changed
 
+- Contribution governance: issues without a `bug` or `enhancement` label are labeled automatically when their type can be determined, so CodeRabbit can plan them. Pull requests that conflict with the default branch are labeled, and their authors are notified in a comment. Stale issues and pull requests are labeled after 14 days without activity and closed 30 days later. PR governance no longer passes silently when a bot edits the PR description.
 - Update repository URLs and documentation references to tinkerologie organization.
 
 ### Fixed
