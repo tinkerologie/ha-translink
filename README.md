@@ -1,7 +1,12 @@
 # Translink Queensland Integration for Home Assistant
 
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
-[![Quality Scale: Platinum](https://img.shields.io/badge/Home%20Assistant%20Quality%20Scale-Platinum-blue.svg)](https://developers.home-assistant.io/docs/core/integration-quality-scale/)
+<!-- BADGES:START -->
+[![Marketplace and HACS](https://img.shields.io/badge/Marketplace%20%7C%20HACS-Default-orange.svg)](https://www.hacs.xyz/docs/marketplace/)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/tinkerologie/ha-translink)](https://github.com/tinkerologie/ha-translink/commits/main)
+[![GitHub Release](https://img.shields.io/github/v/release/tinkerologie/ha-translink)](https://github.com/tinkerologie/ha-translink/releases)
+[![codecov](https://codecov.io/gh/tinkerologie/ha-translink/graph/badge.svg)](https://codecov.io/gh/tinkerologie/ha-translink)
+[![License](https://img.shields.io/github/license/tinkerologie/ha-translink)](./LICENSE)
+<!-- BADGES:END -->
 
 The **Translink Queensland** custom integration connects Home Assistant directly to the [Translink](https://translink.com.au/) public transport network across South East Queensland (Brisbane, Gold Coast, Sunshine Coast, Ipswich, Logan, Moreton Bay, Redlands) and regional Queensland centers.
 
