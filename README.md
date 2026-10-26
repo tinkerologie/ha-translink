@@ -104,7 +104,7 @@ When adding the integration, select whether you want to track a **Journey** or a
 | **Delay** | `sensor` (`duration`, `min`) | Real-time vehicle delay in minutes compared to schedule. |
 | **Walking Distance** | `sensor` (`distance`, `m`) | Total walking distance in meters across journey legs. |
 | **Disruptions** | `sensor` (`diagnostic`) | Active disruption notices count. Attributes: `disruptions` details. |
-| **Itinerary** | `sensor` (`diagnostic`) | Complete multi-leg journey breakdown with intermediate stops, skipped stops, and Google polyline. |
+| **Itinerary** | `sensor` (`diagnostic`) | Journey legs, available timed calling stops with explicit schedule/prediction provenance, and route polyline. |
 | **Live Vehicle** | `device_tracker` (`gps`) | Live vehicle GPS position, bearing, speed, and vehicle ID from GTFS Realtime feeds. |
 
 ### Stop Departure Board Entities
@@ -117,6 +117,95 @@ When adding the integration, select whether you want to track a **Journey** or a
 | **Delay** | `sensor` (`duration`, `min`) | Line delay in minutes. |
 | **Disruptions** | `sensor` (`diagnostic`) | Disruption notices affecting this stop. |
 | **Departures Board** | `sensor` (`diagnostic`) | Full upcoming departures list with routes, times, and destinations. |
+
+---
+
+## Dashboard cards
+
+The integration bundles three cards; no separate HACS frontend download is needed.
+After restarting Home Assistant, edit your dashboard and choose **Add card** →
+**Translink Journey**, **Translink Departures**, or **Translink Service Alerts**.
+Use each card's visual editor to choose the appropriate Translink sensor:
+
+| Card | Entity to select | Options |
+| --- | --- | --- |
+| `custom:translink-journey-card` | Journey **Itinerary** sensor | `title`, `show_fare`, `legs_expanded`, `show_disruptions` |
+| `custom:translink-departures-card` | Stop **Departures board** sensor | `title`, `max_departures` (1–20, default 5), `show_platform` |
+| `custom:translink-alerts-card` | Journey or stop **Disruptions** count sensor | `title`, `max_alerts` (1–20, default 5) |
+
+Cards find related sensors through Home Assistant's entity registry and device
+identity, so renamed entity IDs are supported. They follow the dashboard theme,
+locale/time preferences and Sections sizing. Journey details and alert descriptions
+expand with keyboard-accessible controls. Times from the planner are labelled
+**Scheduled**. A reported delay belongs to the next-service summary; it is never
+applied to every departure. Missing data, unavailable entities and no services
+have distinct messages.
+
+Example for a Sections dashboard (replace these IDs with your actual entities):
+
+```yaml
+type: sections
+path: transport
+title: Transport
+max_columns: 3
+sections:
+  - type: grid
+    cards:
+      - type: heading
+        heading: Your journey
+        icon: mdi:routes
+      - type: custom:translink-journey-card
+        entity: sensor.work_commute_itinerary
+        legs_expanded: true
+  - type: grid
+    cards:
+      - type: heading
+        heading: Departures
+        icon: mdi:train-bus
+      - type: custom:translink-departures-card
+        entity: sensor.central_station_departures_board
+        max_departures: 5
+  - type: grid
+    cards:
+      - type: heading
+        heading: Service information
+        icon: mdi:alert-circle-outline
+      - type: custom:translink-alerts-card
+        entity: sensor.work_commute_disruptions
+```
+
+Storage-mode dashboards receive one automatically managed module resource with a
+content hash for cache busting. Other integrations' resources are left untouched.
+For YAML resource mode, add this under your existing `lovelace.resources` list:
+
+```yaml
+- url: /translink_cards/translink-cards.js?v=1
+  type: module
+```
+
+Increment `v` after updating the integration to refresh a manually registered
+resource. If a card is missing, check **Settings → Dashboards → Resources**, verify
+that the bundled file was copied with the integration, and refresh the browser.
+The cards show entity information only; they never contact Translink directly.
+Use Home Assistant's native map card below for vehicle positions. The tracker may
+fall back to the origin station when live GPS is unavailable; a map position alone
+is not evidence of live tracking.
+
+Expand **Journey details** → **Calling stops** to see the supplied timetable.
+Scheduled calling times remain separate from predicted times and reported delay.
+All calling points include the boarding and alighting stops. If the schedule page
+is unavailable, a matched feed-only list is labelled **Partial real-time list**;
+passed stops can be missing. An unavailable list is omitted. Intermediate platform
+values are not invented. Stop detail is public trip data cached by the integration;
+page changes or missing upstream data may temporarily limit the timeline.
+
+The itinerary `legs` attribute adds `callingStops`, `callingStopsSource` and
+`callingStopsRealtimeUpdatedAt`; existing state values and entity IDs stay the same.
+The large live `legs` payload is excluded from recorder history. See
+[calling-stop data and provenance](docs/calling-stops-research.md) for field details.
+
+Research, official app image references and compatibility evidence are in
+[the frontend research note](docs/frontend-research.md).
 
 ---
 

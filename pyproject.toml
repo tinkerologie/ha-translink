@@ -1,6 +1,6 @@
 [project]
 name = "ha-translink"
-version = "2026.10.4"
+version = "2026.10.5"
 description = "Translink Queensland Home Assistant custom integration"
 readme = "README.md"
 dependencies = [
@@ -24,6 +24,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["custom_components*"]
+
+[tool.setuptools.package-data]
+"custom_components.translink" = ["frontend/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

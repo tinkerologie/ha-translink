@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Literal
+from datetime import datetime, timedelta
+from itertools import pairwise
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 type JourneyStatus = Literal[
     "scheduled",
@@ -257,3 +258,66 @@ class StopSummary(TranslinkApiModel):
     latest_disruption_title: str | None = None
     latest_disruption_description: str | None = None
     last_updated: datetime | None = None
+
+
+class TripDeparture(TranslinkApiModel):
+    """An actual scheduled stop visit supplied by the public trip page."""
+
+    stopId: str
+    name: str | None = None
+    order: int
+    scheduledDepartureUtc: str
+    canBoardDebark: str | None = None
+
+    @field_validator("scheduledDepartureUtc")
+    @classmethod
+    def validate_utc_time(cls, value: str) -> str:
+        """Reject missing time zones and non-UTC timetable values."""
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise ValueError("Scheduled departure must be timezone-aware UTC")
+        return value
+
+
+class TripTimetable(TranslinkApiModel):
+    """Validated scheduled calls for one exact planner trip."""
+
+    id: str
+    headsign: str | None = None
+    departures: list[TripDeparture]
+
+    @model_validator(mode="after")
+    def validate_order(self) -> Self:
+        """A list preserves occurrences, so ambiguous or reversed order is invalid."""
+        orders = [stop.order for stop in self.departures]
+        if any(a >= b for a, b in pairwise(orders)):
+            raise ValueError("Stop orders must be unique and increasing")
+        return self
+
+
+class CallingStopRealtime(TranslinkApiModel):
+    """Explicit GTFS-RT values, separate from scheduled timetable information."""
+
+    sequence: int | None = None
+    scheduleRelationship: Literal["scheduled", "skipped", "no_data", "unknown"] = (
+        "unknown"
+    )
+    arrivalTimeUtc: str | None = None
+    arrivalDelaySeconds: int | None = None
+    arrivalUncertaintySeconds: int | None = None
+    departureTimeUtc: str | None = None
+    departureDelaySeconds: int | None = None
+    departureUncertaintySeconds: int | None = None
+
+
+class CallingStop(TranslinkApiModel):
+    """Additive per-leg calling-stop contract with explicit schedule provenance."""
+
+    order: int | None = None
+    stopId: str | None
+    name: str | None = None
+    platform: str | None = None
+    role: Literal["origin", "intermediate", "destination"]
+    canBoardDebark: str | None = None
+    scheduledTimeUtc: str | None = None
+    realtime: CallingStopRealtime | None = None

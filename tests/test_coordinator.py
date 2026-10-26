@@ -34,6 +34,17 @@ from custom_components.translink.const import (
 from custom_components.translink.coordinator import TranslinkCoordinator
 
 
+@pytest.fixture(autouse=True)
+def mock_optional_trip_pages():
+    """Existing coordinator cases isolate transport; cache cases override this mock."""
+    with patch(
+        "custom_components.translink.coordinator.TranslinkClient.async_get_trip_timetable",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        yield
+
+
 @pytest.fixture
 def journey_entry(hass: HomeAssistant) -> MockConfigEntry:
     """Fixture for a journey config entry."""
@@ -318,3 +329,60 @@ async def test_coordinator_update_stop_with_walk_and_transit_legs(
     assert isinstance(summary, StopSummary)
     assert len(summary.departures) == 1
     assert summary.departures[0]["vehicle"] == "Bus"
+
+
+async def test_timetable_cache_ttls_bounds_and_failures(
+    hass, journey_entry, plan_response_data, monkeypatch
+):
+    """Optional enrichment is deduplicated, bounded and isolated from core data."""
+    from types import SimpleNamespace
+
+    from custom_components.translink import coordinator as module
+    from custom_components.translink.api.models import TripTimetable
+    from custom_components.translink.api.trip_page import TripPageParseError
+
+    with patch("custom_components.translink.coordinator.async_get_clientsession"):
+        coordinator = TranslinkCoordinator(hass, journey_entry)
+    now = [100.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    plan = JourneyPlanResult.model_validate(plan_response_data)
+    leg = plan.itineraries[0].legs[0]
+    timetable = TripTimetable(id=leg.tripId, departures=[])
+    coordinator.client.async_get_trip_timetable = AsyncMock(return_value=timetable)
+    assert await coordinator._async_get_trip_timetables(plan) == {leg.tripId: timetable}
+    assert await coordinator._async_get_trip_timetables(plan) == {leg.tripId: timetable}
+    assert coordinator.client.async_get_trip_timetable.await_count == 1
+    now[0] += module.TRIP_PAGE_SUCCESS_TTL + 1
+    await coordinator._async_get_trip_timetables(plan)
+    assert coordinator.client.async_get_trip_timetable.await_count == 2
+    coordinator._trip_cache.clear()
+    for error in [
+        TimeoutError(),
+        TranslinkConnectionError("offline"),
+        TripPageParseError("changed"),
+        None,
+    ]:
+        coordinator.client.async_get_trip_timetable = (
+            AsyncMock(side_effect=error) if error else AsyncMock(return_value=None)
+        )
+        assert await coordinator._async_get_trip_timetables(plan) == {}
+        await coordinator._async_get_trip_timetables(plan)
+        assert coordinator.client.async_get_trip_timetable.await_count == 1
+        now[0] += module.TRIP_PAGE_NEGATIVE_TTL + 1
+    many = plan.model_copy(deep=True)
+    many.itineraries[0].legs = [
+        leg.model_copy(update={"tripId": str(i)}) for i in range(10)
+    ]
+    coordinator.client.async_get_trip_timetable = AsyncMock(return_value=None)
+    await coordinator._async_get_trip_timetables(many)
+    assert (
+        coordinator.client.async_get_trip_timetable.await_count
+        == module.TRIP_PAGE_MAX_PER_REFRESH
+    )
+    coordinator._trip_cache = {
+        f"old-{i}": (now[0] + 100, None) for i in range(module.TRIP_PAGE_CACHE_LIMIT)
+    }
+    await coordinator._async_get_trip_timetables(plan)
+    assert len(coordinator._trip_cache) == module.TRIP_PAGE_CACHE_LIMIT
+    assert "old-0" not in coordinator._trip_cache
+    assert await coordinator._async_get_trip_timetables(JourneyPlanResult()) == {}

@@ -1,10 +1,16 @@
 {
   "domain": "translink",
   "name": "Translink",
+  "after_dependencies": [
+    "lovelace"
+  ],
   "codeowners": [
     "@ruaan-deysel"
   ],
   "config_flow": true,
+  "dependencies": [
+    "http"
+  ],
   "documentation": "https://github.com/tinkerologie/ha-translink",
   "integration_type": "service",
   "iot_class": "cloud_polling",
@@ -13,5 +19,5 @@
   "requirements": [
     "pydantic>=2.0.0"
   ],
-  "version": "2026.10.4"
+  "version": "2026.10.5"
 }

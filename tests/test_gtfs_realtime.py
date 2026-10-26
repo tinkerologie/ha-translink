@@ -401,3 +401,71 @@ def test_gtfs_base_trip_id_indexing() -> None:
     assert "39040630-QR 26_27-44171-DY37" in tu_map
     assert "39040630" in tu_map
     assert tu_map["39040630"].delay_seconds == 120
+
+
+def test_captured_stop_time_predictions(sample_trip_updates_bytes: bytes) -> None:
+    """Retain actual feed event times, explicit zero delays and absent departures."""
+    record = parse_trip_updates(sample_trip_updates_bytes)[
+        "39040861-QR 26_27-44171-DK22"
+    ]
+    assert record.start_date == "20261006"
+    assert record.start_time == "08:46:00"
+    assert record.trip_schedule_relationship == 0
+    central = next(
+        stop for stop in record.stop_time_updates if stop.stop_sequence == 21
+    )
+    assert central.stop_id == "600019"
+    assert central.departure is not None
+    assert central.departure.time == 1791243780
+    assert central.departure.delay == 0
+    assert central.departure.uncertainty == 30
+    assert record.stop_time_updates[-1].stop_sequence == 36
+    assert record.stop_time_updates[-1].departure is None
+
+
+def test_stop_predictions_preserve_absence_and_repeated_visits() -> None:
+    """Do not collapse repeated stops or manufacture absent times/delays."""
+    from custom_components.translink.api.gtfs_realtime import (
+        _parse_stop_event,
+        _parse_stop_update,
+    )
+
+    descriptor = _encode_field(1, 2, "TRIP")
+    absent = (
+        _encode_field(1, 0, 1) + _encode_field(4, 2, "loop") + _encode_field(5, 0, 1)
+    )
+    negative_event = _encode_field(1, 0, -60) + _encode_field(2, 0, 1791243780)
+    negative = (
+        _encode_field(1, 0, 2)
+        + _encode_field(4, 2, "loop")
+        + _encode_field(3, 2, negative_event)
+    )
+    zero = _encode_field(1, 0, 0) + _encode_field(3, 0, 0)
+    no_data = (
+        _encode_field(1, 0, 2)
+        + _encode_field(4, 2, "loop")
+        + _encode_field(5, 0, 2)
+        + _encode_field(2, 2, zero)
+    )
+    body = _encode_field(1, 2, descriptor) + b"".join(
+        _encode_field(2, 2, row) for row in [absent, negative, no_data]
+    )
+    feed = _encode_field(
+        2, 2, _encode_field(1, 2, "entity") + _encode_field(3, 2, body)
+    )
+    stops = parse_trip_updates(feed)["TRIP"].stop_time_updates
+    assert [stop.stop_sequence for stop in stops] == [1, 2, 2]
+    assert [stop.stop_id for stop in stops] == ["loop", "loop", "loop"]
+    assert stops[0].arrival is None
+    assert stops[0].schedule_relationship == 1
+    assert stops[1].departure.delay == -60
+    assert stops[1].departure.uncertainty is None
+    assert stops[2].schedule_relationship == 2
+    assert stops[2].arrival.delay == 0
+    assert stops[2].arrival.time is None
+    assert _parse_stop_event(_encode_field(2, 0, 12)).delay is None
+    assert (
+        _parse_stop_event(_encode_field(99, 0, 1) + _encode_field(1, 2, "bad")).time
+        is None
+    )
+    assert _parse_stop_update(_encode_field(99, 0, 1)).stop_id is None

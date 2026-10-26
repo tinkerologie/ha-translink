@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Translink card verification</title>
+    <style>
+      :root {
+        --primary-color: #006a80;
+        --primary-text-color: #1b1c1e;
+        --secondary-text-color: #545c61;
+        --card-background-color: #fff;
+        --secondary-background-color: #edf3f5;
+        --divider-color: #dce2e5;
+        --warning-color: #8a6500;
+        --error-color: #ba1a1a;
+        background: #f1f4f6;
+        color: var(--primary-text-color);
+        font-family: system-ui;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+        gap: 16px;
+        max-width: 1400px;
+        margin: auto;
+        align-items: start;
+      }
+      ha-card {
+        display: block;
+        border: 1px solid var(--divider-color);
+      }
+      ha-icon {
+        width: 22px;
+        height: 22px;
+        display: inline-block;
+      }
+      body.dark {
+        --primary-color: #73d3e7;
+        --primary-text-color: #e2e3e6;
+        --secondary-text-color: #b9c3c8;
+        --card-background-color: #202527;
+        --secondary-background-color: #30383b;
+        --divider-color: #465155;
+        --warning-color: #f2c34f;
+        background: #121719;
+      }
+      @media (max-width: 500px) {
+        body {
+          padding: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="cards"></main>
+    <script type="module" src="./harness.js"></script>
+  </body>
+</html>

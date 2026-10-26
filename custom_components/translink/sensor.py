@@ -299,6 +299,7 @@ class TranslinkSensor(
 
     entity_description: TranslinkSensorEntityDescription
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"legs"})
 
     def __init__(
         self,

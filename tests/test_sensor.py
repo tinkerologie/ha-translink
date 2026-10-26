@@ -292,3 +292,54 @@ def test_sensor_icon_fallback_when_coordinator_data_none() -> None:
     )
     sensor_no_icon = TranslinkSensor(coordinator, desc_no_icon, entry)  # type: ignore[arg-type]
     assert sensor_no_icon.icon == "mdi:train-bus"
+
+
+async def test_itinerary_calling_stops_contract(
+    hass,
+    sample_journey_summary: JourneySummary,
+) -> None:
+    """Expose additive live attributes without changing state or unique identity."""
+    sample_journey_summary.itinerary_legs[0].update(
+        {
+            "callingStops": [
+                {
+                    "stopId": "600019",
+                    "scheduledTimeUtc": "2026-10-06T00:00:00Z",
+                    "realtime": None,
+                }
+            ],
+            "callingStopsSource": "scheduled",
+            "callingStopsRealtimeUpdatedAt": None,
+        }
+    )
+    coordinator = FakeCoordinator(data=sample_journey_summary)
+    description = next(d for d in JOURNEY_SENSORS if d.key == "itinerary")
+    sensor = TranslinkSensor(coordinator, description, coordinator.entry)
+    assert sensor.native_value == "1 legs"
+    assert sensor.unique_id == "test_entry_id_itinerary"
+    assert sensor.extra_state_attributes["legs"][0]["callingStopsSource"] == "scheduled"
+    import json
+    from types import SimpleNamespace
+
+    from homeassistant.components.recorder.db_schema import StateAttributes
+    from homeassistant.core import Event, State
+
+    sensor.hass = hass
+    sensor.entity_id = "sensor.itinerary_recorder_test"
+    sensor.platform = SimpleNamespace(platform_name="translink", config_entry=None)
+    await sensor.async_internal_added_to_hass()
+    state = State(
+        sensor.entity_id,
+        sensor.native_value,
+        sensor.extra_state_attributes,
+        state_info=sensor._state_info,
+    )
+    assert "legs" in state.attributes
+    assert "legs" in state.state_info["unrecorded_attributes"]
+    recorded = json.loads(
+        StateAttributes.shared_attrs_bytes_from_event(
+            Event("state_changed", {"new_state": state}), None
+        )
+    )
+    assert "legs" not in recorded
+    assert "polyline" in recorded
