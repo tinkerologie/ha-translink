@@ -47,3 +47,30 @@ jobs:
 
       - name: Run tests
         run: bash script/test
+
+  frontend:
+    name: Dashboard cards
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm run test:unit
+      - run: npm run build
+      - name: Verify committed bundle
+        run: git diff --exit-code -- ../custom_components/translink/frontend/
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser

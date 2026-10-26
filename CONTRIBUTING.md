@@ -155,3 +155,26 @@ These rules apply to every contributor, including AI coding agents. The full org
    days later unless there is new activity. These labels are exempt:
    - Issues: `pinned`, `security`, `confirmed`, `work-in-progress`, `priority: critical`, `priority: high`.
    - Pull requests: `pinned`, `security`, `work-in-progress`.
+
+## Dashboard card development
+
+Use the Node version in `frontend/.nvmrc`, then run:
+
+```sh
+cd frontend
+npm ci
+npx playwright install chromium
+npm run check
+```
+
+The cards use TypeScript 7 strict type checking, Lit and esbuild. All frontend
+packages are build/test dependencies; Home Assistant loads the committed,
+self-contained `custom_components/translink/frontend/translink-cards.js` module.
+Rebuild and commit that bundle whenever frontend sources change. CI rebuilds it
+and checks for a diff, then verifies the browser harness at phone/tablet/desktop
+widths in light and dark themes. The harness uses fixture entity data; verify the
+actual Home Assistant card picker, editor and dashboard before claiming live UI
+validation. Python resource tests use Home Assistant's real HTTP/resource APIs.
+
+Research and version-specific resource API assumptions are recorded in
+[the frontend research note](docs/frontend-research.md).

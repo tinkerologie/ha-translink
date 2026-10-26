@@ -12,6 +12,8 @@ from .api.client import (
 )
 from .api.gtfs_realtime import (
     AlertRecord,
+    StopTimeEventRecord,
+    StopTimeUpdateRecord,
     TripUpdateRecord,
     VehiclePositionRecord,
     parse_alerts,
@@ -19,22 +21,34 @@ from .api.gtfs_realtime import (
     parse_vehicle_positions,
 )
 from .api.models import (
+    CallingStop,
+    CallingStopRealtime,
     JourneyPlanResult,
     JourneySummary,
     LocationSearchResult,
     StopSummary,
+    TripDeparture,
+    TripTimetable,
 )
+from .api.trip_page import TripPageParseError
 
 __all__ = [
     "AlertRecord",
+    "CallingStop",
+    "CallingStopRealtime",
     "JourneyPlanResult",
     "JourneySummary",
     "LocationSearchResult",
     "StopSummary",
+    "StopTimeEventRecord",
+    "StopTimeUpdateRecord",
     "TranslinkApiError",
     "TranslinkClient",
     "TranslinkConnectionError",
     "TranslinkResponseError",
+    "TripDeparture",
+    "TripPageParseError",
+    "TripTimetable",
     "TripUpdateRecord",
     "VehiclePositionRecord",
     "build_journey_summary",

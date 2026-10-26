@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -18,6 +19,7 @@ from .client import (
     StopSummary,
     TranslinkApiError,
     TranslinkClient,
+    TripTimetable,
     build_journey_summary,
 )
 from .const import (
@@ -46,6 +48,10 @@ from .const import (
     DOMAIN,
     MIN_SCAN_INTERVAL,
     MODE_JOURNEY,
+    TRIP_PAGE_CACHE_LIMIT,
+    TRIP_PAGE_MAX_PER_REFRESH,
+    TRIP_PAGE_NEGATIVE_TTL,
+    TRIP_PAGE_SUCCESS_TTL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,6 +82,7 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
 
         session = async_get_clientsession(hass)
         self.client = TranslinkClient(session=session)
+        self._trip_cache: dict[str, tuple[float, TripTimetable | None]] = {}
 
     @property
     def start_location_id(self) -> str:
@@ -220,8 +227,10 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         if not isinstance(plan_res, JourneyPlanResult):
             plan_res = JourneyPlanResult()
 
+        timetables = await self._async_get_trip_timetables(plan_res)
         summary = build_journey_summary(
             plan=plan_res,
+            trip_timetables=timetables,
             vehicle_positions=vp_res if isinstance(vp_res, dict) else {},
             trip_updates=tu_res if isinstance(tu_res, dict) else {},
             fare_preference=self.fare_preference,
@@ -230,6 +239,48 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         )
 
         return summary
+
+    async def _async_get_trip_timetables(
+        self, plan: JourneyPlanResult
+    ) -> dict[str, TripTimetable]:
+        """Cache bounded optional enrichment without affecting core availability."""
+        now = time.monotonic()
+        self._trip_cache = {
+            key: value for key, value in self._trip_cache.items() if value[0] > now
+        }
+        legs = plan.itineraries[0].legs if plan.itineraries else []
+        ids = list(
+            dict.fromkeys(
+                leg.tripId
+                for leg in legs
+                if leg.tripId and leg.travelMode.lower() != "walk"
+            )
+        )[:TRIP_PAGE_MAX_PER_REFRESH]
+        missing = [trip_id for trip_id in ids if trip_id not in self._trip_cache]
+        results = await asyncio.gather(
+            *(self.client.async_get_trip_timetable(trip_id) for trip_id in missing),
+            return_exceptions=True,
+        )
+        for trip_id, result in zip(missing, results, strict=True):
+            timetable = result if isinstance(result, TripTimetable) else None
+            if isinstance(result, BaseException):
+                _LOGGER.debug(
+                    "Optional trip timetable unavailable (%s)", type(result).__name__
+                )
+            ttl = (
+                TRIP_PAGE_SUCCESS_TTL
+                if timetable is not None
+                else TRIP_PAGE_NEGATIVE_TTL
+            )
+            self._trip_cache[trip_id] = (time.monotonic() + ttl, timetable)
+        while len(self._trip_cache) > TRIP_PAGE_CACHE_LIMIT:
+            self._trip_cache.pop(next(iter(self._trip_cache)))
+        return {
+            trip_id: cached[1]
+            for trip_id in ids
+            if (cached := self._trip_cache.get(trip_id)) is not None
+            and cached[1] is not None
+        }
 
     async def _async_update_stop(self) -> StopSummary:
         """Update departure board for a single stop/station."""

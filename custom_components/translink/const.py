@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "translink"
+CARD_FILENAME: Final = "translink-cards.js"
+CARD_URL: Final = f"/translink_cards/{CARD_FILENAME}"
 
 # Configuration keys
 CONF_MODE: Final = "mode"
@@ -82,3 +84,14 @@ def get_vehicle_icon(vehicle: str | None, default: str = "mdi:train-bus") -> str
             if mode in v_lower:
                 return icon
     return default
+
+
+# Chosen request/cache bounds with headroom; these are not upstream service limits.
+ENDPOINT_TRIP_PAGE: Final = "/plan-your-journey/timetables/trip/"
+TRIP_PAGE_TIMEOUT: Final = 10
+TRIP_PAGE_MAX_BYTES: Final = 1024 * 1024
+TRIP_PAGE_CONCURRENCY: Final = 2
+TRIP_PAGE_MAX_PER_REFRESH: Final = 4
+TRIP_PAGE_SUCCESS_TTL: Final = 30 * 60
+TRIP_PAGE_NEGATIVE_TTL: Final = 5 * 60
+TRIP_PAGE_CACHE_LIMIT: Final = 32

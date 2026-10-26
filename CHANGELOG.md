@@ -8,7 +8,12 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Added
 
+- Bundled Journey, Departures and Service Alerts dashboard cards with native visual editors, automatic module registration, Home Assistant theme/locale support, responsive Sections sizing and keyboard-accessible details. Built with TypeScript 7 and tested at phone, tablet and desktop widths.
+- Expandable per-leg calling-stop timelines sourced from verified public trip schedules, with separately matched GTFS-RT predictions and explicit partial/unavailable fallbacks. Timetable requests are bounded and cached; missing enrichment does not interrupt journey entities.
+
 ### Changed
+
+- Register bundled cards through the HTTP/Lovelace setup lifecycle. The large live itinerary `legs` attribute is excluded from recorder history; entity IDs, states and configuration remain compatible.
 
 - Pull requests get path labels and at most one type label, `bug` or `enhancement`, from the shared tinkerologie PR labeler. Dependabot pull requests whose largest update is a patch or minor version merge automatically once the checks and commit statuses on their head commit have finished without a failure (a Codecov check that is still pending is not waited for; a Codecov failure blocks); majors, and pull requests with open review threads, stay for review.
 - Dependabot updates `uv.lock` (the `uv` ecosystem instead of `pip`), so version and security updates reach the lock file; `uv.lock` is refreshed to match `pyproject.toml`.
@@ -22,6 +27,10 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 - Update repository URLs and documentation references to tinkerologie organization.
 
 ### Fixed
+
+- Collapse identical planner alternatives in the departures card while preserving distinct trip identities when supplied.
+- Match planner and GTFS-RT trip records with route suffixes and service dates. This can correct previously missing reported delays and vehicle positions.
+- Resolve two existing Mypy typing errors without changing protobuf values or journey status behavior.
 
 ## [2026.10.4] - 2026-10-08
 

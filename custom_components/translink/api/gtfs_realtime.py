@@ -24,6 +24,26 @@ class VehiclePositionRecord:
 
 
 @dataclass(slots=True)
+class StopTimeEventRecord:
+    """An explicitly supplied GTFS-RT prediction; absent is distinct from zero."""
+
+    time: int | None = None
+    delay: int | None = None
+    uncertainty: int | None = None
+
+
+@dataclass(slots=True)
+class StopTimeUpdateRecord:
+    """One visit to a stop, retained in feed order, including repeated visits."""
+
+    stop_sequence: int | None = None
+    stop_id: str | None = None
+    schedule_relationship: int | None = None
+    arrival: StopTimeEventRecord | None = None
+    departure: StopTimeEventRecord | None = None
+
+
+@dataclass(slots=True)
 class TripUpdateRecord:
     """Realtime trip update with delay and stop updates."""
 
@@ -33,6 +53,10 @@ class TripUpdateRecord:
     delay_seconds: int = 0
     stop_id: str | None = None
     timestamp: int | None = None
+    start_date: str | None = None
+    start_time: str | None = None
+    trip_schedule_relationship: int | None = None
+    stop_time_updates: tuple[StopTimeUpdateRecord, ...] = ()
 
 
 @dataclass(slots=True)
@@ -68,6 +92,7 @@ def _parse_fields(
     if limit is None:
         limit = len(data)
     fields: list[tuple[int, int, Any]] = []
+    val: Any
     while offset < limit:
         tag, offset = _parse_varint(data, offset)
         field_num = tag >> 3
@@ -228,6 +253,38 @@ def parse_vehicle_positions(raw_bytes: bytes) -> dict[str, VehiclePositionRecord
     return result
 
 
+def _parse_stop_event(data: bytes) -> StopTimeEventRecord:
+    """Decode only explicit event values without defaulting missing delay to zero."""
+    result = StopTimeEventRecord()
+    for field, wire, value in _parse_fields(data):
+        if wire != 0:
+            continue
+        if field == 1:
+            result.delay = _to_int32(value)
+        elif field == 2:
+            result.time = value
+        elif field == 3:
+            result.uncertainty = value
+    return result
+
+
+def _parse_stop_update(data: bytes) -> StopTimeUpdateRecord:
+    """Preserve a stop visit and its arrival/departure predictions."""
+    result = StopTimeUpdateRecord()
+    for field, wire, value in _parse_fields(data):
+        if field == 1 and wire == 0:
+            result.stop_sequence = value
+        elif field == 4 and wire == 2:
+            result.stop_id = _decode_string(value)
+        elif field == 5 and wire == 0:
+            result.schedule_relationship = value
+        elif field == 2 and wire == 2:
+            result.arrival = _parse_stop_event(value)
+        elif field == 3 and wire == 2:
+            result.departure = _parse_stop_event(value)
+    return result
+
+
 def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
     """Parse GTFS-RT TripUpdates binary payload into a lookup dict."""
     result: dict[str, TripUpdateRecord] = {}
@@ -255,6 +312,10 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
         delay_sec = 0
         last_stop_id: str | None = None
         timestamp: int | None = None
+        start_date: str | None = None
+        start_time: str | None = None
+        relationship: int | None = None
+        stop_updates: list[StopTimeUpdateRecord] = []
 
         for tuf_num, _, tuf_val in tu_fields:
             if tuf_num == 1 and isinstance(tuf_val, bytes):  # TripDescriptor
@@ -264,7 +325,14 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
                         trip_id = _decode_string(tf_val)
                     elif tf_num == 5:
                         route_id = _decode_string(tf_val)
+                    elif tf_num == 2:
+                        start_time = _decode_string(tf_val)
+                    elif tf_num == 3:
+                        start_date = _decode_string(tf_val)
+                    elif tf_num == 4 and isinstance(tf_val, int):
+                        relationship = tf_val
             elif tuf_num == 2 and isinstance(tuf_val, bytes):  # StopTimeUpdate
+                stop_updates.append(_parse_stop_update(tuf_val))
                 stu_fields = _parse_fields(tuf_val)
                 for stuf_num, _, stuf_val in stu_fields:
                     if stuf_num == 4:
@@ -288,6 +356,10 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
             delay_seconds=delay_sec,
             stop_id=last_stop_id,
             timestamp=timestamp,
+            start_date=start_date,
+            start_time=start_time,
+            trip_schedule_relationship=relationship,
+            stop_time_updates=tuple(stop_updates),
         )
         if trip_id:
             result[trip_id] = record

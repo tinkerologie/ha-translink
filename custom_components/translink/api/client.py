@@ -2,28 +2,35 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import urllib.parse
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import aiohttp
 from pydantic import ValidationError
+from yarl import URL
 
 from ..const import (
     BRISBANE_TZ,
     ENDPOINT_LOCATION_SEARCH,
     ENDPOINT_PLAN,
     ENDPOINT_STOP_BY_GEOLOCATION,
+    ENDPOINT_TRIP_PAGE,
     GTFS_FEED_ALERTS,
     GTFS_FEED_TRIP_UPDATES,
     GTFS_FEED_VEHICLE_POSITIONS,
     GTFSRT_API_BASE_URL,
     JP_API_BASE_URL,
+    TRIP_PAGE_CONCURRENCY,
+    TRIP_PAGE_MAX_BYTES,
+    TRIP_PAGE_TIMEOUT,
 )
 from .gtfs_realtime import (
     AlertRecord,
+    StopTimeUpdateRecord,
     TripUpdateRecord,
     VehiclePositionRecord,
     extract_base_trip_id,
@@ -32,9 +39,14 @@ from .gtfs_realtime import (
     parse_vehicle_positions,
 )
 from .models import (
+    CallingStop,
+    CallingStopRealtime,
+    JourneyLeg,
     JourneyPlanResult,
+    JourneyStatus,
     JourneySummary,
     LocationSearchResult,
+    TripTimetable,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -117,6 +129,7 @@ class TranslinkClient:
         gtfsrt_base_url: str = GTFSRT_API_BASE_URL,
     ) -> None:
         """Initialize the client."""
+        self._trip_semaphore = asyncio.Semaphore(TRIP_PAGE_CONCURRENCY)
         self._session = session
         self._owns_session = session is None
         self._jp_base_url = jp_base_url.rstrip("/")
@@ -134,6 +147,43 @@ class TranslinkClient:
         if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
             self._session = None
+
+    async def async_get_trip_timetable(self, trip_id: str) -> TripTimetable | None:
+        """Fetch only one bounded public page; no script is ever executed."""
+        from .trip_page import parse_trip_page
+
+        if not trip_id or len(trip_id) > 128 or not trip_id.isprintable():
+            raise TranslinkResponseError("Invalid trip ID")
+        path = urllib.parse.quote(trip_id, safe="")
+        url = URL(f"{self._jp_base_url}{ENDPOINT_TRIP_PAGE}{path}", encoded=True)
+        session = await self._get_session()
+        try:
+            async with (
+                self._trip_semaphore,
+                session.get(
+                    url,
+                    headers={"Accept": "text/html"},
+                    timeout=aiohttp.ClientTimeout(total=TRIP_PAGE_TIMEOUT),
+                    allow_redirects=False,
+                ) as response,
+            ):
+                if response.status != 200 or response.content_type != "text/html":
+                    raise TranslinkResponseError("Trip page response was not HTML 200")
+                if (
+                    response.content_length is not None
+                    and response.content_length > TRIP_PAGE_MAX_BYTES
+                ):
+                    raise TranslinkResponseError("Trip page exceeds size bound")
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    body.extend(chunk)
+                    if len(body) > TRIP_PAGE_MAX_BYTES:
+                        raise TranslinkResponseError("Trip page exceeds size bound")
+                return parse_trip_page(body.decode("utf-8"), trip_id)
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise TranslinkConnectionError("Unable to fetch trip timetable") from err
+        except UnicodeDecodeError as err:
+            raise TranslinkResponseError("Invalid trip page encoding") from err
 
     async def search_locations(self, query: str) -> list[LocationSearchResult]:
         """Search for stops, stations, and locations matching the query."""
@@ -361,11 +411,224 @@ def _match_trip_record(
         if (
             expected_route_id
             and record_route_id
-            and record_route_id != expected_route_id
+            and record_route_id.split("-", 1)[0] != expected_route_id.split("-", 1)[0]
+        ):
+            return None
+        parts = trip_id.split("_")
+        service_date = parts[-2] if len(parts) > 2 else None
+        feed_date = getattr(record, "start_date", None)
+        if (
+            service_date
+            and len(service_date) == 8
+            and service_date.isdigit()
+            and feed_date
+            and service_date != feed_date
         ):
             return None
         return record
     return None
+
+
+def _stop_key(value: str | None) -> str:
+    """Normalize observed SI prefixes and zero-padded bus IDs for matching only."""
+    return (value or "").removeprefix("SI:").lstrip("0")
+
+
+def _prediction_time(value: int | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(value, UTC).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _realtime_stop(update: StopTimeUpdateRecord) -> CallingStopRealtime:
+    relations: dict[
+        int | None, Literal["scheduled", "skipped", "no_data", "unknown"]
+    ] = {0: "scheduled", 1: "skipped", 2: "no_data"}
+    relation = relations.get(update.schedule_relationship, "unknown")
+    result = CallingStopRealtime(
+        sequence=update.stop_sequence, scheduleRelationship=relation
+    )
+    if update.schedule_relationship == 2:
+        return result
+    for kind in ("arrival", "departure"):
+        event = getattr(update, kind)
+        if event is not None:
+            setattr(result, f"{kind}TimeUtc", _prediction_time(event.time))
+            setattr(result, f"{kind}DelaySeconds", event.delay)
+            setattr(result, f"{kind}UncertaintySeconds", event.uncertainty)
+    return result
+
+
+def _baseline_matches(
+    update: StopTimeUpdateRecord, target: datetime | None, *, arrival: bool = False
+) -> bool:
+    event = update.arrival if arrival else update.departure
+    return bool(
+        event is not None
+        and event.time is not None
+        and event.delay is not None
+        and target is not None
+        and event.time - event.delay == target.timestamp()
+    )
+
+
+def build_calling_stops(
+    leg: JourneyLeg,
+    timetable: TripTimetable | None,
+    update: TripUpdateRecord | None,
+) -> tuple[list[CallingStop], str, str | None]:
+    """Join actual schedule calls to explicit feed occurrences, failing closed."""
+    if (
+        leg.travelMode.lower() == "walk"
+        or leg.origin is None
+        or leg.destination is None
+    ):
+        return [], "unavailable", None
+    origin = _stop_key(leg.origin.id)
+    destination = _stop_key(leg.destination.id)
+    departure = parse_iso_datetime(leg.departureTimeUtc)
+    arrival = parse_iso_datetime(leg.arrivalTimeUtc)
+    if not origin or not destination:
+        return [], "unavailable", None
+    selected = []
+    if timetable is not None and timetable.id == leg.tripId:
+        starts = [
+            i
+            for i, stop in enumerate(timetable.departures)
+            if _stop_key(stop.stopId) == origin
+            and (
+                departure is None
+                or parse_iso_datetime(stop.scheduledDepartureUtc) == departure
+            )
+        ]
+        ends = [
+            i
+            for i, stop in enumerate(timetable.departures)
+            if _stop_key(stop.stopId) == destination
+            and (
+                arrival is None
+                or parse_iso_datetime(stop.scheduledDepartureUtc) == arrival
+            )
+        ]
+        if len(starts) == len(ends) == 1 and ends[0] > starts[0]:
+            selected = timetable.departures[starts[0] : ends[0] + 1]
+    calls: list[CallingStop] = []
+    role: Literal["origin", "intermediate", "destination"]
+    updates = update.stop_time_updates if update is not None else ()
+    last_sequence: int | None = None
+    for index, stop in enumerate(selected):
+        alighting = stop.canBoardDebark == "Alighting"
+        baseline = parse_iso_datetime(stop.scheduledDepartureUtc)
+        candidates = [
+            item
+            for item in updates
+            if _stop_key(item.stop_id) == _stop_key(stop.stopId)
+            and (
+                _baseline_matches(item, baseline, arrival=alighting)
+                or (
+                    item.schedule_relationship in (1, 2)
+                    and item.stop_sequence == stop.order
+                )
+            )
+        ]
+        if last_sequence is not None:
+            candidates = [
+                item
+                for item in candidates
+                if item.stop_sequence is not None and item.stop_sequence > last_sequence
+            ]
+        matched = candidates[0] if len(candidates) == 1 else None
+        if matched is not None and matched.stop_sequence is not None:
+            last_sequence = matched.stop_sequence
+        role = (
+            "origin"
+            if index == 0
+            else "destination"
+            if index == len(selected) - 1
+            else "intermediate"
+        )
+        calls.append(
+            CallingStop(
+                order=stop.order,
+                stopId=stop.stopId,
+                name=stop.name,
+                platform=leg.origin.platform
+                if role == "origin"
+                else leg.destination.platform
+                if role == "destination"
+                else None,
+                role=role,
+                canBoardDebark=stop.canBoardDebark,
+                scheduledTimeUtc=stop.scheduledDepartureUtc,
+                realtime=_realtime_stop(matched) if matched is not None else None,
+            )
+        )
+    if calls:
+        has_realtime = any(stop.realtime is not None for stop in calls)
+        return (
+            calls,
+            "scheduled_with_realtime" if has_realtime else "scheduled",
+            _prediction_time(update.timestamp)
+            if update is not None and has_realtime
+            else None,
+        )
+    if not updates:
+        return [], "unavailable", None
+    # A partial feed is usable only when both endpoint occurrences are unique.
+    starts = [
+        i
+        for i, stop in enumerate(updates)
+        if _stop_key(stop.stop_id) == origin
+        and (
+            stop.departure is None
+            or stop.departure.delay is None
+            or _baseline_matches(stop, departure)
+        )
+    ]
+    ends = [
+        i
+        for i, stop in enumerate(updates)
+        if _stop_key(stop.stop_id) == destination
+        and (
+            stop.arrival is None
+            or stop.arrival.delay is None
+            or _baseline_matches(stop, arrival, arrival=True)
+        )
+    ]
+    if len(starts) != 1 or len(ends) != 1 or ends[0] <= starts[0]:
+        return [], "unavailable", None
+    partial = updates[starts[0] : ends[0] + 1]
+    names = {_stop_key(stop.id): stop.name for stop in leg.skippedStops}
+    names[origin], names[destination] = leg.origin.name, leg.destination.name
+    for index, visit in enumerate(partial):
+        role = (
+            "origin"
+            if index == 0
+            else "destination"
+            if index == len(partial) - 1
+            else "intermediate"
+        )
+        calls.append(
+            CallingStop(
+                stopId=visit.stop_id,
+                name=names.get(_stop_key(visit.stop_id)),
+                role=role,
+                platform=leg.origin.platform
+                if role == "origin"
+                else leg.destination.platform
+                if role == "destination"
+                else None,
+                realtime=_realtime_stop(visit),
+            )
+        )
+    return (
+        calls,
+        "realtime_partial",
+        _prediction_time(update.timestamp) if update is not None else None,
+    )
 
 
 def build_journey_summary(
@@ -376,6 +639,8 @@ def build_journey_summary(
     origin_name_fallback: str = "",
     destination_name_fallback: str = "",
     now: datetime | None = None,
+    *,
+    trip_timetables: dict[str, TripTimetable] | None = None,
 ) -> JourneySummary:
     """Build a unified presentation summary for Home Assistant sensors."""
     if now is None:
@@ -482,7 +747,7 @@ def build_journey_summary(
         delay_mins = max(0, round(tu.delay_seconds / 60))
 
     # Determine status
-    status = "scheduled"
+    status: JourneyStatus = "scheduled"
     if departure_time and arrival_time:
         if now > arrival_time:
             status = "arrived"
@@ -584,6 +849,12 @@ def build_journey_summary(
     # Detailed legs representation
     legs_summary: list[dict[str, Any]] = []
     for leg in itinerary.legs:
+        matched_update = _match_trip_record(
+            leg.tripId, trip_updates, leg.legRoute.code if leg.legRoute else None
+        )
+        calls, source, updated = build_calling_stops(
+            leg, (trip_timetables or {}).get(leg.tripId or ""), matched_update
+        )
         legs_summary.append(
             {
                 "travelMode": leg.travelMode,
@@ -603,6 +874,9 @@ def build_journey_summary(
                 "operator": leg.legRoute.operator if leg.legRoute else None,
                 "numberOfStops": leg.numberOfStops,
                 "skippedStops": [s.name for s in leg.skippedStops],
+                "callingStops": [stop.model_dump() for stop in calls],
+                "callingStopsSource": source,
+                "callingStopsRealtimeUpdatedAt": updated,
             }
         )
 

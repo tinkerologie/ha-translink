@@ -1,0 +1,56 @@
+[
+  {
+    "fixture_kind": "public_trip_success",
+    "source_url": "https://jp.translink.com.au/plan-your-journey/timetables/trip/s_T_RPSP_8_20261026_39766414",
+    "final_url": "https://jp.translink.com.au/plan-your-journey/timetables/trip/s_T_RPSP_8_20261026_39766414",
+    "captured_at_utc": "2026-10-26T07:59:35.719438+00:00",
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "tls": {
+      "verification_enabled": true,
+      "ssl_verify_result": 0,
+      "ca_bundle": "system default"
+    },
+    "original_body_sha256": "67ce05a3ca63bf3d56b8efdb5e91afb599ee377c2845ba225d5a99693a206dc2",
+    "retained_fixture_sha256": "6f2b203d15a478a3b41d8a006e881a628f5a42b58bc06c8ee3efdad5349d411c",
+    "sanitization": "Retained original relevant Flight script pushes in document order; removed configuration/telemetry/maps and unrelated scripts. No credentials used.",
+    "push_boundaries_preserved": true,
+    "filename": "success.html"
+  },
+  {
+    "fixture_kind": "public_trip_not_found",
+    "source_url": "https://jp.translink.com.au/plan-your-journey/timetables/trip/not-a-valid-translink-trip",
+    "final_url": "https://jp.translink.com.au/plan-your-journey/timetables/trip/not-a-valid-translink-trip",
+    "captured_at_utc": "2026-10-26T07:59:37.238214+00:00",
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "tls": {
+      "verification_enabled": true,
+      "ssl_verify_result": 0,
+      "ca_bundle": "system default"
+    },
+    "original_body_sha256": "7fca0e26a4756ecdb9f579fd4ff70674dea89d76df2dd9cecf59af5abfcb9533",
+    "retained_fixture_sha256": "7bd69fc8bd82a4d40639f5e9ed97e8ab42df5f065b6bd06230d71e288e6fc828",
+    "sanitization": "Retained original relevant Flight script pushes in document order; removed configuration/telemetry/maps and unrelated scripts. No credentials used.",
+    "push_boundaries_preserved": true,
+    "filename": "not_found.html"
+  },
+  {
+    "fixture_kind": "public_planner_success",
+    "source_url": "https://jp.translink.com.au/api/plan?id=1149538989",
+    "final_url": "https://jp.translink.com.au/api/plan?id=1149538989",
+    "captured_at_utc": "2026-10-26T08:05:49.043443+00:00",
+    "http_status": 200,
+    "content_type": "application/json",
+    "tls": {
+      "verification_enabled": true,
+      "ssl_verify_result": 0,
+      "ca_bundle": "system default"
+    },
+    "original_body_sha256": "fd7f4fa68cc9a1bf2bd5c6d26910db8bf6aef698660269766f3e8916aa0e123f",
+    "retained_fixture_sha256": "fd7f4fa68cc9a1bf2bd5c6d26910db8bf6aef698660269766f3e8916aa0e123f",
+    "sanitization": "none; credential-free public station journey",
+    "push_boundaries_preserved": true,
+    "filename": "plan_response_trip.json"
+  }
+]

@@ -25,6 +25,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["custom_components*"]
 
+[tool.setuptools.package-data]
+"custom_components.translink" = ["frontend/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
