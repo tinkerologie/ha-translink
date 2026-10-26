@@ -13,6 +13,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Changed
 
+- Publish CI coverage to Codecov and enforce the existing 100% Python line and branch coverage baseline. The OIDC upload runs in a separate job without executing project code.
+
 - Register bundled cards through the HTTP/Lovelace setup lifecycle. The large live itinerary `legs` attribute is excluded from recorder history; entity IDs, states and configuration remain compatible.
 
 - Pull requests get path labels and at most one type label, `bug` or `enhancement`, from the shared tinkerologie PR labeler. Dependabot pull requests whose largest update is a patch or minor version merge automatically once the checks and commit statuses on their head commit have finished without a failure (a Codecov check that is still pending is not waited for; a Codecov failure blocks); majors, and pull requests with open review threads, stay for review.

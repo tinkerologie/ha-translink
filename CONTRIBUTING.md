@@ -178,3 +178,7 @@ validation. Python resource tests use Home Assistant's real HTTP/resource APIs.
 
 Research and version-specific resource API assumptions are recorded in
 [the frontend research note](docs/frontend-research.md).
+
+CI enforces the existing 100% Python line and branch coverage baseline. It retains
+`coverage.xml` as an artifact and publishes the report to Codecov through a
+separate job using OIDC on trusted branches; that job executes no project code.
