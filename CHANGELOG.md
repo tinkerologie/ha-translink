@@ -6,6 +6,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+## [2026.10.5] - 2026-10-26
+
 ### Added
 
 - Bundled Journey, Departures and Service Alerts dashboard cards with native visual editors, automatic module registration, Home Assistant theme/locale support, responsive Sections sizing and keyboard-accessible details. Built with TypeScript 7 and tested at phone, tablet and desktop widths.

@@ -100,7 +100,7 @@ wheels = [
 
 [[package]]
 name = "ha-translink"
-version = "2026.10.4"
+version = "2026.10.5"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
