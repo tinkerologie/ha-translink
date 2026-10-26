@@ -202,3 +202,28 @@ def test_anonymous_preload_hints_from_complete_page() -> None:
     )
     with pytest.raises(TripPageParseError):
         parse_trip_page(_page(':HL["/style.css","style"]'), TRIP_ID)
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [
+        "a:T",
+        "a:T1",
+        "a:T1,",
+        "a:T2,x",
+        "a:{}",
+        ":{}\n",
+    ],
+)
+def test_incomplete_record_framing_is_rejected(stream):
+    with pytest.raises(TripPageParseError):
+        parse_trip_page(_page(stream), TRIP_ID)
+
+
+def test_identical_record_repetition_cannot_create_ambiguous_trips():
+    """Repeated irrelevant records are harmless; repeated trip objects fail closed."""
+    assert (
+        parse_trip_page(_page("a:{}\na:{}\n" + _record(_trip())), TRIP_ID) is not None
+    )
+    with pytest.raises(TripPageParseError, match="Unexpected trip identity"):
+        parse_trip_page(_page(_record(_trip()) * 2), TRIP_ID)

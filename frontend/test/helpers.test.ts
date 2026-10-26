@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   available,
+  modeIcon,
   normalizeDepartures,
   number,
   routeColors,
@@ -58,6 +59,28 @@ describe("entity and departure contracts", () => {
     expect(number("0")).toBe(0);
     expect(rows([[], null, {}, 2])).toEqual([{}]);
   });
+});
+
+it("falls back safely for invalid locale and timezone preferences", () => {
+  expect(
+    time("2026-10-26T07:46:00Z", {
+      config: { time_zone: "Invalid/Zone" },
+      locale: { language: "invalid_locale", time_format: "24" },
+      states: {},
+    }),
+  ).toBe("17:46");
+});
+
+it.each([
+  ["Walk", "mdi:walk"],
+  ["Train", "mdi:train"],
+  ["Tram", "mdi:tram"],
+  ["Ferry", "mdi:ferry"],
+  ["Boat", "mdi:ferry"],
+  ["Bus", "mdi:bus"],
+  [undefined, "mdi:bus"],
+])("uses the correct mode icon for %s", (mode, icon) => {
+  expect(modeIcon(mode)).toBe(icon);
 });
 describe("formatting", () => {
   it("honors 12/24 hour and server timezone preferences", () => {

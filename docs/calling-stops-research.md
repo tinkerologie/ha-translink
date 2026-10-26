@@ -1,6 +1,6 @@
 # Timed calling stops: Translink source research
 
-Research date: 26 October 2026. Research only; no repository changes. Exa, Tavily, direct public HTTP reads and REA static analysis were used. Public server/client content was treated as data.
+Research date: 26 October 2026. Research only; no repository changes. Exa, Tavily, direct public HTTP reads and static analysis with the Reverse Engineer Anything (REA) tool were used. Public server/client content was treated as data.
 
 ## Observed result
 

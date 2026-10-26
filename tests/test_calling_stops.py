@@ -150,3 +150,50 @@ def test_relationships_and_missing_times(captured_case):
         StopTimeUpdateRecord(arrival=StopTimeEventRecord(time=None, delay=0))
     )
     assert result.arrivalTimeUtc is None and result.arrivalDelaySeconds == 0
+
+
+def test_route_suffixes_preserve_route_identity(captured_case):
+    """Feed version suffixes may differ, but another route must never match."""
+    _, leg, update, _ = captured_case
+    feed = deepcopy(update)
+    feed.route_id = "RPSP-feed-version"
+    assert (
+        _match_trip_record(leg.tripId, {"39040861": feed}, "RPSP-planner-version")
+        is feed
+    )
+    assert (
+        _match_trip_record(leg.tripId, {"39040861": feed}, "OTHER-planner-version")
+        is None
+    )
+
+
+def test_wrong_timetable_identity_and_skipped_relationship(captured_case):
+    """A mismatched page cannot supply scheduled calling times."""
+    _, leg, update, timetable = captured_case
+    wrong = timetable.model_copy(update={"id": "another-trip"})
+    assert build_calling_stops(leg, wrong, None) == ([], "unavailable", None)
+    calls, source, _ = build_calling_stops(leg, wrong, update)
+    assert source == "realtime_partial"
+    assert all(stop.scheduledTimeUtc is None for stop in calls)
+    result = _realtime_stop(
+        StopTimeUpdateRecord(
+            stop_sequence=2,
+            schedule_relationship=1,
+            departure=StopTimeEventRecord(time=100, delay=-60),
+        )
+    )
+    assert result.scheduleRelationship == "skipped"
+    assert result.departureDelaySeconds == -60
+    assert result.departureTimeUtc == "1970-01-01T00:01:40+00:00"
+
+
+@pytest.mark.parametrize("offset", ["+10:00", "-05:00"])
+def test_schedule_requires_utc_even_when_offset_is_valid(offset):
+    from pydantic import ValidationError
+
+    from custom_components.translink.api.models import TripDeparture
+
+    with pytest.raises(ValidationError, match="timezone-aware UTC"):
+        TripDeparture(
+            stopId="x", order=1, scheduledDepartureUtc=f"2026-10-26T07:46:00{offset}"
+        )

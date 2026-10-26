@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import "../src/index";
-import { AlertsCard, JourneyCard } from "../src/cards";
+import { AlertsCard, DeparturesCard, JourneyCard } from "../src/cards";
 import fixture from "./fixtures/hass.json";
-import type { HomeAssistant } from "../src/types";
+import type { CardConfig, HomeAssistant } from "../src/types";
 afterEach(() => document.body.replaceChildren());
 async function journey(
   hass?: HomeAssistant,
@@ -129,4 +129,195 @@ it("shows supplied calling times and keeps predictions separate", async () => {
   };
   await card.updateComplete;
   expect(card.shadowRoot!.querySelector(".stop-details")).toBeNull();
+});
+
+it("suggests only matching entities and tolerates a repeated resource load", async () => {
+  const registered = window.customCards!.slice();
+  for (const [tag, entity] of [
+    ["translink-journey-card", "sensor.renamed_journey_itinerary"],
+    ["translink-departures-card", "sensor.renamed_stop_departures_board"],
+    ["translink-alerts-card", "sensor.renamed_journey_disruptions"],
+  ] as const) {
+    const metadata = registered.find((entry) => entry.type === tag)!;
+    expect(metadata.getEntitySuggestion!(fixture, entity)).toEqual({
+      config: { type: `custom:${tag}`, entity },
+    });
+    expect(metadata.getEntitySuggestion!(fixture, "sensor.missing")).toBeNull();
+    const foreign = structuredClone(fixture);
+    foreign.entities[entity].platform = "other";
+    expect(metadata.getEntitySuggestion!(foreign, entity)).toBeNull();
+  }
+  expect(
+    registered[0]!.getEntitySuggestion!(
+      fixture,
+      "sensor.renamed_stop_departures_board",
+    ),
+  ).toBeNull();
+  const path = "../src/index.ts?registration-check";
+  await import(path);
+  expect(window.customCards).toEqual(registered);
+  expect(customElements.get("translink-journey-card")).toBe(JourneyCard);
+});
+
+it.each([
+  ["translink-journey-card", "sensor.renamed_journey_itinerary"],
+  ["translink-departures-card", "sensor.renamed_stop_departures_board"],
+  ["translink-alerts-card", "sensor.renamed_journey_disruptions"],
+])("explains configuration and registry states for %s", async (tag, entity) => {
+  const card = document.createElement(tag) as JourneyCard;
+  card.setConfig({ type: `custom:${tag}` });
+  document.body.append(card);
+  await card.updateComplete;
+  expect(card.shadowRoot!.textContent).toContain("Choose a Translink entity");
+  card.setConfig({ type: `custom:${tag}`, entity });
+  card.hass = { states: fixture.states };
+  await card.updateComplete;
+  expect(card.shadowRoot!.textContent).toContain("Loading");
+  const foreign = structuredClone(fixture) as HomeAssistant;
+  foreign.entities![entity]!.platform = "other";
+  card.hass = foreign;
+  await card.updateComplete;
+  expect(card.shadowRoot!.textContent).toContain(
+    "Select the matching Translink entity",
+  );
+  const unknown = structuredClone(fixture) as HomeAssistant;
+  unknown.states[entity]!.state = "unknown";
+  card.hass = unknown;
+  await card.updateComplete;
+  expect(card.shadowRoot!.textContent).toContain("unavailable");
+});
+
+it.each([
+  null,
+  {},
+  { type: 2 },
+  { entity: 1 },
+  { title: false },
+  ...["show_fare", "legs_expanded", "show_disruptions", "show_platform"].map(
+    (key) => ({ [key]: "true" }),
+  ),
+  ...["max_departures", "max_alerts"].flatMap((key) =>
+    [0, 21, 1.5, "2"].map((value) => ({ [key]: value })),
+  ),
+])("rejects invalid editor configuration %j", (invalid) => {
+  const card = document.createElement("translink-journey-card") as JourneyCard;
+  const config =
+    invalid === null || Object.keys(invalid).length === 0
+      ? invalid
+      : { type: "custom:translink-journey-card", ...invalid };
+  // YAML values can bypass the TypeScript configuration contract.
+  expect(() => card.setConfig(config as unknown as CardConfig)).toThrow();
+});
+
+it("limits departures, can hide platforms, and explains an empty board", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  const state = hass.states["sensor.renamed_stop_departures_board"]!;
+  state.attributes.departures = [1, 2, 3].map((platform) => ({
+    route: "T2",
+    platform: String(platform),
+    departure_time: "2026-10-26T07:46:00Z",
+  }));
+  const card = document.createElement(
+    "translink-departures-card",
+  ) as DeparturesCard;
+  const config = {
+    type: "custom:translink-departures-card",
+    entity: state.entity_id,
+    max_departures: 1,
+  };
+  card.setConfig(config);
+  card.hass = hass;
+  document.body.append(card);
+  await card.updateComplete;
+  expect(card.shadowRoot!.querySelectorAll(".departure")).toHaveLength(1);
+  expect(card.shadowRoot!.textContent).toContain("Showing 1 of 3");
+  expect(card.shadowRoot!.textContent).toContain("Platform 1");
+  card.setConfig({ ...config, show_platform: false });
+  await card.updateComplete;
+  expect(card.shadowRoot!.textContent).not.toContain("Platform 1");
+  const empty = structuredClone(hass);
+  empty.states[state.entity_id]!.attributes.departures = [];
+  card.hass = empty;
+  await card.updateComplete;
+  expect(card.shadowRoot!.textContent).toContain("No services found");
+});
+
+it("limits alerts and distinguishes no disruptions from unavailable data", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  const state = hass.states["sensor.renamed_journey_disruptions"]!;
+  state.attributes.disruptions = [{ title: "First" }, { title: "Second" }];
+  const card = document.createElement("translink-alerts-card") as AlertsCard;
+  card.setConfig({
+    type: "custom:translink-alerts-card",
+    entity: state.entity_id,
+    max_alerts: 1,
+  });
+  card.hass = hass;
+  document.body.append(card);
+  await card.updateComplete;
+  expect(card.shadowRoot!.querySelectorAll(".alert")).toHaveLength(1);
+  expect(card.shadowRoot!.textContent).toContain("Showing 1 of 2 alerts");
+  expect(card.shadowRoot!.textContent).not.toContain("Second");
+  const empty = structuredClone(hass);
+  empty.states[state.entity_id]!.attributes.disruptions = [];
+  card.hass = empty;
+  await card.updateComplete;
+  expect(card.shadowRoot!.textContent).toContain(
+    "No active disruptions reported",
+  );
+});
+
+it("keeps scheduled predictions, signed delays and missing-data relationships distinct", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  const leg = (
+    hass.states["sensor.renamed_journey_itinerary"]!.attributes.legs as Record<
+      string,
+      unknown
+    >[]
+  )[0]!;
+  leg.callingStopsSource = "scheduled_with_realtime";
+  leg.callingStops = [
+    {
+      name: "On schedule",
+      scheduledTimeUtc: "2026-10-26T07:46:00Z",
+      realtime: {
+        departureTimeUtc: "2026-10-26T07:46:00Z",
+        departureDelaySeconds: 0,
+      },
+    },
+    {
+      name: "Early",
+      scheduledTimeUtc: "2026-10-26T07:50:00Z",
+      realtime: {
+        arrivalTimeUtc: "2026-10-26T07:48:00Z",
+        arrivalDelaySeconds: -120,
+      },
+    },
+    {
+      name: "Late",
+      scheduledTimeUtc: "2026-10-26T07:52:00Z",
+      realtime: { departureDelaySeconds: 120 },
+    },
+    { name: "Skipped", realtime: { scheduleRelationship: "skipped" } },
+    {
+      stopId: "600010",
+      realtime: { scheduleRelationship: "no_data", departureDelaySeconds: 120 },
+    },
+  ];
+  const card = await journey(hass);
+  card.shadowRoot!.querySelector<HTMLButtonElement>(".disclosure")!.click();
+  await card.updateComplete;
+  const calls = [...card.shadowRoot!.querySelectorAll(".call")];
+  expect(calls).toHaveLength(5);
+  expect(calls[0]!.textContent).toContain("No delay reported");
+  expect(calls[0]!.querySelector("time")!.getAttribute("datetime")).toBe(
+    "2026-10-26T07:46:00Z",
+  );
+  expect(calls[1]!.textContent).toContain("-2 min");
+  expect(calls[1]!.textContent).toContain("Predicted");
+  expect(calls[2]!.textContent).toContain("+2 min");
+  expect(calls[3]!.textContent).toContain("Stop skipped");
+  expect(calls[4]!.textContent).toContain("Stop 600010");
+  expect(calls[4]!.textContent).toContain("No prediction available");
+  expect(calls[4]!.textContent).not.toContain("+2 min");
 });
