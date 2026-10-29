@@ -57,6 +57,12 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _describe_error(err: BaseException) -> str:
+    """Return the exception type and message, so an empty message stays readable."""
+    message = str(err)
+    return f"{type(err).__name__}: {message}" if message else type(err).__name__
+
+
 class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
     """Coordinator to fetch and update data from Translink Queensland."""
 
@@ -193,11 +199,13 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
                 return await self._async_update_journey()
             return await self._async_update_stop()
         except TranslinkApiError as err:
-            raise UpdateFailed(f"Translink update failed: {err}") from err
+            raise UpdateFailed(
+                f"Translink update failed: {str(err) or type(err).__name__}"
+            ) from err
         except Exception as err:
             _LOGGER.exception("Unexpected error fetching Translink data")
             raise UpdateFailed(
-                f"Unexpected error fetching Translink data: {err}"
+                f"Unexpected error fetching Translink data: {_describe_error(err)}"
             ) from err
 
     async def _async_update_journey(self) -> JourneySummary:

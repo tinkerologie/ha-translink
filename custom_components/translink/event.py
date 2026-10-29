@@ -75,6 +75,15 @@ class TranslinkDisruptionEvent(
         self._process_disruptions()
 
     @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Opt in to in-place entity ID changes (Home Assistant 2026.11 and later).
+
+        Nothing here is keyed on the entity ID. Older releases have no parent hook.
+        """
+        if (hook := getattr(super(), "async_entity_id_changed", None)) is not None:
+            hook(old_entity_id)
+
+    @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self._process_disruptions()

@@ -6,6 +6,27 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+## [2026.10.6] - 2026-10-29
+
+### Fixed
+
+- Journey planner, location search and nearby-stop requests that time out now raise a connection error, so a slow Translink response fails one refresh quietly and the next refresh recovers. Before, the timeout reached the catch-all handler, which logged "Unexpected error fetching Translink data" with a stack trace and an empty message. Timeouts on the optional real-time feeds (vehicle positions, trip updates and alerts) now leave that data empty for one refresh instead of failing it. Coordinator errors always name the exception type, so an exception with an empty message is still readable. [#26](https://github.com/tinkerologie/ha-translink/issues/26), [#27](https://github.com/tinkerologie/ha-translink/issues/27)
+- The disruption event entity opts in to the in-place entity ID changes of Home Assistant 2026.11 (`async_entity_id_changed`), so renaming its entity ID no longer removes and re-adds it. The fallback ends in Home Assistant 2027.11.
+
+### Added
+
+- Releases ship the integration as `translink.zip`, with a `SHA256SUMS` file and a signed build provenance attestation. `hacs.json` sets `zip_release` and `filename`, so from this release HACS installs the zip and shows how many times the latest release's zip was downloaded. After this release, choosing an older release (one without the zip) in HACS can fail to download. `script/build_release_zip.py` builds the zip reproducibly from `SOURCE_DATE_EPOCH`, every pull request checks that two builds match byte for byte, and the release workflow uploads the assets to a draft before it publishes, so it works with immutable releases. The README describes manual installation from the zip and how to verify it. [#28](https://github.com/tinkerologie/ha-translink/issues/28)
+- Deprecation checks for the current and the next Home Assistant release. [#29](https://github.com/tinkerologie/ha-translink/issues/29)
+  - Blocking: pytest turns `DeprecationWarning` and `PendingDeprecationWarning` from the integration's own modules into errors, and fails a test when Home Assistant logs a deprecation report that names `translink` (`tests/deprecations.py`).
+  - Early warning: the weekly `HA Next` workflow tests the newest Home Assistant on PyPI (betas included) and the head of Core's `dev` branch. It imports every module (`script/import_smoke.py`), runs the tests when a matching `pytest-homeassistant-custom-component` exists, and runs Hassfest. It opens one `ha-next` + `bug` issue per channel on failure and closes it when the channel passes again.
+  - The weekly `HA Dev Blog` workflow (`script/ha_dev_blog.py`) reads the developer blog and opens one `ha-dev-blog` + `enhancement` issue per post that announces a change to code the integration uses.
+
+### Changed
+
+- Tests run against Home Assistant 2026.10.4 (was 2026.6.2), and `script/test` accepts `TEST_HOME_ASSISTANT_VERSION`, `TEST_PLUGIN_VERSION`, `TEST_PYTHON_VERSION` and `TEST_VENV_PATH` overrides.
+- `script/hassfest` runs Hassfest from pinned Core source in an isolated `uv` environment, and supports Core 2026.11 and later, where the validator moved into `packages/hassfest`, and Core `dev`.
+- Dashboard cards use Home Assistant's design tokens for spacing, typography, radii, focus rings, hover and warning fills, with fallbacks for older themes. The journey arrow mirrors in right-to-left languages and is hidden from screen readers.
+
 ## [2026.10.5] - 2026-10-26
 
 ### Added

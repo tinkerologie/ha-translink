@@ -76,3 +76,26 @@ jobs:
           persist-credentials: false
       - name: Hassfest validation
         uses: home-assistant/actions/hassfest@cd6f3635a740c84d8a14f6121a90068b8ece6bf6 # master
+
+  release-zip:
+    name: Release zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build twice and compare
+        run: |
+          # The script refuses to write a zip with a broken layout; building twice,
+          # with different file times and umask, proves the same commit always
+          # gives the same bytes.
+          VERSION=$(jq -r '.version' custom_components/translink/manifest.json)
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          python3 script/build_release_zip.py --output-dir dist/a --version "$VERSION"
+          find custom_components/translink -type f -exec touch {} +
+          (umask 077 && python3 script/build_release_zip.py --output-dir dist/b --version "$VERSION")
+          cmp dist/a/translink.zip dist/b/translink.zip
+          cmp dist/a/SHA256SUMS dist/b/SHA256SUMS
+          (cd dist/a && sha256sum -c SHA256SUMS)

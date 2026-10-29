@@ -8,9 +8,19 @@ import types
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+# Installed before anything imports the integration, so reports logged while
+# pytest imports the test modules are caught too.
+from tests.deprecations import HANDLER as DEPRECATION_REPORTS
+from tests.deprecations import install_deprecation_report_handler
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+install_deprecation_report_handler()
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -378,6 +388,21 @@ if "homeassistant" not in sys.modules:
 def auto_enable_custom_integrations(enable_custom_integrations: Any) -> Any:
     """Enable custom integrations in tests."""
     yield
+
+
+@pytest.fixture(autouse=True)
+def fail_on_ha_deprecation_reports() -> Generator[None]:
+    """Fail when Home Assistant logs deprecated use by this integration.
+
+    Reports logged while modules were imported surface on the first test.
+    """
+    yield
+    if reports := DEPRECATION_REPORTS.pop_reports():
+        pytest.fail(
+            "Home Assistant reported deprecated use by translink:\n"
+            + "\n".join(reports),
+            pytrace=False,
+        )
 
 
 @pytest.fixture

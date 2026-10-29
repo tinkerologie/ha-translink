@@ -233,3 +233,27 @@ async def test_event_fallback_title_and_description() -> None:
     assert triggered[0][1] is not None
     assert triggered[0][1]["title"] == "Service Disruption"
     assert triggered[0][1]["description"] is None
+
+
+@pytest.mark.parametrize("parent_has_hook", [True, False])
+def test_entity_id_changed_delegates_when_available(
+    parent_has_hook: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entity opts in to in-place entity ID changes on every release."""
+    from homeassistant.helpers.entity import Entity
+
+    calls: list[str] = []
+    if parent_has_hook:
+        monkeypatch.setattr(
+            Entity,
+            "async_entity_id_changed",
+            lambda self, old_entity_id: calls.append(old_entity_id),
+            raising=False,
+        )
+    else:
+        monkeypatch.delattr(Entity, "async_entity_id_changed", raising=False)
+    event_entity = TranslinkDisruptionEvent(FakeCoordinator(), FakeEntry())  # pyright: ignore[reportArgumentType]
+
+    event_entity.async_entity_id_changed("event.old_id")
+
+    assert calls == (["event.old_id"] if parent_has_hook else [])

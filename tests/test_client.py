@@ -828,3 +828,64 @@ def test_build_journey_summary_top_level_notices_fallback() -> None:
     assert summary.disruptions[0]["title"] == "General Alert"
     assert summary.disruptions_summary == "General Alert"
     assert summary.latest_disruption_title == "General Alert"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["call", "enter"])
+async def test_required_requests_convert_timeouts(where: str) -> None:
+    """A bare timeout, at call time or while reading the response, is a connection error."""
+    mock_session = MagicMock()
+    mock_session.closed = False
+    for method in (mock_session.get, mock_session.post):
+        if where == "call":
+            method.side_effect = TimeoutError()
+        else:
+            method.return_value.__aenter__ = AsyncMock(side_effect=TimeoutError())
+            method.return_value.__aexit__ = AsyncMock(return_value=None)
+    c = TranslinkClient(session=mock_session)
+
+    calls = [
+        (c.plan_journey("S1", "Start", "S2", "End"), "journey planner"),
+        (c.search_locations("Central"), "location search"),
+        (c.get_stops_by_geolocation(-27.46, 153.02), "geolocation stop search"),
+    ]
+    for call, label in calls:
+        with pytest.raises(TranslinkConnectionError) as exc_info:
+            await call
+        assert str(exc_info.value) == f"Timed out connecting to Translink {label}"
+        assert isinstance(exc_info.value.__cause__, TimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_plan_journey_propagates_cancellation() -> None:
+    """Cancellation is never converted into a Translink error."""
+    import asyncio
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+    mock_session.post.return_value.__aenter__ = AsyncMock(
+        side_effect=asyncio.CancelledError()
+    )
+    mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+    c = TranslinkClient(session=mock_session)
+
+    with pytest.raises(asyncio.CancelledError):
+        await c.plan_journey("S1", "Start", "S2", "End")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["call", "enter"])
+async def test_gtfs_feeds_degrade_on_timeout(where: str) -> None:
+    """Optional realtime feeds return their empty fallback on a timeout."""
+    mock_session = MagicMock()
+    mock_session.closed = False
+    if where == "call":
+        mock_session.get.side_effect = TimeoutError()
+    else:
+        mock_session.get.return_value.__aenter__ = AsyncMock(side_effect=TimeoutError())
+        mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+    c = TranslinkClient(session=mock_session)
+
+    assert await c.fetch_vehicle_positions() == {}
+    assert await c.fetch_trip_updates() == {}
+    assert await c.fetch_alerts() == []

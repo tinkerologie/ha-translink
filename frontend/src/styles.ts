@@ -13,14 +13,18 @@ export const cardStyles = css`
     overflow: hidden;
     height: 100%;
     background: var(--ha-card-background, var(--card-background-color));
-    border-radius: var(--ha-card-border-radius, 12px);
+    border-radius: var(
+      --ha-card-border-radius,
+      var(--ha-border-radius-lg, 12px)
+    );
     font-family: var(--ha-font-family-body, inherit);
   }
   header {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 20px 20px 12px;
+    gap: var(--ha-space-3, 12px);
+    padding: var(--ha-space-5, 20px) var(--ha-space-5, 20px)
+      var(--ha-space-3, 12px);
   }
   header > .icon {
     display: grid;
@@ -28,9 +32,12 @@ export const cardStyles = css`
     width: 44px;
     height: 44px;
     flex-shrink: 0;
-    border-radius: 50%;
-    color: var(--primary-color);
-    background: var(--secondary-background-color);
+    border-radius: var(--ha-border-radius-circle, 50%);
+    color: var(--ha-color-on-primary-normal, var(--primary-color));
+    background: var(
+      --ha-color-fill-primary-quiet-resting,
+      var(--secondary-background-color)
+    );
   }
   .headings {
     min-width: 0;
@@ -44,24 +51,25 @@ export const cardStyles = css`
     overflow-wrap: anywhere;
   }
   h3 {
-    margin: 0 0 8px;
-    font-size: 1rem;
+    margin: 0 0 var(--ha-space-2, 8px);
+    font-size: var(--ha-font-size-l, 16px);
   }
   .subtitle,
   .secondary {
     color: var(--secondary-text-color);
-    font-size: 0.875rem;
-    line-height: 1.5;
+    font-size: var(--ha-font-size-m, 14px);
+    line-height: var(--ha-line-height-normal, 1.6);
   }
   .content {
-    padding: 4px 20px 20px;
+    padding: var(--ha-space-1, 4px) var(--ha-space-5, 20px)
+      var(--ha-space-5, 20px);
   }
   .state {
-    padding: 20px 0;
+    padding: var(--ha-space-5, 20px) 0;
     display: flex;
-    gap: 12px;
+    gap: var(--ha-space-3, 12px);
     align-items: center;
-    line-height: 1.5;
+    line-height: var(--ha-line-height-normal, 1.6);
   }
   .state ha-icon {
     color: var(--secondary-text-color);
@@ -74,7 +82,7 @@ export const cardStyles = css`
     border: 0;
     cursor: pointer;
     min-height: 44px;
-    border-radius: 8px;
+    border-radius: var(--ha-border-radius-md, 8px);
   }
   .icon-button {
     width: 44px;
@@ -83,12 +91,19 @@ export const cardStyles = css`
     flex-shrink: 0;
     color: var(--secondary-text-color);
   }
+  button,
+  summary {
+    transition: background-color var(--ha-animation-duration-fast, 150ms) ease;
+  }
   button:hover,
   summary:hover {
-    background: var(--secondary-background-color);
+    background: var(
+      --ha-color-fill-neutral-quiet-hover,
+      var(--secondary-background-color)
+    );
   }
   :is(button, summary, a):focus-visible {
-    outline: 3px solid var(--primary-color);
+    outline: 2px solid var(--ha-color-focus, var(--primary-color));
     outline-offset: 2px;
   }
   ha-icon {
@@ -100,21 +115,25 @@ export const cardStyles = css`
   .timing {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    gap: 12px;
+    gap: var(--ha-space-3, 12px);
     align-items: center;
-    margin: 12px 0 16px;
+    margin: var(--ha-space-3, 12px) 0 var(--ha-space-4, 16px);
   }
   .timing .time {
     font-size: clamp(1.5rem, 7cqi, 2.25rem);
-    font-weight: 600;
+    font-weight: var(--ha-font-weight-bold, 700);
     letter-spacing: -0.025em;
     line-height: 1.3;
+  }
+  /* The arrow points from origin to destination in either reading direction. */
+  :host(:dir(rtl)) .timing > ha-icon {
+    transform: scaleX(-1);
   }
   .timing .destination {
     text-align: end;
   }
   .stop-name {
-    font-weight: 500;
+    font-weight: var(--ha-font-weight-medium, 500);
     margin-top: 6px;
     overflow-wrap: anywhere;
     line-height: 1.4;
@@ -124,9 +143,9 @@ export const cardStyles = css`
     gap: 6px;
     align-items: center;
     padding: 6px 10px;
-    border-radius: 10px;
-    font-size: 0.875rem;
-    font-weight: 500;
+    border-radius: var(--ha-border-radius-md, 8px);
+    font-size: var(--ha-font-size-m, 14px);
+    font-weight: var(--ha-font-weight-medium, 500);
     max-width: 100%;
     overflow-wrap: anywhere;
   }
@@ -135,18 +154,18 @@ export const cardStyles = css`
   }
   .status {
     display: flex;
-    gap: 8px;
+    gap: var(--ha-space-2, 8px);
     align-items: center;
-    margin: 12px 0;
-    font-size: 0.875rem;
+    margin: var(--ha-space-3, 12px) 0;
+    font-size: var(--ha-font-size-m, 14px);
   }
   .metrics {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px 16px;
-    margin: 12px 0 16px;
+    gap: var(--ha-space-2, 8px) var(--ha-space-4, 16px);
+    margin: var(--ha-space-3, 12px) 0 var(--ha-space-4, 16px);
     color: var(--secondary-text-color);
-    font-size: 0.875rem;
+    font-size: var(--ha-font-size-m, 14px);
   }
   .metric {
     display: inline-flex;
@@ -156,16 +175,16 @@ export const cardStyles = css`
   .alert-strip {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px;
-    background: color-mix(
-      in srgb,
-      var(--warning-color) 14%,
-      var(--card-background-color)
+    gap: var(--ha-space-2, 8px);
+    padding: var(--ha-space-3, 12px);
+    color: var(--ha-color-on-warning-normal, var(--primary-text-color));
+    background: var(
+      --ha-color-fill-warning-quiet-resting,
+      color-mix(in srgb, var(--warning-color) 14%, var(--card-background-color))
     );
-    border-radius: 10px;
-    margin: 12px 0;
-    font-size: 0.875rem;
+    border-radius: var(--ha-border-radius-lg, 12px);
+    margin: var(--ha-space-3, 12px) 0;
+    font-size: var(--ha-font-size-m, 14px);
   }
   .alert-strip ha-icon {
     color: var(--warning-color);
@@ -177,9 +196,9 @@ export const cardStyles = css`
     justify-content: space-between;
     border-top: 1px solid var(--divider-color);
     border-radius: 0;
-    padding: 12px 0;
+    padding: var(--ha-space-3, 12px) 0;
     text-align: start;
-    margin-top: 12px;
+    margin-top: var(--ha-space-3, 12px);
   }
   .legs,
   .departures,
@@ -191,14 +210,15 @@ export const cardStyles = css`
   }
   .leg {
     border-inline-start: 3px solid var(--primary-color);
-    padding: 4px 0 12px 16px;
-    margin: 8px 0 0 4px;
+    padding: var(--ha-space-1, 4px) 0 var(--ha-space-3, 12px)
+      var(--ha-space-4, 16px);
+    margin: var(--ha-space-2, 8px) 0 0 var(--ha-space-1, 4px);
   }
   .endpoint,
   .call {
     display: flex;
     justify-content: space-between;
-    gap: 16px;
+    gap: var(--ha-space-4, 16px);
     align-items: baseline;
     margin: 10px 0;
   }
@@ -213,12 +233,12 @@ export const cardStyles = css`
     font-variant-numeric: tabular-nums;
   }
   .endpoint .label {
-    font-weight: 500;
+    font-weight: var(--ha-font-weight-medium, 500);
   }
   .call {
     position: relative;
-    padding-inline-start: 12px;
-    font-size: 0.875rem;
+    padding-inline-start: var(--ha-space-3, 12px);
+    font-size: var(--ha-font-size-m, 14px);
   }
   .call::before {
     content: "";
@@ -228,33 +248,33 @@ export const cardStyles = css`
     width: 9px;
     height: 9px;
     border: 2px solid var(--primary-color);
-    border-radius: 50%;
+    border-radius: var(--ha-border-radius-circle, 50%);
     background: var(--card-background-color);
   }
   .calling-stops {
     border-inline-start: 2px solid var(--primary-color);
-    margin-inline-start: 4px;
+    margin-inline-start: var(--ha-space-1, 4px);
   }
   .call .prediction {
     color: var(--secondary-text-color);
     display: block;
-    font-size: 0.8rem;
+    font-size: var(--ha-font-size-s, 12px);
   }
   details {
-    margin-top: 12px;
+    margin-top: var(--ha-space-3, 12px);
   }
   summary {
     cursor: pointer;
     min-height: 44px;
-    padding: 12px 4px;
-    border-radius: 8px;
-    font-size: 0.875rem;
+    padding: var(--ha-space-3, 12px) var(--ha-space-1, 4px);
+    border-radius: var(--ha-border-radius-md, 8px);
+    font-size: var(--ha-font-size-m, 14px);
   }
   .departure {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
-    padding: 16px 0;
+    padding: var(--ha-space-4, 16px) 0;
     border-bottom: 1px solid var(--divider-color);
   }
   .departure:last-child,
@@ -262,22 +282,22 @@ export const cardStyles = css`
     border-bottom: 0;
   }
   .departure .destination-name {
-    margin-top: 8px;
+    margin-top: var(--ha-space-2, 8px);
     overflow-wrap: anywhere;
   }
   .departure .when {
     text-align: end;
     white-space: nowrap;
-    font-size: 1.125rem;
-    font-weight: 600;
+    font-size: var(--ha-font-size-l, 16px);
+    font-weight: var(--ha-font-weight-bold, 700);
     font-variant-numeric: tabular-nums;
   }
   .departure .when .secondary {
-    font-weight: 400;
-    margin-top: 4px;
+    font-weight: var(--ha-font-weight-normal, 400);
+    margin-top: var(--ha-space-1, 4px);
   }
   .alert {
-    padding: 16px 0;
+    padding: var(--ha-space-4, 16px) 0;
     border-bottom: 1px solid var(--divider-color);
   }
   .alert-title {
@@ -292,29 +312,31 @@ export const cardStyles = css`
   .description {
     white-space: pre-line;
     overflow-wrap: anywhere;
-    line-height: 1.6;
-    font-size: 0.875rem;
+    line-height: var(--ha-line-height-normal, 1.6);
+    font-size: var(--ha-font-size-m, 14px);
   }
   .note {
-    margin-top: 12px;
+    margin-top: var(--ha-space-3, 12px);
     color: var(--secondary-text-color);
-    font-size: 0.8rem;
-    line-height: 1.5;
+    font-size: var(--ha-font-size-s, 12px);
+    line-height: var(--ha-line-height-normal, 1.6);
   }
   @container (max-width: 340px) {
     header {
-      padding: 16px 16px 8px;
-      gap: 8px;
+      padding: var(--ha-space-4, 16px) var(--ha-space-4, 16px)
+        var(--ha-space-2, 8px);
+      gap: var(--ha-space-2, 8px);
     }
     .content {
-      padding: 4px 16px 16px;
+      padding: var(--ha-space-1, 4px) var(--ha-space-4, 16px)
+        var(--ha-space-4, 16px);
     }
     .timing {
       gap: 6px;
     }
     .endpoint,
     .call {
-      gap: 8px;
+      gap: var(--ha-space-2, 8px);
     }
   }
   @media (prefers-reduced-motion: reduce) {
