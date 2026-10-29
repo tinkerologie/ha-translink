@@ -268,3 +268,26 @@ class _FrozenDatetime(datetime):
     @classmethod
     def now(cls, tz: Any = None) -> datetime:
         return NOW
+
+
+def test_frontend_identifiers_match_the_card_bundle(blog: Any, tmp_path: Path) -> None:
+    """A removed frontend element is found in the shipped card bundle, whole."""
+    page = (
+        "<article><ul><li><code>ha-md-list</code> and <code>ha-card</code> were"
+        " removed; <code>--md-assist-chip-*</code> and <code>background-color</code>"
+        " no longer have any effect."
+        "</li></ul></article>"
+    )
+    assert blog.changed_identifiers(page) == {
+        "ha-md-list",
+        "ha-card",
+        "md-assist-chip",
+    }
+    package = tmp_path / "custom_components" / "translink"
+    (package / "frontend").mkdir(parents=True)
+    (package / "frontend" / "cards.js").write_text(
+        'html`<ha-card style="--ha-card-border-radius:0">`\nconst x="ha-md-list-item";\n'
+    )
+    assert blog.find_usages({"ha-card", "ha-md-list"}, package) == {
+        "ha-card": ["custom_components/translink/frontend/cards.js:1"]
+    }

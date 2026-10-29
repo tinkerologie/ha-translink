@@ -36,19 +36,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = REPO_ROOT / "custom_components" / "translink"
 FEED_URL = "https://developers.home-assistant.io/blog/rss.xml"
 USER_AGENT = "ha-translink-dev-blog-watch"
-SEARCHED_SUFFIXES = (".py", ".json", ".yaml")
+# ``.js`` covers the shipped dashboard card bundle, so frontend removals match too.
+SEARCHED_SUFFIXES = (".py", ".json", ".yaml", ".js")
 MAX_LOCATIONS = 3
 
 ARTICLE = re.compile(r"<article\b.*?</article>", re.DOTALL | re.IGNORECASE)
 BLOCK = re.compile(r"<(p|li|td)\b[^>]*>(.*?)</\1>", re.DOTALL | re.IGNORECASE)
 INLINE_CODE = re.compile(r"<code\b[^>]*>(.*?)</code>", re.DOTALL | re.IGNORECASE)
 TAG = re.compile(r"<[^>]+>")
-TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Hyphens keep frontend names such as ``ha-md-list`` and ``md-assist-chip`` whole.
+TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 ANNOUNCES_CHANGE = re.compile(
     r"\b(deprecat\w*|removed|removal|will be removed|no longer|breaking|"
     r"stops? working|must now)\b",
     re.IGNORECASE,
 )
+# Hyphenated names count only with a frontend element or theme prefix; plain CSS
+# properties such as ``background-color`` say nothing about the integration.
+FRONTEND_PREFIXES = ("ha-", "hui-", "md-", "mdc-", "mwc-", "wa-")
 # Identifiers so common in any integration that a match says nothing.
 GENERIC = frozenset({"config_entry", "entry_id", "runtime_data", "return_value"})
 
@@ -109,8 +114,9 @@ def changed_identifiers(page_html: str) -> set[str]:
     Only paragraphs, list items and table cells whose text announces a
     deprecation, removal or breaking change are read, and only their inline
     code: highlighted ``<pre>`` examples are full of boilerplate every
-    integration shares. An identifier counts when it has an underscore or is
-    CamelCase, which leaves out ``None``, ``True`` and prose.
+    integration shares. An identifier counts when it has an underscore, is
+    CamelCase or is a prefixed frontend name such as ``ha-card``, which leaves
+    out ``None``, ``True``, plain CSS properties and prose.
     """
     article = ARTICLE.search(page_html)
     body = article.group(0) if article else page_html
@@ -119,10 +125,15 @@ def changed_identifiers(page_html: str) -> set[str]:
         if not ANNOUNCES_CHANGE.search(html.unescape(TAG.sub(" ", block))):
             continue
         for code in INLINE_CODE.findall(block):
-            for token in TOKEN.findall(html.unescape(TAG.sub("", code))):
+            for match in TOKEN.findall(html.unescape(TAG.sub("", code))):
+                token = match.rstrip("-")
                 if token.startswith("__") or token in GENERIC or len(token) < 4:
                     continue
-                if "_" in token or sum(char.isupper() for char in token) >= 2:
+                if (
+                    "_" in token
+                    or token.startswith(FRONTEND_PREFIXES)
+                    or sum(char.isupper() for char in token) >= 2
+                ):
                     found.add(token)
     return found
 
@@ -150,7 +161,11 @@ def find_usages(names: Iterable[str], package_dir: Path) -> dict[str, list[str]]
     wanted = sorted(set(names))
     if not wanted:
         return {}
-    pattern = re.compile(r"\b(" + "|".join(map(re.escape, wanted)) + r")\b")
+    # Hyphens count as part of a name, so ``ha-card`` does not match inside
+    # ``--ha-card-border-radius``.
+    pattern = re.compile(
+        r"(?<![\w-])(" + "|".join(map(re.escape, wanted)) + r")(?![\w-])"
+    )
     usages: dict[str, list[str]] = {}
     root = package_dir.parent.parent
     for path in source_files(package_dir):
