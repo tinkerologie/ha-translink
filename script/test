@@ -62,6 +62,10 @@ if [[ ! -d "$TEST_VENV_PATH" ]]; then
     log_info "Creating test virtual environment at $TEST_VENV_PATH"
     uv venv --seed --python "$TEST_PYTHON_VERSION" "$TEST_VENV_PATH"
 elif [[ ! -x "$TEST_VENV_PATH/bin/python3" || "$CURRENT_TEST_PYTHON" != "$TEST_PYTHON_MINOR" ]]; then
+    if [[ ! -f "$TEST_VENV_PATH/pyvenv.cfg" ]]; then
+        log_error "$TEST_VENV_PATH exists but is not a virtual environment; refusing to delete it"
+        exit 1
+    fi
     log_warning "Existing test venv uses Python ${CURRENT_TEST_PYTHON:-unknown} - recreating for Python $TEST_PYTHON_MINOR"
     rm -rf "$TEST_VENV_PATH"
     log_info "Creating test virtual environment at $TEST_VENV_PATH"
