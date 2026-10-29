@@ -44,9 +44,25 @@ It brings the complete real-time experience of the official Translink app into H
 
 ### Option 2: Manual Installation
 
-1. Copy the `custom_components/translink` directory into your Home Assistant `config/custom_components/` directory.
-2. Restart Home Assistant.
-3. Go to **Settings > Devices & Services > Add Integration** and select **Translink**.
+1. Download `translink.zip` from the latest release on the [Releases page](https://github.com/tinkerologie/ha-translink/releases).
+2. Create the folder `config/custom_components/translink/` and extract the zip into it. `manifest.json` must end up directly in that folder.
+3. Restart Home Assistant.
+4. Go to **Settings > Devices & Services > Add Integration** and select **Translink**.
+
+You can also copy the `custom_components/translink` directory from a clone of this repository into `config/custom_components/`.
+
+#### Verify the download
+
+Each release from 2026.10.6 onwards carries `translink.zip`, a `SHA256SUMS` file and a signed build provenance attestation. HACS installs the same zip. The "Downloaded N times" figure HACS shows is the download count of the latest release's zip, so it starts again with each release. To check that a zip you downloaded is the one the release workflow built:
+
+```bash
+gh attestation verify translink.zip -R tinkerologie/ha-translink
+sha256sum -c SHA256SUMS
+```
+
+Keep `SHA256SUMS` in the same folder as the zip. On macOS, use `shasum -a 256 -c SHA256SUMS`.
+
+After the first zip release, choosing an older release (one without the zip) in HACS can fail to download.
 
 ---
 
