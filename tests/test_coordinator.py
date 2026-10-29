@@ -164,7 +164,9 @@ async def test_coordinator_update_failure_raises(
     coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
-    with pytest.raises(UpdateFailed):
+    with pytest.raises(
+        UpdateFailed, match=r"^Translink update failed: Network timeout$"
+    ):
         await coordinator._async_update_data()
 
 
@@ -222,8 +224,81 @@ async def test_coordinator_update_unexpected_exception(
     coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
-    with pytest.raises(UpdateFailed):
+    with pytest.raises(
+        UpdateFailed,
+        match=r"^Unexpected error fetching Translink data: RuntimeError: System crash$",
+    ):
         await coordinator._async_update_data()
+
+
+async def test_coordinator_unexpected_exception_without_message(
+    hass: HomeAssistant,
+    journey_entry: MockConfigEntry,
+) -> None:
+    """An exception with an empty message still names its type."""
+    with patch("custom_components.translink.coordinator.async_get_clientsession"):
+        coordinator = TranslinkCoordinator(hass, journey_entry)
+
+    coordinator.client.plan_journey = AsyncMock(side_effect=KeyError())
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+
+    with pytest.raises(
+        UpdateFailed, match=r"^Unexpected error fetching Translink data: KeyError$"
+    ) as exc_info:
+        await coordinator._async_update_data()
+    assert isinstance(exc_info.value.__cause__, KeyError)
+
+
+async def test_coordinator_api_error_without_message(
+    hass: HomeAssistant,
+    journey_entry: MockConfigEntry,
+) -> None:
+    """A Translink error with an empty message falls back to its type name."""
+    with patch("custom_components.translink.coordinator.async_get_clientsession"):
+        coordinator = TranslinkCoordinator(hass, journey_entry)
+
+    coordinator.client.plan_journey = AsyncMock(side_effect=TranslinkConnectionError())
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+
+    with pytest.raises(
+        UpdateFailed, match=r"^Translink update failed: TranslinkConnectionError$"
+    ):
+        await coordinator._async_update_data()
+
+
+async def test_coordinator_planner_timeout_is_quiet_and_recovers(
+    hass: HomeAssistant,
+    journey_entry: MockConfigEntry,
+    plan_response_data: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A planner timeout fails one refresh without a traceback; the next succeeds."""
+    from unittest.mock import MagicMock
+
+    with patch("custom_components.translink.coordinator.async_get_clientsession"):
+        coordinator = TranslinkCoordinator(hass, journey_entry)
+
+    session = MagicMock()
+    session.closed = False
+    session.post.side_effect = TimeoutError()
+    coordinator.client._session = session
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+
+    with pytest.raises(
+        UpdateFailed,
+        match=r"^Translink update failed: Timed out connecting to Translink journey planner$",
+    ):
+        await coordinator._async_update_data()
+    assert "Unexpected error fetching Translink data" not in caplog.text
+
+    coordinator.client.plan_journey = AsyncMock(
+        return_value=JourneyPlanResult.model_validate(plan_response_data)
+    )
+    summary = await coordinator._async_update_data()
+    assert isinstance(summary, JourneySummary)
 
 
 async def test_coordinator_update_journey_plan_fallback(

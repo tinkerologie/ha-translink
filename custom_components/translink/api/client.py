@@ -217,6 +217,10 @@ class TranslinkClient:
                     raise TranslinkResponseError(
                         f"Failed to parse location search response: {err}"
                     ) from err
+        except TimeoutError as err:
+            raise TranslinkConnectionError(
+                "Timed out connecting to Translink location search"
+            ) from err
         except aiohttp.ClientError as err:
             raise TranslinkConnectionError(
                 f"Error connecting to Translink location search: {err}"
@@ -248,6 +252,10 @@ class TranslinkClient:
                     )
                 data = await response.json()
                 return data if isinstance(data, list) else []
+        except TimeoutError as err:
+            raise TranslinkConnectionError(
+                "Timed out connecting to Translink geolocation stop search"
+            ) from err
         except aiohttp.ClientError as err:
             raise TranslinkConnectionError(
                 f"Error connecting to Translink geolocation stop search: {err}"
@@ -325,6 +333,10 @@ class TranslinkClient:
                     raise TranslinkResponseError(
                         f"Failed to parse journey planner response: {err}"
                     ) from err
+        except TimeoutError as err:
+            raise TranslinkConnectionError(
+                "Timed out connecting to Translink journey planner"
+            ) from err
         except aiohttp.ClientError as err:
             raise TranslinkConnectionError(
                 f"Error connecting to Translink journey planner: {err}"
@@ -348,8 +360,8 @@ class TranslinkClient:
                     return {}
                 data = await response.read()
                 return parse_vehicle_positions(data)
-        except aiohttp.ClientError as err:
-            _LOGGER.debug("Failed to fetch live vehicle positions feed: %s", err)
+        except (TimeoutError, aiohttp.ClientError) as err:
+            _LOGGER.debug("Failed to fetch live vehicle positions feed: %r", err)
             return {}
 
     async def fetch_trip_updates(self) -> dict[str, TripUpdateRecord]:
@@ -370,8 +382,8 @@ class TranslinkClient:
                     return {}
                 data = await response.read()
                 return parse_trip_updates(data)
-        except aiohttp.ClientError as err:
-            _LOGGER.debug("Failed to fetch live trip updates feed: %s", err)
+        except (TimeoutError, aiohttp.ClientError) as err:
+            _LOGGER.debug("Failed to fetch live trip updates feed: %r", err)
             return {}
 
     async def fetch_alerts(self) -> list[AlertRecord]:
@@ -389,8 +401,8 @@ class TranslinkClient:
                     return []
                 data = await response.read()
                 return parse_alerts(data)
-        except aiohttp.ClientError as err:
-            _LOGGER.debug("Failed to fetch live alerts feed: %s", err)
+        except (TimeoutError, aiohttp.ClientError) as err:
+            _LOGGER.debug("Failed to fetch live alerts feed: %r", err)
             return []
 
 
