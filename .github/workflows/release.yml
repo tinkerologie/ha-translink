@@ -228,5 +228,16 @@ jobs:
       - name: Verify the immutable release
         run: |
           # Fails when release immutability is off, so the setting can't lapse unnoticed.
-          gh release verify "$VERSION"
+          # GitHub writes the release attestation shortly after publishing, so retry
+          # for up to two minutes before treating its absence as a failure.
+          for attempt in $(seq 1 12); do
+            if gh release verify "$VERSION"; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "::error::No release attestation for $VERSION; is release immutability on?"
+              exit 1
+            fi
+            sleep 10
+          done
           gh release verify-asset "$VERSION" dist/translink.zip

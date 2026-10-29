@@ -6,6 +6,10 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+### Fixed
+
+- The release workflow retries `gh release verify` for up to two minutes, because GitHub writes the release attestation shortly after publishing. The 2026.10.6 run published correctly but failed this check. [#32](https://github.com/tinkerologie/ha-translink/issues/32)
+
 ## [2026.10.6] - 2026-10-29
 
 ### Fixed
