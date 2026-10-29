@@ -26,9 +26,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-TEST_PYTHON_VERSION="3.14.2"
-TEST_HOME_ASSISTANT_VERSION="2026.6.2"
-TEST_PLUGIN_VERSION="0.13.338"
+# Overridable so the HA Next workflow can run the same launcher against a newer
+# Home Assistant and its matching pytest-homeassistant-custom-component.
+TEST_PYTHON_VERSION="${TEST_PYTHON_VERSION:-3.14.2}"
+TEST_HOME_ASSISTANT_VERSION="${TEST_HOME_ASSISTANT_VERSION:-2026.10.4}"
+TEST_PLUGIN_VERSION="${TEST_PLUGIN_VERSION:-0.13.375}"
+TEST_PYTHON_MINOR="$(cut -d. -f1,2 <<<"$TEST_PYTHON_VERSION")"
 
 # shellcheck source=script/.lib/output.sh
 source "$SCRIPT_DIR/.lib/output.sh"
@@ -39,7 +42,9 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
-if [[ -n "${REMOTE_CONTAINERS:-}" || -n "${CODESPACES:-}" ]]; then
+if [[ -n "${TEST_VENV_PATH:-}" ]]; then
+    :
+elif [[ -n "${REMOTE_CONTAINERS:-}" || -n "${CODESPACES:-}" ]]; then
     TEST_VENV_PATH="$HOME/.local/ha-test-venv"
 else
     TEST_VENV_PATH="$PWD/.local/ha-test-venv"
@@ -56,8 +61,8 @@ fi
 if [[ ! -d "$TEST_VENV_PATH" ]]; then
     log_info "Creating test virtual environment at $TEST_VENV_PATH"
     uv venv --seed --python "$TEST_PYTHON_VERSION" "$TEST_VENV_PATH"
-elif [[ ! -x "$TEST_VENV_PATH/bin/python3" || "$CURRENT_TEST_PYTHON" != "3.14" ]]; then
-    log_warning "Existing test venv uses Python ${CURRENT_TEST_PYTHON:-unknown} - recreating for Python 3.14"
+elif [[ ! -x "$TEST_VENV_PATH/bin/python3" || "$CURRENT_TEST_PYTHON" != "$TEST_PYTHON_MINOR" ]]; then
+    log_warning "Existing test venv uses Python ${CURRENT_TEST_PYTHON:-unknown} - recreating for Python $TEST_PYTHON_MINOR"
     rm -rf "$TEST_VENV_PATH"
     log_info "Creating test virtual environment at $TEST_VENV_PATH"
     uv venv --seed --python "$TEST_PYTHON_VERSION" "$TEST_VENV_PATH"

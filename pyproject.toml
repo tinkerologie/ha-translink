@@ -1,6 +1,6 @@
 [project]
 name = "ha-translink"
-version = "2026.10.5"
+version = "2026.10.6"
 description = "Translink Queensland Home Assistant custom integration"
 readme = "README.md"
 dependencies = [
@@ -37,6 +37,13 @@ addopts = [
 	"--cov=custom_components.translink",
 	"--cov-branch",
 	"--cov-report=term-missing",
+]
+# Deprecation warnings attributed to the integration's own modules are errors.
+# The module field is a regex matched from the start of the warning's module, so
+# it covers every submodule; third-party deprecations keep the default action.
+filterwarnings = [
+	'error::DeprecationWarning:custom_components\.translink(\.|$)',
+	'error::PendingDeprecationWarning:custom_components\.translink(\.|$)',
 ]
 
 [tool.ruff]
