@@ -268,7 +268,7 @@ export class JourneyCard extends TranslinkCard {
               </div>`
             : nothing}
         </div>
-        <ha-icon icon="mdi:arrow-right" aria-label="to"></ha-icon>
+        <ha-icon icon="mdi:arrow-right" aria-hidden="true"></ha-icon>
         <div class="destination">
           <div class="secondary">Arrival · Scheduled</div>
           <div class="time">
