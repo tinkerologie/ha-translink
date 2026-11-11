@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.core import HomeAssistant
 
 from .client import redact_sensitive
-from .const import DOMAIN
+from .const import DOMAIN, resolve_realtime_region
 from .coordinator import TranslinkCoordinator
 
 if TYPE_CHECKING:
@@ -28,8 +28,11 @@ async def async_get_config_entry_diagnostics(
         else None
     )
 
+    region, confirmed = resolve_realtime_region(entry.data)
     return {
         "entry": redact_sensitive(dict(entry.data)),
         "options": redact_sensitive(dict(entry.options)),
+        "realtime_region": region,
+        "region_confirmed": confirmed,
         "data": redact_sensitive(raw_data),
     }

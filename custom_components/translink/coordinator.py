@@ -68,10 +68,12 @@ from .const import (
     MODE_JOURNEY,
     MODE_NOTICES,
     NOTICE_ROUTE_TYPES,
+    REALTIME_REGION_NONE,
     TRIP_PAGE_CACHE_LIMIT,
     TRIP_PAGE_MAX_PER_REFRESH,
     TRIP_PAGE_NEGATIVE_TTL,
     TRIP_PAGE_SUCCESS_TTL,
+    resolve_realtime_region,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -222,6 +224,9 @@ class TranslinkCoordinator(
         """Initialize the coordinator."""
         self.entry = entry
         self.mode = entry.data.get(CONF_MODE, DEFAULT_MODE)
+        self.realtime_region, self.region_confirmed = resolve_realtime_region(
+            entry.data
+        )
 
         # Configurable scan interval
         scan_seconds = entry.options.get(
@@ -388,12 +393,17 @@ class TranslinkCoordinator(
             walking_speed=self.walking_speed,
         )
 
+        fetch_realtime = self.realtime_region != REALTIME_REGION_NONE
         vehicle_task = (
-            self.client.fetch_vehicle_positions()
-            if self.track_vehicle
+            self.client.fetch_vehicle_positions(self.realtime_region)
+            if fetch_realtime and self.track_vehicle
             else asyncio.sleep(0, result=())
         )
-        trip_task = self.client.fetch_trip_updates()
+        trip_task = (
+            self.client.fetch_trip_updates(self.realtime_region, preserve_stale=True)
+            if fetch_realtime
+            else asyncio.sleep(0, result={})
+        )
 
         plan_res, vp_res, tu_res = await asyncio.gather(
             plan_task, vehicle_task, trip_task
@@ -408,6 +418,8 @@ class TranslinkCoordinator(
             trip_timetables=timetables,
             vehicle_positions=vp_res,
             track_vehicle=self.track_vehicle,
+            realtime_region=self.realtime_region,
+            region_confirmed=self.region_confirmed,
             trip_updates=tu_res if isinstance(tu_res, dict) else {},
             fare_preference=self.fare_preference,
             origin_name_fallback=self.start_name,

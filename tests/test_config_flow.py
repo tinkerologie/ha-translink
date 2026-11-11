@@ -5,10 +5,13 @@ from __future__ import annotations
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType, InvalidData
+from homeassistant.data_entry_flow import AbortFlow, FlowResultType, InvalidData
 from pytest_homeassistant.common import MockConfigEntry
 
+from custom_components.translink.api.models import NearbyStop
 from custom_components.translink.client import (
     JourneyPlanResult,
     LocationSearchResult,
@@ -22,6 +25,7 @@ from custom_components.translink.const import (
     CONF_END_NAME,
     CONF_MODE,
     CONF_NAME,
+    CONF_REALTIME_REGION,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
     CONF_START_NAME,
@@ -68,6 +72,335 @@ async def test_step_user_select_stop(hass: HomeAssistant) -> None:
     )
     assert result2["type"] is FlowResultType.FORM
     assert result2["step_id"] == "stop"
+
+
+async def _start_nearby_flow(hass: HomeAssistant, source: str) -> ConfigFlowResult:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    flow_id = result["flow_id"]
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {CONF_MODE: "nearby_stop"}
+    )
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "nearby"
+    assert result["menu_options"] == ["nearby_zone", "nearby_point"]
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {"next_step_id": source}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == source
+    return result
+
+
+async def test_nearby_point_requires_confirmation_even_for_one_stop(
+    hass: HomeAssistant,
+) -> None:
+    """Ask the user to confirm the exact platform ID before validating its board."""
+    result = await _start_nearby_flow(hass, "nearby_point")
+    flow_id = result["flow_id"]
+    assert result["data_schema"].schema["location"].config == {}
+    lat, lng = -26.345678, 152.456789
+    stop_id = "SI:000014"
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.find_nearby_stops",
+            return_value=[
+                NearbyStop(id=stop_id, description="Public platform", distanceM=31)
+            ],
+        ) as lookup,
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable",
+        ) as timetable,
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"location": {ATTR_LATITUDE: lat, ATTR_LONGITUDE: lng}}
+        )
+        lookup.assert_awaited_once_with(lat, lng)
+        timetable.assert_not_awaited()
+        assert result["step_id"] == "nearby_select"
+        assert result["data_schema"].schema[CONF_STOP_LOCATION_ID].config[
+            "options"
+        ] == [{"value": stop_id, "label": "Public platform · SI:000014 · 31 m"}]
+        with pytest.raises(InvalidData):
+            await hass.config_entries.flow.async_configure(
+                flow_id, {CONF_STOP_LOCATION_ID: "SI:000138"}
+            )
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_STOP_LOCATION_ID: stop_id, CONF_NAME: "Public board"}
+        )
+
+    timetable.assert_awaited_once_with(stop_id)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_MODE: MODE_STOP,
+        CONF_NAME: "Public board",
+        CONF_STOP_LOCATION_ID: stop_id,
+        CONF_STOP_NAME: "Public platform",
+        CONF_TRANSPORT_MODES: ["Bus", "Ferry", "Train", "Tram"],
+        CONF_SCAN_INTERVAL: 60,
+    }
+    assert result["result"].unique_id == "stop_SI:000014"
+    assert result["result"].options == {}
+
+
+async def test_nearby_zone_groups_platforms_and_preserves_the_exact_id(
+    hass: HomeAssistant,
+) -> None:
+    """Offer platform IDs in station groups, ordered by each group's closest stop."""
+    result = await _start_nearby_flow(hass, "nearby_zone")
+    flow_id = result["flow_id"]
+    assert result["data_schema"].schema["zone"].config["domain"] == ["zone"]
+    zone_id = "zone.synthetic_away"
+    lat, lng = -26.345678, 152.456789
+    hass.states.async_set(zone_id, "0", {ATTR_LATITUDE: lat, ATTR_LONGITUDE: lng})
+    rows = [
+        NearbyStop.model_validate(row)
+        for row in [
+            {
+                "id": "SI:010783",
+                "description": "Platform 3",
+                "distanceM": 42,
+                "station": {"id": "ST:place_kgbs", "name": "King George Square"},
+            },
+            {"id": "SI:900001", "description": "Street stop", "distanceM": 31},
+            {
+                "id": "SI:000138",
+                "description": "Platform 2",
+                "distanceM": 31,
+                "station": {"id": "ST:place_kgbs", "name": "King George Square"},
+            },
+            {
+                "id": "SI:000014",
+                "description": "Platform 1",
+                "distanceM": 31,
+                "station": {"id": "ST:place_kgbs", "name": "King George Square"},
+            },
+            {
+                "id": "ST:place_kgbs",
+                "description": "King George Square",
+                "distanceM": 1,
+            },
+        ]
+    ]
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.find_nearby_stops",
+            return_value=rows,
+        ) as lookup,
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable",
+        ) as timetable,
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"zone": zone_id}
+        )
+        lookup.assert_awaited_once_with(lat, lng)
+        assert result["description_placeholders"] == {}
+        assert result["data_schema"].schema[CONF_STOP_LOCATION_ID].config[
+            "options"
+        ] == [
+            {
+                "value": "SI:000014",
+                "label": "King George Square — Platform 1 · SI:000014 · 31 m",
+            },
+            {
+                "value": "SI:000138",
+                "label": "King George Square — Platform 2 · SI:000138 · 31 m",
+            },
+            {
+                "value": "SI:010783",
+                "label": "King George Square — Platform 3 · SI:010783 · 42 m",
+            },
+            {"value": "SI:900001", "label": "Street stop · SI:900001 · 31 m"},
+        ]
+        flow = hass.config_entries.flow._progress[flow_id]
+        for private_value in (str(lat), str(lng), zone_id):
+            assert private_value not in repr(vars(flow))
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {CONF_STOP_LOCATION_ID: "SI:010783", CONF_TRANSPORT_MODES: ["Bus"]},
+        )
+
+    timetable.assert_awaited_once_with("SI:010783")
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_MODE: MODE_STOP,
+        CONF_NAME: "Station Board",
+        CONF_STOP_LOCATION_ID: "SI:010783",
+        CONF_STOP_NAME: "Platform 3",
+        CONF_TRANSPORT_MODES: ["Bus"],
+        CONF_SCAN_INTERVAL: 60,
+    }
+    assert result["result"].unique_id == "stop_SI:010783"
+    assert result["result"].options == {}
+    assert "SI:000014" not in repr(vars(flow))
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        None,
+        {ATTR_LATITUDE: 10},
+        {ATTR_LATITUDE: True, ATTR_LONGITUDE: 20},
+        {ATTR_LATITUDE: "-30", ATTR_LONGITUDE: 20},
+        {ATTR_LATITUDE: float("nan"), ATTR_LONGITUDE: 20},
+        {ATTR_LATITUDE: 10, ATTR_LONGITUDE: 181},
+    ],
+)
+async def test_nearby_point_reports_an_invalid_location(
+    hass: HomeAssistant, point
+) -> None:
+    """Show the location-specific error without submitting an invalid map point."""
+    result = await _start_nearby_flow(hass, "nearby_point")
+    with patch(
+        "custom_components.translink.client.TranslinkClient.find_nearby_stops",
+    ) as lookup:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"location": point}
+        )
+    lookup.assert_not_awaited()
+    assert result["step_id"] == "nearby_point"
+    assert result["errors"] == {"location": "location_unavailable"}
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        None,
+        {},
+        {ATTR_LATITUDE: 10},
+        {
+            ATTR_LATITUDE: 10,
+            ATTR_LONGITUDE: float("inf"),
+        },
+    ],
+)
+async def test_nearby_zone_reports_missing_location(
+    hass: HomeAssistant, attributes
+) -> None:
+    """Handle missing zones and zone states without usable coordinates."""
+    result = await _start_nearby_flow(hass, "nearby_zone")
+    zone_id = "zone.synthetic_away"
+    if attributes is not None:
+        hass.states.async_set(zone_id, "0", attributes)
+    with patch(
+        "custom_components.translink.client.TranslinkClient.find_nearby_stops",
+    ) as lookup:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"zone": zone_id}
+        )
+    lookup.assert_not_awaited()
+    assert result["step_id"] == "nearby_zone"
+    assert result["errors"] == {"zone": "location_unavailable"}
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (None, "no_nearby_stops"),
+        (TranslinkConnectionError, "cannot_connect"),
+        (RuntimeError, "unknown"),
+        (AbortFlow, "already_configured"),
+    ],
+)
+async def test_nearby_lookup_errors_do_not_expose_coordinates(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    failure: type[Exception] | None,
+    expected: str,
+) -> None:
+    """Keep no-results and upstream failures distinct and location details out of logs."""
+    result = await _start_nearby_flow(hass, "nearby_point")
+    lat, lng = -26.345678, 152.456789
+    side_effect = (
+        AbortFlow(expected)
+        if failure is AbortFlow
+        else failure(f"{lat} {lng}")
+        if failure
+        else None
+    )
+    with patch(
+        "custom_components.translink.client.TranslinkClient.find_nearby_stops",
+        side_effect=side_effect,
+        return_value=[],
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"location": {ATTR_LATITUDE: lat, ATTR_LONGITUDE: lng}}
+        )
+    if failure is AbortFlow:
+        assert result["type"] is FlowResultType.ABORT
+        assert result["reason"] == expected
+    else:
+        assert result["step_id"] == "nearby_point"
+        assert result["errors"] == {"base": expected}
+    assert str(lat) not in caplog.text
+    assert str(lng) not in caplog.text
+
+
+async def test_nearby_stop_rejects_an_already_configured_board(
+    hass: HomeAssistant,
+) -> None:
+    """Apply the existing stop ID uniqueness rule to a nearby match."""
+    result = await _start_nearby_flow(hass, "nearby_point")
+    flow_id = result["flow_id"]
+    stop_id = "SI:000014"
+    MockConfigEntry(domain=DOMAIN, unique_id=f"stop_{stop_id}").add_to_hass(hass)
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.find_nearby_stops",
+            return_value=[NearbyStop(id=stop_id, description="Platform", distanceM=31)],
+        ),
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable",
+        ) as timetable,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"location": {ATTR_LATITUDE: 10, ATTR_LONGITUDE: 20}}
+        )
+        assert result["step_id"] == "nearby_select"
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_STOP_LOCATION_ID: stop_id}
+        )
+    timetable.assert_not_awaited()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+async def test_nearby_confirmation_error_preserves_the_picker_and_private_location(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Retain the candidates after a validation error and log only its type."""
+    result = await _start_nearby_flow(hass, "nearby_point")
+    flow_id = result["flow_id"]
+    lat, lng = -26.345678, 152.456789
+    stop_id = "SI:000014"
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.find_nearby_stops",
+            return_value=[NearbyStop(id=stop_id, description="Platform", distanceM=31)],
+        ) as lookup,
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable",
+            side_effect=[RuntimeError(f"{lat} {lng}"), None],
+        ) as timetable,
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        await hass.config_entries.flow.async_configure(
+            flow_id, {"location": {ATTR_LATITUDE: lat, ATTR_LONGITUDE: lng}}
+        )
+        selection = {CONF_STOP_LOCATION_ID: stop_id}
+        result = await hass.config_entries.flow.async_configure(flow_id, selection)
+        assert result["step_id"] == "nearby_select"
+        assert result["errors"] == {"base": "unknown"}
+        assert str(lat) not in caplog.text
+        assert str(lng) not in caplog.text
+        result = await hass.config_entries.flow.async_configure(flow_id, selection)
+    lookup.assert_awaited_once_with(lat, lng)
+    assert timetable.await_args_list == [call(stop_id), call(stop_id)]
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_step_journey_success(hass: HomeAssistant) -> None:
@@ -1278,6 +1611,114 @@ async def test_cancel_pending_reconfigure_keeps_entry(hass: HomeAssistant) -> No
     assert result["step_id"] == "stop_select"
     hass.config_entries.flow.async_abort(flow["flow_id"])
     assert (entry.data, entry.options, entry.unique_id) == original
+
+
+@pytest.mark.parametrize("multiple_matches", [False, True])
+async def test_journey_setup_allows_correcting_a_mismatched_region(
+    hass: HomeAssistant,
+    plan_response_data,
+    multiple_matches: bool,
+) -> None:
+    """Keep a journey with SEQ signals out of the Cairns feed."""
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    await hass.config_entries.flow.async_configure(
+        flow["flow_id"], {CONF_MODE: MODE_JOURNEY}
+    )
+    start = LocationSearchResult(
+        LocationId="ST:place_romsta", Description="Roma Street station"
+    )
+    end = LocationSearchResult(
+        LocationId="ST:place_censta", Description="Central station"
+    )
+    data = {
+        CONF_NAME: "Commute",
+        CONF_START_NAME: start.name,
+        CONF_END_NAME: end.name,
+        CONF_REALTIME_REGION: "CNS",
+    }
+    start_results = _ROMA_STREET_RESULTS if multiple_matches else [start]
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            side_effect=[start_results, [end], start_results, [end]],
+        ),
+        patch(
+            "custom_components.translink.client.TranslinkClient.plan_journey",
+            return_value=JourneyPlanResult.model_validate(plan_response_data),
+        ),
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(flow["flow_id"], data)
+        if multiple_matches:
+            assert result["step_id"] == "journey_select"
+            result = await hass.config_entries.flow.async_configure(
+                flow["flow_id"],
+                {CONF_START_LOCATION_ID: start.id},
+            )
+        assert result["step_id"] == "journey"
+        assert result["errors"] == {"base": "region_mismatch"}
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            {**data, CONF_REALTIME_REGION: "SEQ"},
+        )
+        if multiple_matches:
+            assert result["step_id"] == "journey_select"
+            result = await hass.config_entries.flow.async_configure(
+                flow["flow_id"],
+                {CONF_START_LOCATION_ID: start.id},
+            )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_REALTIME_REGION] == "SEQ"
+
+
+async def test_reconfigure_region_only_preserves_journey_identity_and_options(
+    hass: HomeAssistant,
+) -> None:
+    """Confirm a legacy entry's region without looking up unchanged locations."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="journey_ST:place_cnsstn_ST:place_jcucns",
+        data={
+            CONF_MODE: MODE_JOURNEY,
+            CONF_START_LOCATION_ID: "ST:place_cnsstn",
+            CONF_START_NAME: "Cairns City station",
+            CONF_END_LOCATION_ID: "ST:place_jcucns",
+            CONF_END_NAME: "James Cook University station",
+            CONF_TRANSPORT_MODES: ["Bus"],
+        },
+        options={CONF_SCAN_INTERVAL: 90, CONF_TRANSPORT_MODES: ["Bus"]},
+    )
+    entry.add_to_hass(hass)
+    flow = await entry.start_reconfigure_flow(hass)
+    marker = next(
+        field
+        for field in flow["data_schema"].schema
+        if field.schema == CONF_REALTIME_REGION
+    )
+    assert marker.default() == "SEQ"
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations"
+        ) as search,
+        patch.object(hass.config_entries, "async_schedule_reload") as reload,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            {
+                CONF_START_NAME: "Cairns City station",
+                CONF_END_NAME: "James Cook University station",
+                CONF_TRANSPORT_MODES: ["Bus"],
+                CONF_REALTIME_REGION: "CNS",
+            },
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.unique_id == "journey_ST:place_cnsstn_ST:place_jcucns"
+    assert entry.options == {CONF_SCAN_INTERVAL: 90, CONF_TRANSPORT_MODES: ["Bus"]}
+    assert entry.data[CONF_REALTIME_REGION] == "CNS"
+    search.assert_not_called()
+    reload.assert_called_once_with(entry.entry_id)
 
 
 async def _notice_flow(hass: HomeAssistant) -> str:

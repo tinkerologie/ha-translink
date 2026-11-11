@@ -83,6 +83,26 @@ class LocationSearchResult(TranslinkApiModel):
         return self.kind in ("station", "stop")
 
 
+class NearbyStation(TranslinkApiModel):
+    """Station identity attached to a nearby platform."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class NearbyStop(TranslinkApiModel):
+    """Nearby stop metadata, without its geographic position."""
+
+    model_config = ConfigDict(str_strip_whitespace=False)
+
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    distanceM: float = Field(strict=True, ge=0, allow_inf_nan=False)
+    stopId: str | None = None
+    stopType: str | None = None
+    station: NearbyStation | None = None
+
+
 class Position(TranslinkApiModel):
     """Geographic position coordinates."""
 

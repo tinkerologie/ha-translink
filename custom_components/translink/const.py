@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Final
 
 DOMAIN: Final = "translink"
@@ -24,6 +26,7 @@ CONF_NOTICE_NETWORK: Final = "notice_network"
 CONF_NOTICE_SCOPE: Final = "notice_scope"
 CONF_NOTICE_ROUTE_ID: Final = "notice_route_id"
 CONF_NOTICE_ROUTE_MODE: Final = "notice_route_mode"
+SETUP_NEARBY_STOP: Final = "nearby_stop"
 
 CONF_NAME: Final = "name"
 CONF_START_LOCATION_ID: Final = "start_location_id"
@@ -40,6 +43,7 @@ CONF_WALKING_SPEED: Final = "walking_speed"
 CONF_FARE_PREFERENCE: Final = "fare_preference"
 CONF_TRACK_VEHICLE: Final = "track_vehicle"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
+CONF_REALTIME_REGION: Final = "realtime_region"
 
 # Defaults
 DEFAULT_MODE: Final = MODE_JOURNEY
@@ -77,14 +81,54 @@ LOCATION_PLACE_PREFIX: Final = "PL:"
 ENDPOINT_LOCATION_SEARCH: Final = "/api/location/search"
 ENDPOINT_PLAN: Final = "/api/plan"
 ENDPOINT_STOP_BY_GEOLOCATION: Final = "/api/stop/bygeolocation"
+NEARBY_RESULT_LIMIT: Final = 10
 ENDPOINT_STOP_TIMETABLE: Final = "/api/stop/timetable/"
 STOP_TIMETABLE_MAX_BYTES: Final = 1024 * 1024
 
 GTFS_FEED_VEHICLE_POSITIONS: Final = "/api/realtime/SEQ/VehiclePositions"
 GTFS_FEED_TRIP_UPDATES: Final = "/api/realtime/SEQ/TripUpdates"
 GTFS_FEED_ALERTS: Final = "/api/realtime/SEQ/Alerts"
-ALERT_NETWORK_NAMES: Final = {"SEQ": "South East Queensland", "CNS": "Cairns"}
-ALERT_FEED_PATH: Final = "/api/realtime/{network}/Alerts"
+
+REALTIME_REGION_SEQ: Final = "SEQ"
+REALTIME_REGION_CAIRNS: Final = "CNS"
+REALTIME_REGION_NONE: Final = "none"
+DEFAULT_REALTIME_REGION: Final = REALTIME_REGION_SEQ
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeFeedRegion:
+    """Published feed paths and their planner region identifiers."""
+
+    trip_updates: str
+    vehicle_positions: str
+    alerts: str
+    planner_region_id: str
+    planner_region_name: str
+    strict_identity: bool = False
+
+
+REALTIME_FEED_REGIONS: Final = {
+    REALTIME_REGION_SEQ: RealtimeFeedRegion(
+        GTFS_FEED_TRIP_UPDATES,
+        GTFS_FEED_VEHICLE_POSITIONS,
+        GTFS_FEED_ALERTS,
+        planner_region_id="T",
+        planner_region_name="SEQ",
+    ),
+    REALTIME_REGION_CAIRNS: RealtimeFeedRegion(
+        "/api/realtime/CNS/TripUpdates",
+        "/api/realtime/CNS/VehiclePositions",
+        "/api/realtime/CNS/Alerts",
+        planner_region_id="C",
+        planner_region_name="Cairns",
+        strict_identity=True,
+    ),
+}
+
+ALERT_NETWORK_NAMES: Final = {
+    REALTIME_REGION_SEQ: "South East Queensland",
+    REALTIME_REGION_CAIRNS: "Cairns",
+}
 ALERT_FEED_MAX_BYTES: Final = 2 * 1024 * 1024
 ALERT_FEED_TIMEOUT: Final = 10
 
@@ -94,6 +138,7 @@ NOTICE_DESCRIPTION_LIMIT: Final = 1024
 NOTICE_SELECTOR_LIMIT: Final = 10
 NOTICE_PERIOD_LIMIT: Final = 10
 NOTICE_ROUTE_ID_LIMIT: Final = 128
+
 REALTIME_MAX_AGE_SECONDS: Final = 300
 REALTIME_MAX_FUTURE_SKEW_SECONDS: Final = 60
 
@@ -112,6 +157,20 @@ VEHICLE_ICON_MAP: Final[dict[str, str]] = {
     "tram": "mdi:tram",
     "light rail": "mdi:tram",
 }
+
+
+def resolve_realtime_region(data: Mapping[str, object]) -> tuple[str, bool]:
+    """Resolve the journey feed and whether the user explicitly selected it."""
+    if data.get(CONF_MODE, DEFAULT_MODE) != MODE_JOURNEY:
+        return REALTIME_REGION_NONE, False
+    if CONF_REALTIME_REGION not in data:
+        return DEFAULT_REALTIME_REGION, False
+    region = data[CONF_REALTIME_REGION]
+    if isinstance(region, str) and (
+        region in REALTIME_FEED_REGIONS or region == REALTIME_REGION_NONE
+    ):
+        return region, True
+    return REALTIME_REGION_NONE, False
 
 
 def get_vehicle_icon(vehicle: str | None, default: str = "mdi:train-bus") -> str:

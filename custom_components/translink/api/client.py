@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import urllib.parse
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Literal, TypedDict
+from typing import Any, Final, Literal, TypedDict, TypeVar
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -18,30 +19,29 @@ from yarl import URL
 
 from ..const import (
     ALERT_FEED_MAX_BYTES,
-    ALERT_FEED_PATH,
     ALERT_FEED_TIMEOUT,
-    ALERT_NETWORK_NAMES,
     BRISBANE_TZ,
+    DEFAULT_REALTIME_REGION,
     ENDPOINT_LOCATION_SEARCH,
     ENDPOINT_PLAN,
     ENDPOINT_STOP_BY_GEOLOCATION,
     ENDPOINT_STOP_TIMETABLE,
     ENDPOINT_TRIP_PAGE,
-    GTFS_FEED_ALERTS,
-    GTFS_FEED_TRIP_UPDATES,
-    GTFS_FEED_VEHICLE_POSITIONS,
     GTFSRT_API_BASE_URL,
     JP_API_BASE_URL,
     MAX_ALTERNATIVE_LEGS,
     MAX_ALTERNATIVE_NOTICES,
     MAX_ALTERNATIVES_LIMIT,
+    NEARBY_RESULT_LIMIT,
     PUBLIC_TRIP_TIMETABLE_BASE_URL,
+    REALTIME_FEED_REGIONS,
     REALTIME_MAX_AGE_SECONDS,
     REALTIME_MAX_FUTURE_SKEW_SECONDS,
     STOP_TIMETABLE_MAX_BYTES,
     TRIP_PAGE_CONCURRENCY,
     TRIP_PAGE_MAX_BYTES,
     TRIP_PAGE_TIMEOUT,
+    RealtimeFeedRegion,
 )
 from .gtfs_realtime import (
     STOP_NO_DATA,
@@ -57,6 +57,7 @@ from .gtfs_realtime import (
     extract_base_trip_id,
     parse_alert_feed,
     parse_alerts,
+    parse_feed_timestamp,
     parse_trip_updates,
     parse_vehicle_position_records,
 )
@@ -70,6 +71,7 @@ from .models import (
     JourneyStatus,
     JourneySummary,
     LocationSearchResult,
+    NearbyStop,
     PlanNotice,
     RealtimeStatus,
     StopInfo,
@@ -82,6 +84,7 @@ from .models import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_FeedRecords = TypeVar("_FeedRecords")
 
 USER_AGENT = "HomeAssistant-Translink/2026.10.0"
 DELAYED_THRESHOLD_MINUTES = 3
@@ -104,6 +107,20 @@ class TranslinkResponseError(TranslinkApiError):
 
 class AlertFeedError(TranslinkApiError):
     """A regional service-alert feed could not be fetched or decoded."""
+
+
+def nearby_coordinates(lat: object, lng: object) -> tuple[float, float] | None:
+    """Accept numeric coordinates within the finite latitude and longitude ranges."""
+    if (
+        not isinstance(lat, (int, float))
+        or not isinstance(lng, (int, float))
+        or isinstance(lat, bool)
+        or isinstance(lng, bool)
+        or not -90 <= lat <= 90
+        or not -180 <= lng <= 180
+    ):
+        return None
+    return float(lat), float(lng)
 
 
 def calculate_plan_hash(query_string: str) -> int:
@@ -194,6 +211,8 @@ class TranslinkClient:
         session: aiohttp.ClientSession | None = None,
         jp_base_url: str = JP_API_BASE_URL,
         gtfsrt_base_url: str = GTFSRT_API_BASE_URL,
+        *,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         """Initialize the client."""
         self._trip_semaphore = asyncio.Semaphore(TRIP_PAGE_CONCURRENCY)
@@ -201,6 +220,7 @@ class TranslinkClient:
         self._owns_session = session is None
         self._jp_base_url = jp_base_url.rstrip("/")
         self._gtfsrt_base_url = gtfsrt_base_url.rstrip("/")
+        self._now = now or (lambda: datetime.now(UTC))
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Ensure an active aiohttp session."""
@@ -360,6 +380,38 @@ class TranslinkClient:
                 f"Error connecting to Translink geolocation stop search: {err}"
             ) from err
 
+    async def find_nearby_stops(
+        self, lat: float, lng: float, limit: int = NEARBY_RESULT_LIMIT
+    ) -> list[NearbyStop]:
+        """Return the nearest valid stops without retaining positions."""
+        if nearby_coordinates(lat, lng) is None:
+            del lat, lng
+            raise ValueError("Invalid nearby stop search coordinates")
+        if type(limit) is not int or limit < 1:
+            del lat, lng
+            raise ValueError("Nearby stop search requires a positive limit")
+
+        try:
+            rows = await self.get_stops_by_geolocation(lat, lng, max_results=limit)
+        except TranslinkApiError as err:
+            error_type = type(err)
+        except (json.JSONDecodeError, UnicodeError):
+            error_type = TranslinkResponseError
+        else:
+            stops: list[NearbyStop] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    stops.append(NearbyStop.model_validate(row))
+                except ValidationError:
+                    continue
+            return sorted(stops, key=lambda stop: (stop.distanceM, stop.id))[:limit]
+
+        # Leave the handler so the original request error is absent from __context__.
+        del lat, lng
+        raise error_type("Unable to find nearby Translink stops") from None
+
     def build_plan_request(
         self,
         start_location_id: str,
@@ -464,11 +516,14 @@ class TranslinkClient:
                 f"Error connecting to Translink journey planner: {err}"
             ) from err
 
-    async def fetch_vehicle_positions(self) -> tuple[VehiclePositionRecord, ...]:
-        """Fetch and parse live vehicle positions from Translink GTFS-RT feed."""
+    async def _fetch_feed(
+        self,
+        path: str,
+        parse: Callable[[bytes], _FeedRecords],
+    ) -> tuple[int, _FeedRecords] | None:
+        """Read and decode an optional GTFS realtime feed with a valid header."""
         session = await self._get_session()
-        url = f"{self._gtfsrt_base_url}{GTFS_FEED_VEHICLE_POSITIONS}"
-
+        url = f"{self._gtfsrt_base_url}{path}"
         try:
             async with session.get(
                 url,
@@ -476,43 +531,78 @@ class TranslinkClient:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 if response.status != 200:
-                    _LOGGER.warning(
-                        "VehiclePositions feed returned status %s", response.status
-                    )
-                    return ()
-                data = await response.read()
-                return parse_vehicle_position_records(data)
-        except (TimeoutError, aiohttp.ClientError) as err:
-            _LOGGER.debug("Failed to fetch live vehicle positions feed: %r", err)
+                    _LOGGER.debug("Realtime feed %s returned %s", path, response.status)
+                    return None
+                payload = await response.read()
+            timestamp = parse_feed_timestamp(payload)
+            return (timestamp, parse(payload)) if timestamp else None
+        except (
+            TimeoutError,
+            aiohttp.ClientError,
+            ValueError,
+            OverflowError,
+            IndexError,
+        ) as err:
+            _LOGGER.debug("Failed to read realtime feed %s: %r", path, err)
+            return None
+
+    async def fetch_vehicle_positions(
+        self, region: str = DEFAULT_REALTIME_REGION
+    ) -> tuple[VehiclePositionRecord, ...]:
+        """Fetch live vehicle fixes in feed order, preserving collisions."""
+        feed = REALTIME_FEED_REGIONS.get(region)
+        if feed is None:
             return ()
+        result = await self._fetch_feed(
+            feed.vehicle_positions, parse_vehicle_position_records
+        )
+        if result is None:
+            return ()
+        timestamp, records = result
+        now = self._now()
+        if not _realtime_timestamp_is_fresh(timestamp, now):
+            return ()
+        return tuple(
+            record
+            for record in records
+            if _realtime_timestamp_is_fresh(record.timestamp or timestamp, now)
+        )
 
-    async def fetch_trip_updates(self) -> dict[str, TripUpdateRecord]:
-        """Fetch and parse live trip delays from Translink GTFS-RT feed."""
-        session = await self._get_session()
-        url = f"{self._gtfsrt_base_url}{GTFS_FEED_TRIP_UPDATES}"
-
-        try:
-            async with session.get(
-                url,
-                headers={"Accept": "application/x-protobuf"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as response:
-                if response.status != 200:
-                    _LOGGER.warning(
-                        "TripUpdates feed returned status %s", response.status
-                    )
-                    return {}
-                data = await response.read()
-                return parse_trip_updates(data)
-        except (TimeoutError, aiohttp.ClientError) as err:
-            _LOGGER.debug("Failed to fetch live trip updates feed: %r", err)
+    async def fetch_trip_updates(
+        self,
+        region: str = DEFAULT_REALTIME_REGION,
+        *,
+        preserve_stale: bool = False,
+    ) -> dict[str, TripUpdateRecord]:
+        """Fetch live trip updates, optionally keeping stale timing provenance."""
+        feed = REALTIME_FEED_REGIONS.get(region)
+        if feed is None:
             return {}
+        result = await self._fetch_feed(feed.trip_updates, parse_trip_updates)
+        if result is None:
+            return {}
+        timestamp, records = result
+        now = self._now()
+        header_fresh = _realtime_timestamp_is_fresh(timestamp, now)
+        if not header_fresh and not preserve_stale:
+            return {}
+
+        updates: dict[str, TripUpdateRecord] = {}
+        for alias, record in records.items():
+            observed_at = record.timestamp or timestamp
+            if header_fresh and _realtime_timestamp_is_fresh(observed_at, now):
+                updates[alias] = record
+            elif preserve_stale:
+                record.stale_timestamp = observed_at if header_fresh else timestamp
+                updates[alias] = record
+        return updates
 
     async def fetch_alert_feed(self, network: str) -> AlertFeed:
         """Fetch a bounded, validated service-alert feed for a supported network."""
-        if network not in ALERT_NETWORK_NAMES:
+        region = REALTIME_FEED_REGIONS.get(network)
+        if region is None:
             raise AlertFeedError("Unsupported alerts network")
-        url = f"{self._gtfsrt_base_url}{ALERT_FEED_PATH.format(network=network)}"
+        url = f"{self._gtfsrt_base_url}{region.alerts}"
         try:
             session = await self._get_session()
             async with session.get(
@@ -541,24 +631,20 @@ class TranslinkClient:
         except GtfsRealtimeDecodeError as err:
             raise AlertFeedError(f"Malformed {network} Alerts feed") from err
 
-    async def fetch_alerts(self) -> list[AlertRecord]:
-        """Fetch and parse live service disruptions from Translink GTFS-RT feed."""
-        session = await self._get_session()
-        url = f"{self._gtfsrt_base_url}{GTFS_FEED_ALERTS}"
-
-        try:
-            async with session.get(
-                url,
-                headers={"Accept": "application/x-protobuf"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as response:
-                if response.status != 200:
-                    return []
-                data = await response.read()
-                return parse_alerts(data)
-        except (TimeoutError, aiohttp.ClientError) as err:
-            _LOGGER.debug("Failed to fetch live alerts feed: %r", err)
+    async def fetch_alerts(
+        self, region: str = DEFAULT_REALTIME_REGION
+    ) -> list[AlertRecord]:
+        """Fetch service alerts from the selected regional feed."""
+        feed = REALTIME_FEED_REGIONS.get(region)
+        if feed is None:
             return []
+        result = await self._fetch_feed(
+            feed.alerts, lambda data: parse_alerts(data, strict=True)
+        )
+        if result is None:
+            return []
+        timestamp, alerts = result
+        return alerts if _realtime_timestamp_is_fresh(timestamp, self._now()) else []
 
 
 def _match_trip_record(
@@ -596,6 +682,90 @@ def _match_trip_record(
     return None
 
 
+def _planner_region_signals(leg: JourneyLeg) -> tuple[str, str]:
+    route = leg.legRoute
+    return (route.regionId or "", route.regionName or "") if route else ("", "")
+
+
+def _leg_matches_feed(
+    leg: JourneyLeg, feed: RealtimeFeedRegion, confirmed: bool
+) -> bool:
+    region_id, region_name = _planner_region_signals(leg)
+    return (
+        (confirmed or bool(region_id or region_name))
+        and region_id in ("", feed.planner_region_id)
+        and region_name in ("", feed.planner_region_name)
+    )
+
+
+def plan_matches_realtime_region(plan: JourneyPlanResult, region: str) -> bool:
+    """Check a configured feed against planner signals on the first itinerary."""
+    feed = REALTIME_FEED_REGIONS.get(region)
+    if feed is None or not plan.itineraries:
+        return True
+    signalled = [
+        leg
+        for leg in plan.itineraries[0].legs
+        if leg.travelMode.lower() != "walk" and any(_planner_region_signals(leg))
+    ]
+    return not signalled or any(
+        _leg_matches_feed(leg, feed, False) for leg in signalled
+    )
+
+
+def _match_journey_update(
+    leg: JourneyLeg,
+    updates: dict[str, TripUpdateRecord] | None,
+    strict_identity: bool,
+) -> TripUpdateRecord | None:
+    """Validate Cairns trip and boarding identity before exposing a live update."""
+    trip_id = leg.tripId
+    route = leg.legRoute.code if leg.legRoute else None
+    if not strict_identity:
+        return _match_trip_record(trip_id, updates, route)
+    if not trip_id or not route or not updates or leg.origin is None:
+        return None
+    base_id = extract_base_trip_id(trip_id)
+    record = updates.get(trip_id) or updates.get(base_id or "")
+    if record is None or not base_id or extract_base_trip_id(record.trip_id) != base_id:
+        return None
+    feed_route = (record.route_id or "").split("-", 1)[0].removeprefix("C")
+    planner_route = route.split("-", 1)[0].removeprefix("C")
+    parts = trip_id.split("_")
+    date = parts[-2] if len(parts) > 2 else ""
+    if (
+        not feed_route
+        or feed_route != planner_route
+        or len(date) != 8
+        or not date.isascii()
+        or not date.isdigit()
+        or record.start_date != date
+    ):
+        return None
+    origin = _stop_key(leg.origin.id)
+    matches = [
+        update
+        for update in record.stop_time_updates
+        if origin and _stop_key(update.stop_id) == origin
+    ]
+    if len(matches) != 1:
+        return None
+    visit = matches[0]
+    event = visit.departure if visit.departure is not None else visit.arrival
+    if (
+        event is not None
+        and event.time is not None
+        and event.delay is not None
+        and not _baseline_matches(
+            visit,
+            parse_iso_datetime(leg.departureTimeUtc),
+            arrival=visit.departure is None,
+        )
+    ):
+        return None
+    return record
+
+
 def vehicle_position_is_fresh(timestamp: float, now: datetime) -> bool:
     """Check the vehicle fix against the wall clock."""
     age = now.timestamp() - timestamp
@@ -610,6 +780,7 @@ def _match_vehicle_position(
     leg: JourneyLeg,
     positions: Mapping[str, VehiclePositionRecord] | Sequence[VehiclePositionRecord],
     now: datetime,
+    validated_update: TripUpdateRecord | None = None,
 ) -> tuple[VehiclePositionRecord | None, VehiclePositionStatus]:
     """Accept a fresh fix only when one vehicle matches the active service."""
     trip_id = leg.tripId
@@ -627,18 +798,26 @@ def _match_vehicle_position(
     saw_match = False
     fresh: dict[tuple[str, str | int], tuple[int, VehiclePositionRecord]] = {}
     for record in records:
-        if record.trip_id != trip_id and (
-            not base_id or extract_base_trip_id(record.trip_id) != base_id
-        ):
-            continue
-        if (
-            expected_prefix
-            and record.route_id
-            and expected_prefix != record.route_id.split("-", 1)[0]
-        ):
-            continue
-        if service_date and record.start_date and service_date != record.start_date:
-            continue
+        if validated_update is not None:
+            if record.trip_id != validated_update.trip_id or (
+                record.vehicle_id
+                and validated_update.vehicle_id
+                and record.vehicle_id != validated_update.vehicle_id
+            ):
+                continue
+        else:
+            if record.trip_id != trip_id and (
+                not base_id or extract_base_trip_id(record.trip_id) != base_id
+            ):
+                continue
+            if (
+                expected_prefix
+                and record.route_id
+                and expected_prefix != record.route_id.split("-", 1)[0]
+            ):
+                continue
+            if service_date and record.start_date and service_date != record.start_date:
+                continue
         saw_match = True
         timestamp = record.timestamp
         if timestamp is None or not vehicle_position_is_fresh(timestamp, now):
@@ -804,7 +983,7 @@ def build_calling_stops(
         return (
             calls,
             "scheduled_with_realtime" if has_realtime else "scheduled",
-            _prediction_time(update.timestamp)
+            _prediction_time(update.timestamp or update.feed_timestamp)
             if update is not None and has_realtime
             else None,
         )
@@ -860,7 +1039,9 @@ def build_calling_stops(
     return (
         calls,
         "realtime_partial",
-        _prediction_time(update.timestamp) if update is not None else None,
+        _prediction_time(update.timestamp or update.feed_timestamp)
+        if update is not None
+        else None,
     )
 
 
@@ -1169,16 +1350,22 @@ class _EndpointPrediction:
     updated_at: datetime | None = None
 
 
+def _realtime_timestamp_is_fresh(timestamp: int, now: datetime) -> bool:
+    age = now.timestamp() - timestamp
+    return -REALTIME_MAX_FUTURE_SKEW_SECONDS <= age <= REALTIME_MAX_AGE_SECONDS
+
+
 def _realtime_freshness(
     record: TripUpdateRecord, now: datetime
 ) -> tuple[datetime | None, Literal["fresh", "stale", "unknown"]]:
     """Use the trip's timestamp before the less specific feed timestamp."""
+    if record.stale_timestamp is not None:
+        return parse_iso_datetime(_prediction_time(record.stale_timestamp)), "stale"
     timestamp = record.timestamp or record.feed_timestamp
     if not timestamp:
         return None, "unknown"
     updated_at = parse_iso_datetime(_prediction_time(timestamp))
-    age = now.timestamp() - timestamp
-    if not -REALTIME_MAX_FUTURE_SKEW_SECONDS <= age <= REALTIME_MAX_AGE_SECONDS:
+    if not _realtime_timestamp_is_fresh(timestamp, now):
         return updated_at, "stale"
     return updated_at, "fresh"
 
@@ -1224,6 +1411,7 @@ def _endpoint_prediction(
     freshness: Literal["fresh", "stale", "unknown"],
     *,
     arrival: bool,
+    allow_trip_delay: bool,
 ) -> _EndpointPrediction:
     """Find the prediction for one particular stop visit."""
     if record is None:
@@ -1290,7 +1478,12 @@ def _endpoint_prediction(
             return _EndpointPrediction(
                 "live", event_delay, "stop_event", relationship, updated_at
             )
-    if scheduled is not None and len(candidates) <= 1 and _trip_delay_applies(record):
+    if (
+        allow_trip_delay
+        and scheduled is not None
+        and len(candidates) <= 1
+        and _trip_delay_applies(record)
+    ):
         return _EndpointPrediction(
             "live", record.trip_delay_seconds, "trip", updated_at=updated_at
         )
@@ -1343,6 +1536,8 @@ def build_journey_summary(
     *,
     trip_timetables: dict[str, TripTimetable] | None = None,
     track_vehicle: bool = True,
+    realtime_region: str = DEFAULT_REALTIME_REGION,
+    region_confirmed: bool = True,
 ) -> JourneySummary:
     """Build a unified presentation summary for Home Assistant sensors."""
     if now is None:
@@ -1448,22 +1643,33 @@ def build_journey_summary(
     boarding = alighting = _EndpointPrediction()
     alighting_predictions: dict[int, _EndpointPrediction] = {}
     cancelled = False
+    feed = REALTIME_FEED_REGIONS.get(realtime_region)
+    strict_identity = feed is not None and feed.strict_identity
+    eligible_legs: set[int] = set()
+    fresh_updates: dict[int, TripUpdateRecord] = {}
     for index, leg in enumerate(itinerary.legs):
-        matched_update = _match_trip_record(
-            leg.tripId, trip_updates, leg.legRoute.code if leg.legRoute else None
+        is_transit = leg.travelMode.lower() != "walk"
+        matched_update = None
+        if (
+            is_transit
+            and feed is not None
+            and _leg_matches_feed(leg, feed, region_confirmed)
+        ):
+            eligible_legs.add(index)
+            matched_update = _match_journey_update(leg, trip_updates, strict_identity)
+        updated_at, freshness = (
+            _realtime_freshness(matched_update, now)
+            if matched_update is not None
+            else (None, "unknown")
         )
         timetable = (trip_timetables or {}).get(leg.tripId or "")
-        calls, source, updated = build_calling_stops(leg, timetable, matched_update)
+        usable_update = matched_update if freshness != "stale" else None
+        calls, source, updated = build_calling_stops(leg, timetable, usable_update)
         schedule_relationship = None
-        is_transit = leg.travelMode.lower() != "walk"
         if is_transit:
-            updated_at, freshness = (
-                _realtime_freshness(matched_update, now)
-                if matched_update is not None
-                else (None, "unknown")
-            )
-            if matched_update is not None and freshness != "stale":
-                schedule_relationship = matched_update.trip_schedule_relationship
+            if usable_update is not None:
+                fresh_updates[index] = usable_update
+                schedule_relationship = usable_update.trip_schedule_relationship
             scheduled_calls = (
                 calls if source in ("scheduled_with_realtime", "scheduled") else []
             )
@@ -1476,6 +1682,7 @@ def build_journey_summary(
                     updated_at,
                     freshness,
                     arrival=False,
+                    allow_trip_delay=not strict_identity,
                 )
             leg_alighting = _endpoint_prediction(
                 leg,
@@ -1485,6 +1692,7 @@ def build_journey_summary(
                 updated_at,
                 freshness,
                 arrival=True,
+                allow_trip_delay=not strict_identity,
             )
             alighting_predictions[index] = leg_alighting
             if leg is transit_legs[-1]:
@@ -1579,10 +1787,15 @@ def build_journey_summary(
     position_status: VehiclePositionStatus = "no_active_leg"
     if not track_vehicle:
         position_status = "disabled"
-    elif active_leg is not None:
-        vehicle, position_status = _match_vehicle_position(
-            active_leg, vehicle_positions or (), now
-        )
+    elif active_leg is not None and active_index is not None:
+        position_status = "no_position"
+        validated_update = fresh_updates.get(active_index) if strict_identity else None
+        if active_index in eligible_legs and (
+            not strict_identity or validated_update is not None
+        ):
+            vehicle, position_status = _match_vehicle_position(
+                active_leg, vehicle_positions or (), now, validated_update
+            )
 
     return JourneySummary(
         status=status,

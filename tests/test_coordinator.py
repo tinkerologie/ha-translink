@@ -23,6 +23,7 @@ from custom_components.translink.const import (
     CONF_END_NAME,
     CONF_MODE,
     CONF_NAME,
+    CONF_REALTIME_REGION,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
     CONF_START_NAME,
@@ -127,7 +128,9 @@ async def test_coordinator_update_journey_success(
     coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
+    coordinator.client.fetch_alert_feed = AsyncMock()
     summary = await coordinator._async_update_data()
+    coordinator.client.fetch_alert_feed.assert_not_awaited()
     assert isinstance(summary, JourneySummary)
     assert summary.status in ["scheduled", "on_time", "delayed", "departed", "arrived"]
     assert summary.duration_mins == 41
@@ -144,7 +147,9 @@ async def test_coordinator_stop_timetable_keeps_distinct_boardable_visits(
     coordinator.client.plan_journey = AsyncMock()
     coordinator.client.fetch_trip_updates = AsyncMock()
 
+    coordinator.client.fetch_alert_feed = AsyncMock()
     await coordinator.async_refresh()
+    coordinator.client.fetch_alert_feed.assert_not_awaited()
 
     assert coordinator.last_update_success
     coordinator.client.fetch_stop_timetable.assert_awaited_once_with("ST:place_romsta")
@@ -640,6 +645,51 @@ async def test_timetable_cache_ttls_bounds_and_failures(
     assert len(coordinator._trip_cache) == module.TRIP_PAGE_CACHE_LIMIT
     assert "old-0" not in coordinator._trip_cache
     assert await coordinator._async_get_trip_timetables(JourneyPlanResult()) == {}
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected", "confirmed"),
+    [
+        (None, "SEQ", False),
+        ("SEQ", "SEQ", True),
+        ("CNS", "CNS", True),
+        ("none", "none", True),
+        ("unknown", "none", False),
+        (["CNS"], "none", False),
+    ],
+)
+async def test_coordinator_journey_dispatches_only_its_configured_region(
+    hass: HomeAssistant,
+    journey_entry: MockConfigEntry,
+    configured: Any,
+    expected: str,
+    confirmed: bool,
+) -> None:
+    """Only valid, configured journey regions can reach a realtime feed."""
+    if configured is not None:
+        hass.config_entries.async_update_entry(
+            journey_entry, data={**journey_entry.data, CONF_REALTIME_REGION: configured}
+        )
+    coordinator = TranslinkCoordinator(hass, journey_entry)
+    coordinator.client.plan_journey = AsyncMock(return_value=JourneyPlanResult())
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
+
+    await coordinator.async_refresh()
+
+    assert coordinator.last_update_success
+    assert (coordinator.realtime_region, coordinator.region_confirmed) == (
+        expected,
+        confirmed,
+    )
+    if expected == "none":
+        coordinator.client.fetch_trip_updates.assert_not_awaited()
+        coordinator.client.fetch_vehicle_positions.assert_not_awaited()
+    else:
+        coordinator.client.fetch_trip_updates.assert_awaited_once_with(
+            expected, preserve_stale=True
+        )
+        coordinator.client.fetch_vehicle_positions.assert_awaited_once_with(expected)
 
 
 async def test_notice_entry_retains_freshness_through_failure_and_recovery(

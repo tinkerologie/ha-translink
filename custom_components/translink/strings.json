@@ -3,22 +3,23 @@
     "step": {
       "user": {
         "title": "Translink Queensland",
-        "description": "Choose a journey, a stop departure board, or regional service notices.",
+        "description": "Track a journey, create a departure board or monitor regional service notices.",
         "data": {
           "mode": "Mode"
         },
         "data_description": {
-          "mode": "Choose Journey to track a commute, Stop for a departure board, or Service Notices for GTFS-RT alerts."
+          "mode": "Choose Journey for a trip, Stop / Station to search by name or number, Nearby stop to search around a location, or Service Notices for GTFS-RT alerts."
         }
       },
       "journey": {
         "title": "Configure Journey",
-        "description": "Specify the Starting Point and Destination for realtime journey tracking across South East Queensland.",
+        "description": "Choose a starting point, destination, and live feed region.",
         "data": {
           "name": "Journey Name",
           "start_name": "Starting Point (Origin)",
           "end_name": "Destination",
           "transport_modes": "Transport Modes",
+          "realtime_region": "Live feed region",
           "track_vehicle": "Enable Live GPS Vehicle Tracking"
         },
         "data_description": {
@@ -26,6 +27,7 @@
           "start_name": "Station, bus stop, ferry wharf, or address (e.g. Central station).",
           "end_name": "Destination station, stop, or address (e.g. Springfield Central station).",
           "transport_modes": "Select public transport modes to include in routing.",
+          "realtime_region": "Cairns and South East Queensland have public live feeds. Choose schedule only for other regions.",
           "track_vehicle": "Create a live GPS device tracker for the active transit vehicle."
         }
       },
@@ -65,6 +67,37 @@
           "stop_location_id": "Select the stop or station for this departure board."
         }
       },
+      "nearby": {
+        "title": "Find nearby stops",
+        "description": "Choose a Home Assistant zone or a map point. Home Assistant sends the selected coordinates to Translink once per lookup and discards them after the lookup.",
+        "menu_options": {
+          "nearby_zone": "Choose a Home Assistant zone",
+          "nearby_point": "Choose a point on the map"
+        }
+      },
+      "nearby_zone": {
+        "title": "Choose a zone",
+        "description": "Find stops near the centre of the selected zone.",
+        "data": {
+          "zone": "Home Assistant zone"
+        }
+      },
+      "nearby_point": {
+        "title": "Choose a map point",
+        "description": "Move the marker to the location you want to search.",
+        "data": {
+          "location": "Map point"
+        }
+      },
+      "nearby_select": {
+        "title": "Choose a nearby stop",
+        "description": "Confirm the exact stop ID for this departure board.",
+        "data": {
+          "stop_location_id": "Nearby stop",
+          "name": "Board Name",
+          "transport_modes": "Transport Modes"
+        }
+      },
       "reconfigure": {
         "title": "Reconfigure Translink",
         "description": "Update location and transport settings for this Translink entry.",
@@ -72,7 +105,11 @@
           "start_name": "Starting Point (Origin)",
           "end_name": "Destination",
           "stop_name": "Station or Stop Name",
-          "transport_modes": "Transport Modes"
+          "transport_modes": "Transport Modes",
+          "realtime_region": "Live feed region"
+        },
+        "data_description": {
+          "realtime_region": "Cairns and South East Queensland have public live feeds. Choose schedule only for other regions."
         }
       },
       "notices": {
@@ -111,6 +148,9 @@
       "location_not_found": "Could not find any matching stop or station in Translink network",
       "no_board_location": "No stop or station matched. Enter a stop or station name, or a stop number.",
       "invalid_location_selection": "Choose a location from the search results.",
+      "region_mismatch": "Choose a live feed region that serves this journey, or choose schedule only.",
+      "location_unavailable": "Choose a zone or map point with valid coordinates.",
+      "no_nearby_stops": "Translink found no nearby stops for this location.",
       "unknown": "Unexpected error occurred",
       "invalid_route_id": "Enter a printable GTFS route ID of 1 to 128 characters.",
       "notice_mode_required": "Select a transport mode."
@@ -119,6 +159,15 @@
       "already_configured": "This Translink journey, stop or notice scope is already configured",
       "reconfigure_successful": "Reconfiguration was successful",
       "reconfigure_failed": "Reconfiguration failed because the config entry could not be found"
+    }
+  },
+  "selector": {
+    "realtime_region": {
+      "options": {
+        "SEQ": "South East Queensland",
+        "CNS": "Cairns",
+        "none": "Schedule only"
+      }
     }
   },
   "options": {

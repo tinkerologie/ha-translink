@@ -69,6 +69,8 @@ class TripUpdateRecord:
     stop_time_updates: tuple[StopTimeUpdateRecord, ...] = ()
     trip_delay_seconds: int | None = None
     feed_timestamp: int | None = None
+    vehicle_id: str | None = None
+    stale_timestamp: int | None = None
 
 
 @dataclass(slots=True)
@@ -132,7 +134,7 @@ class GtfsRealtimeDecodeError(ValueError):
 
 
 def _parse_varint(
-    data: bytes, offset: int, *, strict: bool = False, limit: int | None = None
+    data: bytes, offset: int, *, strict: bool = True, limit: int | None = None
 ) -> tuple[int, int]:
     """Parse a variable-length integer (varint) from binary data."""
     res = 0
@@ -142,13 +144,13 @@ def _parse_varint(
         b = data[offset]
         offset += 1
         if strict and shift == 63 and b > 1:
-            raise GtfsRealtimeDecodeError("Varint exceeds 64 bits")
+            raise GtfsRealtimeDecodeError("Oversized protobuf varint")
         res |= (b & 0x7F) << shift
         if not (b & 0x80):
             return res, offset
         shift += 7
     if strict:
-        raise GtfsRealtimeDecodeError("Truncated varint")
+        raise GtfsRealtimeDecodeError("Truncated protobuf varint")
     return res, offset
 
 
@@ -157,7 +159,7 @@ def _parse_fields(
     offset: int = 0,
     limit: int | None = None,
     *,
-    strict: bool = False,
+    strict: bool = True,
 ) -> list[tuple[int, int, Any]]:
     """Parse protobuf fields into (field_number, wire_type, raw_value)."""
     if limit is None:
@@ -170,14 +172,14 @@ def _parse_fields(
         field_num = tag >> 3
         wire_type = tag & 0x07
         if strict and not 1 <= field_num < (1 << 29):
-            raise GtfsRealtimeDecodeError("Invalid field number")
+            raise GtfsRealtimeDecodeError("Invalid protobuf field number")
         if wire_type == 0:  # Varint
             val, offset = _parse_varint(data, offset, strict=strict, limit=varint_limit)
             fields.append((field_num, wire_type, val))
         elif wire_type == 1:  # 64-bit
             if offset + 8 > limit:
                 if strict:
-                    raise GtfsRealtimeDecodeError("Truncated fixed64 field")
+                    raise GtfsRealtimeDecodeError("Truncated protobuf fixed64 field")
                 break
             val = struct.unpack("<Q", data[offset : offset + 8])[0]
             offset += 8
@@ -188,7 +190,7 @@ def _parse_fields(
             )
             if offset + length > limit:
                 if strict:
-                    raise GtfsRealtimeDecodeError("Truncated length-delimited field")
+                    raise GtfsRealtimeDecodeError("Truncated protobuf message field")
                 break
             val = data[offset : offset + length]
             offset += length
@@ -196,14 +198,14 @@ def _parse_fields(
         elif wire_type == 5:  # 32-bit float / fixed32
             if offset + 4 > limit:
                 if strict:
-                    raise GtfsRealtimeDecodeError("Truncated fixed32 field")
+                    raise GtfsRealtimeDecodeError("Truncated protobuf fixed32 field")
                 break
             val = struct.unpack("<f", data[offset : offset + 4])[0]
             offset += 4
             fields.append((field_num, wire_type, val))
         else:
             if strict:
-                raise GtfsRealtimeDecodeError(f"Unsupported wire type {wire_type}")
+                raise GtfsRealtimeDecodeError("Unsupported protobuf wire type")
             break
     return fields
 
@@ -221,12 +223,12 @@ def _decode_string(val: Any) -> str:
     return str(val)
 
 
-def _decode_translated_string(data: bytes) -> str:
+def _decode_translated_string(data: bytes, *, strict: bool = True) -> str:
     """Extract plain text from a GTFS-RT TranslatedString message."""
-    fields = _parse_fields(data)
+    fields = _parse_fields(data, strict=strict)
     for field_num, _, val in fields:
         if field_num == 1 and isinstance(val, bytes):  # Translation
-            trans_fields = _parse_fields(val)
+            trans_fields = _parse_fields(val, strict=strict)
             for t_num, _, t_val in trans_fields:
                 if t_num == 1:  # text
                     return _decode_string(t_val)
@@ -388,16 +390,27 @@ def _parse_stop_update(data: bytes) -> StopTimeUpdateRecord:
     return result
 
 
+def _feed_header_timestamp(fields: list[tuple[int, int, Any]]) -> int | None:
+    """Read the header timestamp from decoded feed fields."""
+    timestamp: int | None = None
+    for field_num, _, header in fields:
+        if field_num == 1 and isinstance(header, bytes):
+            for header_field, wire, value in _parse_fields(header):
+                if header_field == 3 and wire == 0:
+                    timestamp = value
+    return timestamp
+
+
+def parse_feed_timestamp(raw_bytes: bytes) -> int | None:
+    """Read the feed generation time without interpreting any records."""
+    return _feed_header_timestamp(_parse_fields(raw_bytes))
+
+
 def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
     """Parse GTFS-RT TripUpdates binary payload into a lookup dict."""
     result: dict[str, TripUpdateRecord] = {}
     top_fields = _parse_fields(raw_bytes)
-    feed_timestamp: int | None = None
-    for field_num, _, header in top_fields:
-        if field_num == 1 and isinstance(header, bytes):
-            for header_field, wire, value in _parse_fields(header):
-                if header_field == 3 and wire == 0:
-                    feed_timestamp = value
+    feed_timestamp = _feed_header_timestamp(top_fields)
     for field_num, _, ent_bytes in top_fields:
         if field_num != 2 or not isinstance(ent_bytes, bytes):
             continue
@@ -425,6 +438,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
         start_date: str | None = None
         start_time: str | None = None
         relationship: int | None = None
+        vehicle_id: str | None = None
         stop_updates: list[StopTimeUpdateRecord] = []
 
         for tuf_num, _, tuf_val in tu_fields:
@@ -454,6 +468,10 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
                         for stef_num, _, stef_val in ste_fields:
                             if stef_num == 1 and isinstance(stef_val, int):
                                 delay_sec = _to_int32(stef_val)
+            elif tuf_num == 3 and isinstance(tuf_val, bytes):  # VehicleDescriptor
+                for field, wire, value in _parse_fields(tuf_val):
+                    if field == 1 and wire == 2:
+                        vehicle_id = _decode_string(value)
             elif tuf_num == 4 and isinstance(tuf_val, int):
                 timestamp = tuf_val
             elif tuf_num == 5 and isinstance(tuf_val, int):
@@ -472,6 +490,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
             stop_time_updates=tuple(stop_updates),
             trip_delay_seconds=trip_delay,
             feed_timestamp=feed_timestamp,
+            vehicle_id=vehicle_id,
         )
         if trip_id:
             result[trip_id] = record
@@ -483,15 +502,15 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
     return result
 
 
-def parse_alerts(raw_bytes: bytes) -> list[AlertRecord]:
-    """Parse GTFS-RT Alerts binary payload into a list of AlertRecord objects."""
+def parse_alerts(raw_bytes: bytes, *, strict: bool = False) -> list[AlertRecord]:
+    """Decode flattened alerts, preserving lenient parsing for legacy callers."""
     result: list[AlertRecord] = []
-    top_fields = _parse_fields(raw_bytes)
+    top_fields = _parse_fields(raw_bytes, strict=strict)
     for field_num, _, ent_bytes in top_fields:
         if field_num != 2 or not isinstance(ent_bytes, bytes):
             continue
 
-        ent_fields = _parse_fields(ent_bytes)
+        ent_fields = _parse_fields(ent_bytes, strict=strict)
         entity_id = ""
         alert_bytes: bytes | None = None
 
@@ -504,7 +523,7 @@ def parse_alerts(raw_bytes: bytes) -> list[AlertRecord]:
         if not alert_bytes:
             continue
 
-        a_fields = _parse_fields(alert_bytes)
+        a_fields = _parse_fields(alert_bytes, strict=strict)
         header_text = ""
         desc_text: str | None = None
         route_ids: list[str] = []
@@ -512,16 +531,16 @@ def parse_alerts(raw_bytes: bytes) -> list[AlertRecord]:
 
         for af_num, _, af_val in a_fields:
             if af_num == 5 and isinstance(af_val, bytes):  # EntitySelector
-                es_fields = _parse_fields(af_val)
+                es_fields = _parse_fields(af_val, strict=strict)
                 for esf_num, _, esf_val in es_fields:
                     if esf_num == 2:  # route_id
                         route_ids.append(_decode_string(esf_val))
                     elif esf_num == 5:  # stop_id
                         stop_ids.append(_decode_string(esf_val))
             elif af_num == 10 and isinstance(af_val, bytes):  # header_text
-                header_text = _decode_translated_string(af_val)
+                header_text = _decode_translated_string(af_val, strict=strict)
             elif af_num == 11 and isinstance(af_val, bytes):  # description_text
-                desc_text = _decode_translated_string(af_val)
+                desc_text = _decode_translated_string(af_val, strict=strict)
 
         if header_text or desc_text:
             result.append(

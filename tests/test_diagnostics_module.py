@@ -54,6 +54,8 @@ async def test_diagnostics_output() -> None:
     assert "entry" in diagnostics
     assert "options" in diagnostics
     assert "data" in diagnostics
+    assert diagnostics["realtime_region"] == "SEQ"
+    assert diagnostics["region_confirmed"] is False
     assert diagnostics["entry"]["start_name"] == "Central"
     assert diagnostics["entry"]["origin_latitude"] == "**REDACTED**"
     assert diagnostics["entry"]["origin_longitude"] == "**REDACTED**"

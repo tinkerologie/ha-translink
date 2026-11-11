@@ -8,10 +8,14 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Added
 
+- Journey entries can select the Cairns or South East Queensland live feed, or use scheduled times only. Cairns predictions and positions require verified service identity. Stop boards use the timetable for their selected stop. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
+
 - Service Notices entries show active and upcoming Translink GTFS-RT alerts for South East Queensland and Cairns, with optional route or mode filtering. The Alerts card shows affected entities, active periods and the last successful fetch. [#60](https://github.com/tinkerologie/ha-translink/issues/60)
+
 - The Departures card offers an opt-in Arrivals view for drop-off-only stop visits and optional route, direction, and order controls. Scheduled and expected stop times are shown separately. [#52](https://github.com/tinkerologie/ha-translink/issues/52)
 - Added a preview for sharing journeys, downloading calendar files and creating events in a configured Home Assistant calendar. Journey details link to verified Translink trip timetables. [#58](https://github.com/tinkerologie/ha-translink/issues/58)
 - Added the response-only `translink.plan_journey` action and an opt-in Journey card planner for comparing scheduled alternatives at a selected Brisbane date and time. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
+- Added opt-in nearby stop discovery during setup. Choose a Home Assistant zone or map point, then confirm a stop ID to create a departure board. The lookup discards the selected coordinates. [#55](https://github.com/tinkerologie/ha-translink/issues/55)
 
 ### Changed
 

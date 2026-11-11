@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
-from homeassistant.core import callback
+from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from pydantic import ConfigDict
 
+from .api.client import nearby_coordinates, plan_matches_realtime_region
+from .api.models import NearbyStop
 from .client import (
     AlertFeedError,
     LocationSearchResult,
@@ -35,6 +40,7 @@ from .const import (
     CONF_NOTICE_ROUTE_ID,
     CONF_NOTICE_ROUTE_MODE,
     CONF_NOTICE_SCOPE,
+    CONF_REALTIME_REGION,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
     CONF_START_NAME,
@@ -46,6 +52,7 @@ from .const import (
     CONF_WALKING_SPEED,
     DEFAULT_FARE_PREFERENCE,
     DEFAULT_MAX_WALKING_DISTANCE,
+    DEFAULT_REALTIME_REGION,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_TIME_SEARCH_MODE,
     DEFAULT_TRACK_VEHICLE,
@@ -59,6 +66,10 @@ from .const import (
     MODE_STOP,
     NOTICE_ROUTE_ID_LIMIT,
     NOTICE_ROUTE_TYPES,
+    REALTIME_FEED_REGIONS,
+    REALTIME_REGION_NONE,
+    SETUP_NEARBY_STOP,
+    resolve_realtime_region,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -84,6 +95,89 @@ _LOCATION_LABELS = {
 }
 
 
+def _realtime_region_selector() -> selector.SelectSelector:
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[*REALTIME_FEED_REGIONS, REALTIME_REGION_NONE],
+            mode=selector.SelectSelectorMode.DROPDOWN,
+            translation_key=CONF_REALTIME_REGION,
+        )
+    )
+
+
+class _NearbyStopMatch(LocationSearchResult):
+    """Adapt a nearby stop to the shared location picker."""
+
+    model_config = ConfigDict(str_strip_whitespace=False)
+    label: str
+
+
+class _NearbyLocationSelector(selector.LocationSelector):
+    """Keep the map widget and allow the flow to report invalid points."""
+
+    def __call__(self, data: Any) -> dict[str, float]:
+        """Validate the raw point before numeric coercion."""
+        if (coordinates := _coordinates_from_mapping(data)) is None:
+            return {}
+        lat, lng = coordinates
+        return {ATTR_LATITUDE: lat, ATTR_LONGITUDE: lng}
+
+
+def _coordinates_from_mapping(value: object) -> tuple[float, float] | None:
+    """Resolve coordinates from a map selection or zone state attributes."""
+    if not isinstance(value, Mapping):
+        return None
+    return nearby_coordinates(value.get(ATTR_LATITUDE), value.get(ATTR_LONGITUDE))
+
+
+def _zone_coordinates(hass: HomeAssistant, zone_id: str) -> tuple[float, float] | None:
+    """Resolve the selected zone's current coordinates."""
+    state = hass.states.get(zone_id)
+    return _coordinates_from_mapping(state.attributes) if state is not None else None
+
+
+def _nearby_candidates(stops: list[NearbyStop]) -> dict[str, LocationSearchResult]:
+    """Group platforms by station, ordering groups by their closest platform."""
+    groups: dict[tuple[str, str], list[NearbyStop]] = {}
+    for stop in sorted(stops, key=lambda stop: (stop.distanceM, stop.id)):
+        if not stop.id.startswith(LOCATION_STOP_PREFIX):
+            continue
+        group = ("station", stop.station.id) if stop.station else ("stop", stop.id)
+        groups.setdefault(group, []).append(stop)
+
+    matches: list[LocationSearchResult] = [
+        _NearbyStopMatch(
+            LocationId=stop.id,
+            Description=stop.description,
+            label=(f"{stop.station.name} — " if stop.station else "")
+            + f"{stop.description} · {stop.id} · {stop.distanceM:g} m",
+        )
+        for group_stops in groups.values()
+        for stop in group_stops
+    ]
+    return _location_candidates(matches, MODE_STOP)
+
+
+async def _async_lookup_nearby(
+    hass: HomeAssistant, coordinates: tuple[float, float]
+) -> dict[str, LocationSearchResult] | str:
+    """Look up candidates and map failures without exposing the location."""
+    try:
+        client = TranslinkClient(session=async_get_clientsession(hass))
+        stops = await client.find_nearby_stops(*coordinates)
+        candidates = _nearby_candidates(stops)
+    except AbortFlow:
+        raise
+    except TranslinkApiError:
+        return "cannot_connect"
+    except Exception as err:
+        _LOGGER.warning(
+            "Unexpected error finding nearby Translink stops (%s)", type(err).__name__
+        )
+        return "unknown"
+    return candidates or "no_nearby_stops"
+
+
 def _location_candidates(
     results: list[LocationSearchResult], mode: str
 ) -> dict[str, LocationSearchResult]:
@@ -97,6 +191,8 @@ def _location_candidates(
 
 def _location_option(result: LocationSearchResult) -> selector.SelectOptionDict:
     """Describe a candidate while using its public ID as the value."""
+    if isinstance(result, _NearbyStopMatch):
+        return selector.SelectOptionDict(value=result.id, label=result.label)
     kind = result.kind
     suffix = (
         f"Stop {result.id.removeprefix(LOCATION_STOP_PREFIX)}"
@@ -158,6 +254,8 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 return await self.async_step_journey()
             if mode == MODE_NOTICES:
                 return await self.async_step_notices()
+            if mode == SETUP_NEARBY_STOP:
+                return await self.async_step_nearby()
             return await self.async_step_stop()
 
         schema = vol.Schema(
@@ -172,6 +270,10 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                             selector.SelectOptionDict(
                                 value=MODE_STOP,
                                 label="Stop / Station (Departure Board)",
+                            ),
+                            selector.SelectOptionDict(
+                                value=SETUP_NEARBY_STOP,
+                                label="Nearby stop (Departure Board)",
                             ),
                             selector.SelectOptionDict(
                                 value=MODE_NOTICES, label="Service Notices"
@@ -197,6 +299,12 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         ):
             return result
 
+        return self._show_journey_form(errors, user_input)
+
+    def _show_journey_form(
+        self, errors: dict[str, str], suggested: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        """Show journey settings, preserving a submission when retrying."""
         schema = vol.Schema(
             {
                 vol.Required(
@@ -204,6 +312,9 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 ): selector.TextSelector(),
                 vol.Required(CONF_START_NAME): selector.TextSelector(),
                 vol.Required(CONF_END_NAME): selector.TextSelector(),
+                vol.Required(
+                    CONF_REALTIME_REGION, default=DEFAULT_REALTIME_REGION
+                ): _realtime_region_selector(),
                 vol.Required(
                     CONF_TRANSPORT_MODES, default=DEFAULT_TRANSPORT_MODES
                 ): selector.SelectSelector(
@@ -219,7 +330,9 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             }
         )
         return self.async_show_form(
-            step_id="journey", data_schema=schema, errors=errors
+            step_id="journey",
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            errors=errors,
         )
 
     async def async_step_stop(
@@ -251,6 +364,75 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             }
         )
         return self.async_show_form(step_id="stop", data_schema=schema, errors=errors)
+
+    async def async_step_nearby(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask the user to choose a location source."""
+        return self.async_show_menu(
+            step_id="nearby", menu_options=["nearby_zone", "nearby_point"]
+        )
+
+    async def async_step_nearby_zone(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Find stops near an explicitly selected Home Assistant zone."""
+        errors: dict[str, str] = {}
+        if user_input is not None and (
+            result := await self._async_prepare_nearby(
+                _zone_coordinates(self.hass, user_input.get("zone", "")), "zone", errors
+            )
+        ):
+            return result
+        return self.async_show_form(
+            step_id="nearby_zone",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("zone"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="zone")
+                    )
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_nearby_point(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Find stops near an explicitly selected map point."""
+        errors: dict[str, str] = {}
+        if user_input is not None and (
+            result := await self._async_prepare_nearby(
+                _coordinates_from_mapping(user_input.get("location")),
+                "location",
+                errors,
+            )
+        ):
+            return result
+        return self.async_show_form(
+            step_id="nearby_point",
+            data_schema=vol.Schema(
+                {vol.Required("location"): _NearbyLocationSelector()}
+            ),
+            errors=errors,
+        )
+
+    async def _async_prepare_nearby(
+        self,
+        coordinates: tuple[float, float] | None,
+        field: str,
+        errors: dict[str, str],
+    ) -> ConfigFlowResult | None:
+        """Look up the location and retain only the options for confirmation."""
+        if coordinates is None:
+            errors[field] = "location_unavailable"
+            return None
+        candidates = await _async_lookup_nearby(self.hass, coordinates)
+        if isinstance(candidates, str):
+            errors["base"] = candidates
+            return None
+        self._candidates = {CONF_STOP_LOCATION_ID: candidates}
+        return await self.async_step_nearby_select()
 
     async def async_step_notices(
         self, user_input: dict[str, Any] | None = None
@@ -443,29 +625,71 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         """Confirm a stop or station from the search matches."""
         return await self._async_step_location_selection(MODE_STOP, user_input)
 
+    async def async_step_nearby_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm the exact nearby stop ID and board preferences."""
+        return await self._async_step_location_selection(
+            MODE_STOP, user_input, nearby=True
+        )
+
     async def _async_step_location_selection(
-        self, mode: str, user_input: dict[str, Any] | None
+        self, mode: str, user_input: dict[str, Any] | None, *, nearby: bool = False
     ) -> ConfigFlowResult:
         """Validate the submitted locations and commit the confirmed results."""
         errors: dict[str, str] = {}
+        if nearby and user_input is not None:
+            self._pending_input = {
+                CONF_NAME: user_input.get(CONF_NAME, ""),
+                CONF_TRANSPORT_MODES: user_input.get(
+                    CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
+                ),
+            }
         if user_input is not None and (
-            result := await self._async_confirm_locations(mode, user_input, errors)
+            result := await self._async_confirm_locations(
+                mode, user_input, errors, nearby=nearby
+            )
         ):
+            if nearby:
+                self._candidates.clear()
             return result
-        return self._show_location_selection(mode, errors)
+        if errors.get("base") == "region_mismatch":
+            return self._show_journey_form(errors, self._pending_input)
+        return self._show_location_selection(mode, errors, nearby=nearby)
 
     def _show_location_selection(
-        self, mode: str, errors: dict[str, str] | None = None
+        self,
+        mode: str,
+        errors: dict[str, str] | None = None,
+        *,
+        nearby: bool = False,
     ) -> ConfigFlowResult:
-        """Show selectors only for fields with several matches."""
+        """Show selectors for fields that require an explicit choice."""
         saved_data = self._reconfigure_entry.data if self._reconfigure_entry else {}
-        fields = dict(
+        fields: dict[vol.Required, selector.Selector] = dict(
             _location_selector(id_field, candidates, saved_data.get(id_field))
             for id_field, candidates in self._candidates.items()
-            if len(candidates) > 1
+            if nearby or len(candidates) > 1
         )
+        if nearby:
+            fields.update(
+                {
+                    vol.Required(
+                        CONF_NAME, default="Station Board"
+                    ): selector.TextSelector(),
+                    vol.Required(
+                        CONF_TRANSPORT_MODES, default=DEFAULT_TRANSPORT_MODES
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=AVAILABLE_TRANSPORT_MODES,
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            )
         return self.async_show_form(
-            step_id=f"{mode}_select",
+            step_id="nearby_select" if nearby else f"{mode}_select",
             data_schema=vol.Schema(fields),
             errors=errors,
             description_placeholders=self._queries,
@@ -476,11 +700,13 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         mode: str,
         selection: dict[str, Any],
         errors: dict[str, str],
+        *,
+        nearby: bool = False,
     ) -> ConfigFlowResult | None:
         """Resolve single matches and confirm selections before saving locations."""
         locations: dict[str, LocationSearchResult] = {}
         for id_field, candidates in self._candidates.items():
-            if len(candidates) == 1:
+            if len(candidates) == 1 and not nearby:
                 locations[id_field] = next(iter(candidates.values()))
                 continue
             selected_id = selection.get(id_field)
@@ -495,6 +721,10 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
             ),
         }
+        if mode == MODE_JOURNEY:
+            data[CONF_REALTIME_REGION] = self._pending_input.get(
+                CONF_REALTIME_REGION, DEFAULT_REALTIME_REGION
+            )
         for id_field, name_field, _ in _LOCATION_FIELDS[mode]:
             data[id_field] = locations[id_field].id
             data[name_field] = locations[id_field].name
@@ -502,20 +732,30 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         try:
             if self.source == config_entries.SOURCE_RECONFIGURE:
                 return await self._async_finish_reconfigure(unique_id, data)
-            return await self._async_finish_setup(mode, unique_id, data)
+            return await self._async_finish_setup(mode, unique_id, data, errors)
         except AbortFlow:
             raise
         except TranslinkApiError:
             errors["base"] = "cannot_connect"
-        except Exception:
-            _LOGGER.exception("Unexpected error confirming Translink locations")
+        except Exception as err:
+            if nearby:
+                _LOGGER.warning(
+                    "Unexpected error confirming a nearby Translink stop (%s)",
+                    type(err).__name__,
+                )
+            else:
+                _LOGGER.exception("Unexpected error confirming Translink locations")
             errors["base"] = "unknown"
         await self.async_set_unique_id(None)
         return None
 
     async def _async_finish_setup(
-        self, mode: str, unique_id: str, data: dict[str, Any]
-    ) -> ConfigFlowResult:
+        self,
+        mode: str,
+        unique_id: str,
+        data: dict[str, Any],
+        errors: dict[str, str],
+    ) -> ConfigFlowResult | None:
         """Create a config entry from the confirmed locations."""
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
@@ -531,13 +771,17 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         )
         client = TranslinkClient(session=async_get_clientsession(self.hass))
         if mode == MODE_JOURNEY:
-            await client.plan_journey(
+            plan = await client.plan_journey(
                 start_location_id=data[CONF_START_LOCATION_ID],
                 start_name=data[CONF_START_NAME],
                 end_location_id=data[CONF_END_LOCATION_ID],
                 end_name=data[CONF_END_NAME],
                 transport_modes=data[CONF_TRANSPORT_MODES],
             )
+            if not plan_matches_realtime_region(plan, data[CONF_REALTIME_REGION]):
+                errors["base"] = "region_mismatch"
+                await self.async_set_unique_id(None)
+                return None
             data.update(
                 {
                     CONF_TRACK_VEHICLE: bool(
@@ -570,11 +814,20 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             client = TranslinkClient(session=async_get_clientsession(self.hass))
             await client.fetch_stop_timetable(stop_id)
 
-        options = {
-            key: value
-            for key, value in entry.options.items()
-            if key not in _RECONFIGURED_OPTIONS
-        }
+        region_only = CONF_REALTIME_REGION in data_updates and all(
+            value == entry.data.get(key)
+            for key, value in data_updates.items()
+            if key != CONF_REALTIME_REGION
+        )
+        options = (
+            entry.options
+            if region_only
+            else {
+                key: value
+                for key, value in entry.options.items()
+                if key not in _RECONFIGURED_OPTIONS
+            }
+        )
         if options != entry.options:
             return self.async_update_reload_and_abort(
                 entry, unique_id=unique_id, data_updates=data_updates, options=options
@@ -605,6 +858,12 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         ):
             return result
 
+        region_fields = {}
+        if mode == MODE_JOURNEY:
+            region, _ = resolve_realtime_region(current_data)
+            region_fields[vol.Required(CONF_REALTIME_REGION, default=region)] = (
+                _realtime_region_selector()
+            )
         schema = vol.Schema(
             {
                 **{
@@ -613,6 +872,7 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                     ): selector.TextSelector()
                     for _, name_field, _ in _LOCATION_FIELDS[mode]
                 },
+                **region_fields,
                 vol.Required(
                     CONF_TRANSPORT_MODES,
                     default=current_data.get(
