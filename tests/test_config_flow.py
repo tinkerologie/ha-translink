@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.translink.client import (
@@ -16,12 +17,16 @@ from custom_components.translink.client import (
 )
 from custom_components.translink.config_flow import TranslinkConfigFlow
 from custom_components.translink.const import (
+    CONF_END_LOCATION_ID,
     CONF_END_NAME,
     CONF_MODE,
     CONF_NAME,
     CONF_SCAN_INTERVAL,
+    CONF_START_LOCATION_ID,
     CONF_START_NAME,
+    CONF_STOP_LOCATION_ID,
     CONF_STOP_NAME,
+    CONF_TRACK_VEHICLE,
     CONF_TRANSPORT_MODES,
     DOMAIN,
     MODE_JOURNEY,
@@ -194,7 +199,12 @@ async def test_step_stop_success(hass: HomeAssistant) -> None:
         patch("custom_components.translink.config_flow.async_get_clientsession"),
         patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
-            return_value=[stop_loc],
+            return_value=[
+                LocationSearchResult(
+                    LocationId="PL:parkland", Description="Roma Street Parkland"
+                ),
+                stop_loc,
+            ],
         ),
         patch(
             "custom_components.translink.async_setup_entry",
@@ -214,6 +224,137 @@ async def test_step_stop_success(hass: HomeAssistant) -> None:
     assert result3["title"] == "Roma Street"
     assert result3["data"][CONF_MODE] == MODE_STOP
     assert result3["data"]["stop_location_id"] == "ST:place_romsta"
+
+
+_ROMA_STREET_RESULTS = [
+    LocationSearchResult(LocationId="PL:parkland", Description="Roma Street Parkland"),
+    LocationSearchResult(LocationId="PL:street", Description="Roma Street, Brisbane"),
+    LocationSearchResult(
+        LocationId="ST:place_rompl", Description="Roma Street busway station"
+    ),
+    LocationSearchResult(
+        LocationId="ST:place_romsta", Description="Roma Street station"
+    ),
+    LocationSearchResult(LocationId="SI:600036", Description="Roma Street platform 4"),
+]
+
+
+async def test_stop_search_confirms_a_board_candidate(hass: HomeAssistant) -> None:
+    """Offer only valid board candidates and keep the confirmed public ID."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {CONF_MODE: MODE_STOP})
+
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            return_value=[*_ROMA_STREET_RESULTS, _ROMA_STREET_RESULTS[-1]],
+        ),
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_NAME: "Roma Street", CONF_STOP_NAME: "Roma Street"}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "stop_select"
+        assert result["description_placeholders"] == {"stop_query": "Roma Street"}
+        assert result["data_schema"].schema[CONF_STOP_LOCATION_ID].config[
+            "options"
+        ] == [
+            {
+                "value": "ST:place_rompl",
+                "label": "Roma Street busway station — Station",
+            },
+            {"value": "ST:place_romsta", "label": "Roma Street station — Station"},
+            {"value": "SI:600036", "label": "Roma Street platform 4 — Stop 600036"},
+        ]
+
+        with pytest.raises(InvalidData):
+            await hass.config_entries.flow.async_configure(
+                flow_id, {CONF_STOP_LOCATION_ID: "PL:parkland"}
+            )
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_STOP_LOCATION_ID: "SI:600036"}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_STOP_LOCATION_ID] == "SI:600036"
+    assert result["data"][CONF_STOP_NAME] == "Roma Street platform 4"
+    assert result["result"].unique_id == "stop_SI:600036"
+
+
+async def test_journey_search_confirms_both_endpoints(hass: HomeAssistant) -> None:
+    """Offer places and addresses as journey endpoints and save the confirmed IDs."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {CONF_MODE: MODE_JOURNEY})
+
+    destination_results = [
+        LocationSearchResult(
+            LocationId="ST:place_censta", Description="Central station"
+        ),
+        LocationSearchResult(LocationId="PL:address", Description="255 Ann Street"),
+    ]
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            side_effect=[_ROMA_STREET_RESULTS, destination_results],
+        ),
+        patch(
+            "custom_components.translink.client.TranslinkClient.plan_journey",
+            return_value=JourneyPlanResult(),
+        ) as plan,
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {
+                CONF_NAME: "Work Commute",
+                CONF_START_NAME: "Roma Street",
+                CONF_END_NAME: "Ann Street",
+                CONF_TRANSPORT_MODES: ["Train"],
+                CONF_TRACK_VEHICLE: False,
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "journey_select"
+        assert {key.schema for key in result["data_schema"].schema} == {
+            CONF_START_LOCATION_ID,
+            CONF_END_LOCATION_ID,
+        }
+        assert result["description_placeholders"] == {
+            "start_query": "Roma Street",
+            "end_query": "Ann Street",
+        }
+        plan.assert_not_awaited()
+
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {
+                CONF_START_LOCATION_ID: "PL:street",
+                CONF_END_LOCATION_ID: "PL:address",
+            },
+        )
+
+    plan.assert_awaited_once_with(
+        start_location_id="PL:street",
+        start_name="Roma Street, Brisbane",
+        end_location_id="PL:address",
+        end_name="255 Ann Street",
+        transport_modes=["Train"],
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Work Commute"
+    assert result["result"].unique_id == "journey_PL:street_PL:address"
+    assert result["data"][CONF_START_LOCATION_ID] == "PL:street"
+    assert result["data"][CONF_START_NAME] == "Roma Street, Brisbane"
+    assert result["data"][CONF_END_LOCATION_ID] == "PL:address"
+    assert result["data"][CONF_END_NAME] == "255 Ann Street"
+    assert result["data"][CONF_TRACK_VEHICLE] is False
 
 
 async def test_options_flow(hass: HomeAssistant) -> None:
@@ -461,6 +602,7 @@ async def test_step_reconfigure_stop_cannot_connect(hass: HomeAssistant) -> None
         },
     )
     entry.add_to_hass(hass)
+    original = (entry.data, entry.options, entry.unique_id)
 
     result = await entry.start_reconfigure_flow(hass)
     with (
@@ -480,6 +622,8 @@ async def test_step_reconfigure_stop_cannot_connect(hass: HomeAssistant) -> None
     assert result2["type"] is FlowResultType.FORM
     assert result2["step_id"] == "reconfigure"
     assert result2["errors"]["base"] == "cannot_connect"
+
+    assert (entry.data, entry.options, entry.unique_id) == original
 
 
 async def test_step_stop_api_error(hass: HomeAssistant) -> None:
@@ -564,6 +708,7 @@ async def test_step_reconfigure_stop_location_not_found(
         },
     )
     entry.add_to_hass(hass)
+    original = (entry.data, entry.options, entry.unique_id)
     result = await entry.start_reconfigure_flow(hass)
     with (
         patch("custom_components.translink.config_flow.async_get_clientsession"),
@@ -579,6 +724,8 @@ async def test_step_reconfigure_stop_location_not_found(
     assert result2["type"] is FlowResultType.FORM
     assert result2["step_id"] == "reconfigure"
     assert result2["errors"][CONF_STOP_NAME] == "location_not_found"
+
+    assert (entry.data, entry.options, entry.unique_id) == original
 
 
 async def test_step_reconfigure_journey_unexpected_error(
@@ -645,51 +792,49 @@ async def test_step_reconfigure_stop_unexpected_error(
 
 
 async def test_journey_already_configured(hass: HomeAssistant) -> None:
-    """Test journey setup aborts when unique_id is already configured."""
+    """Reject a duplicate from the confirmed IDs before calling the planner."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        unique_id="journey_ST:place_censta_ST:place_spcsta",
+        unique_id="journey_ST:place_romsta_ST:place_spcsta",
         data={CONF_MODE: MODE_JOURNEY},
     )
     entry.add_to_hass(hass)
 
-    start_loc = LocationSearchResult(
-        LocationId="ST:place_censta", Description="Central station"
-    )
     end_loc = LocationSearchResult(
         LocationId="ST:place_spcsta", Description="Springfield Central"
     )
-    plan_mock = JourneyPlanResult()
-
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"mode": MODE_JOURNEY}
-    )
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    flow_id = flow["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {CONF_MODE: MODE_JOURNEY})
 
     with (
-        patch("custom_components.translink.config_flow.async_get_clientsession"),
         patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
-            side_effect=[[start_loc], [end_loc]],
+            side_effect=[_ROMA_STREET_RESULTS, [end_loc]],
         ),
         patch(
-            "custom_components.translink.client.TranslinkClient.plan_journey",
-            return_value=plan_mock,
-        ),
+            "custom_components.translink.client.TranslinkClient.plan_journey"
+        ) as plan,
     ):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
             {
                 CONF_NAME: "Duplicate Commute",
-                CONF_START_NAME: "Central station",
+                CONF_START_NAME: "Roma Street",
                 CONF_END_NAME: "Springfield Central",
             },
         )
+        assert result["step_id"] == "journey_select"
+        assert [key.schema for key in result["data_schema"].schema] == [
+            CONF_START_LOCATION_ID,
+        ]
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_START_LOCATION_ID: "ST:place_romsta"}
+        )
 
-    assert result2["type"] is FlowResultType.ABORT
-    assert result2["reason"] == "already_configured"
+    plan.assert_not_awaited()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
 
 
 async def test_stop_already_configured(hass: HomeAssistant) -> None:
@@ -741,6 +886,8 @@ async def test_step_reconfigure_journey_same_locations_and_conflict(
         data={
             CONF_MODE: MODE_JOURNEY,
             CONF_NAME: "Commute 1",
+            CONF_START_LOCATION_ID: "ST:place_censta",
+            CONF_END_LOCATION_ID: "ST:place_spcsta",
             CONF_START_NAME: "Central station",
             CONF_END_NAME: "Springfield Central",
         },
@@ -773,15 +920,16 @@ async def test_step_reconfigure_journey_same_locations_and_conflict(
         patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
             side_effect=[[start_loc], [end_loc]],
-        ),
+        ) as search,
     ):
         res1 = await hass.config_entries.flow.async_configure(
             flow1["flow_id"],
             {
-                CONF_START_NAME: "Central station",
+                CONF_START_NAME: "  Central station  ",
                 CONF_END_NAME: "Springfield Central",
             },
         )
+    search.assert_not_awaited()
     assert res1["type"] is FlowResultType.ABORT
     assert res1["reason"] == "reconfigure_successful"
 
@@ -815,6 +963,7 @@ async def test_step_reconfigure_stop_same_location_and_conflict(
         data={
             CONF_MODE: MODE_STOP,
             CONF_NAME: "Stop 1",
+            CONF_STOP_LOCATION_ID: "ST:place_censta",
             CONF_STOP_NAME: "Central station",
         },
     )
@@ -842,27 +991,256 @@ async def test_step_reconfigure_stop_same_location_and_conflict(
         patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
             return_value=[stop_loc],
-        ),
+        ) as search,
     ):
         res1 = await hass.config_entries.flow.async_configure(
             flow1["flow_id"],
             {CONF_STOP_NAME: "Central station"},
         )
+    search.assert_not_awaited()
     assert res1["type"] is FlowResultType.ABORT
     assert res1["reason"] == "reconfigure_successful"
 
-    # 2. Reconfigure entry2 to point to entry1's stop (conflict)
+    # Selecting a non-first match already used by another entry aborts.
+    original = (entry2.data, entry2.options, entry2.unique_id)
     flow2 = await entry2.start_reconfigure_flow(hass)
-    with (
-        patch("custom_components.translink.config_flow.async_get_clientsession"),
-        patch(
-            "custom_components.translink.client.TranslinkClient.search_locations",
-            return_value=[stop_loc],
-        ),
+    with patch(
+        "custom_components.translink.client.TranslinkClient.search_locations",
+        return_value=[_ROMA_STREET_RESULTS[2], stop_loc],
     ):
         res2 = await hass.config_entries.flow.async_configure(
             flow2["flow_id"],
-            {CONF_STOP_NAME: "Central station"},
+            {CONF_STOP_NAME: "Central"},
+        )
+        assert res2["step_id"] == "stop_select"
+        res2 = await hass.config_entries.flow.async_configure(
+            flow2["flow_id"], {CONF_STOP_LOCATION_ID: "ST:place_censta"}
         )
     assert res2["type"] is FlowResultType.ABORT
     assert res2["reason"] == "already_configured"
+    assert (entry2.data, entry2.options, entry2.unique_id) == original
+
+
+async def test_reconfigure_journey_confirms_changed_endpoint(
+    hass: HomeAssistant,
+) -> None:
+    """Keep the unchanged endpoint and commit the selected ID with legacy option cleanup."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="journey_ST:place_rompl_PL:work",
+        data={
+            CONF_MODE: MODE_JOURNEY,
+            CONF_START_LOCATION_ID: "ST:place_rompl",
+            CONF_START_NAME: "Roma Street busway station",
+            CONF_END_LOCATION_ID: "PL:work",
+            CONF_END_NAME: "Work",
+            CONF_TRANSPORT_MODES: ["Train"],
+        },
+        options={
+            CONF_START_LOCATION_ID: "ST:legacy",
+            CONF_START_NAME: "Legacy origin",
+            CONF_END_LOCATION_ID: "PL:legacy",
+            CONF_END_NAME: "Legacy destination",
+            CONF_TRANSPORT_MODES: ["Ferry"],
+            CONF_SCAN_INTERVAL: 90,
+        },
+    )
+    entry.add_to_hass(hass)
+    original = (entry.data, entry.options, entry.unique_id)
+    flow = await entry.start_reconfigure_flow(hass)
+
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            return_value=_ROMA_STREET_RESULTS,
+        ) as search,
+        patch.object(hass.config_entries, "async_schedule_reload") as reload,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            {
+                CONF_START_NAME: "Roma Street",
+                CONF_END_NAME: "Work",
+                CONF_TRANSPORT_MODES: ["Bus"],
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "journey_select"
+        markers = list(result["data_schema"].schema)
+        assert [marker.schema for marker in markers] == [CONF_START_LOCATION_ID]
+        assert markers[0].default() == "ST:place_rompl"
+        assert result["description_placeholders"] == {
+            "start_query": "Roma Street",
+            "end_query": "Work",
+        }
+        assert (entry.data, entry.options, entry.unique_id) == original
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], {CONF_START_LOCATION_ID: "ST:place_romsta"}
+        )
+
+    search.assert_awaited_once_with("Roma Street")
+    reload.assert_called_once_with(entry.entry_id)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.unique_id == "journey_ST:place_romsta_PL:work"
+    assert entry.data[CONF_START_LOCATION_ID] == "ST:place_romsta"
+    assert entry.data[CONF_START_NAME] == "Roma Street station"
+    assert entry.data[CONF_END_LOCATION_ID] == "PL:work"
+    assert entry.data[CONF_END_NAME] == "Work"
+    assert entry.data[CONF_TRANSPORT_MODES] == ["Bus"]
+    assert entry.options == {CONF_SCAN_INTERVAL: 90}
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (TranslinkConnectionError("Network error"), "cannot_connect"),
+        (ValueError("Unexpected planner error"), "unknown"),
+    ],
+)
+async def test_journey_confirmation_can_retry_after_plan_error(
+    hass: HomeAssistant, error: Exception, reason: str
+) -> None:
+    """Show planner errors on the selection form and let the user retry."""
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    flow_id = flow["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {CONF_MODE: MODE_JOURNEY})
+
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            side_effect=[[_ROMA_STREET_RESULTS[2]], _ROMA_STREET_RESULTS],
+        ),
+        patch(
+            "custom_components.translink.client.TranslinkClient.plan_journey",
+            side_effect=[error, JourneyPlanResult()],
+        ),
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {CONF_START_NAME: "Busway", CONF_END_NAME: "Roma Street"},
+        )
+        assert result["step_id"] == "journey_select"
+        assert [key.schema for key in result["data_schema"].schema] == [
+            CONF_END_LOCATION_ID,
+        ]
+        selection = {CONF_END_LOCATION_ID: "PL:parkland"}
+        result = await hass.config_entries.flow.async_configure(flow_id, selection)
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "journey_select"
+        assert result["errors"] == {"base": reason}
+        assert not hass.config_entries.async_entries(DOMAIN)
+
+        result = await hass.config_entries.flow.async_configure(flow_id, selection)
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_END_LOCATION_ID] == "PL:parkland"
+
+
+async def test_stop_selection_handler_rejects_unknown_ids(hass: HomeAssistant) -> None:
+    """Reject invalid submissions even when the flow manager's schema is bypassed."""
+    flow = TranslinkConfigFlow()
+    flow.hass = hass
+    flow.context = {"source": "user"}
+    with patch(
+        "custom_components.translink.client.TranslinkClient.search_locations",
+        return_value=_ROMA_STREET_RESULTS,
+    ):
+        result = await flow.async_step_stop({CONF_STOP_NAME: "Roma Street"})
+    assert result["step_id"] == "stop_select"
+
+    for selection in ({}, {CONF_STOP_LOCATION_ID: "PL:parkland"}):
+        result = await flow.async_step_stop_select(selection)
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "stop_select"
+        assert result["errors"] == {"base": "invalid_location_selection"}
+
+
+async def test_stop_search_rejects_place_results(hass: HomeAssistant) -> None:
+    """A place-only search cannot create a departure board."""
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    flow_id = flow["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {CONF_MODE: MODE_STOP})
+    with patch(
+        "custom_components.translink.client.TranslinkClient.search_locations",
+        return_value=_ROMA_STREET_RESULTS[:2],
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_STOP_NAME: "Roma Street"}
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "stop"
+    assert result["errors"] == {CONF_STOP_NAME: "no_board_location"}
+
+
+@pytest.mark.parametrize("has_station", [False, True])
+async def test_reconfigure_legacy_place_board_searches_again(
+    hass: HomeAssistant, has_station: bool
+) -> None:
+    """Search again for the saved name when the legacy ID cannot be used for a board."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="stop_PL:parkland",
+        data={
+            CONF_MODE: MODE_STOP,
+            CONF_STOP_LOCATION_ID: "PL:parkland",
+            CONF_STOP_NAME: "Roma Street Parkland",
+        },
+        options={CONF_SCAN_INTERVAL: 90},
+    )
+    entry.add_to_hass(hass)
+    original = (entry.data, entry.options, entry.unique_id)
+    flow = await entry.start_reconfigure_flow(hass)
+    results = _ROMA_STREET_RESULTS[: 3 if has_station else 2]
+
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            return_value=results,
+        ) as search,
+        patch.object(hass.config_entries, "async_schedule_reload") as reload,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], {CONF_STOP_NAME: "Roma Street Parkland"}
+        )
+
+    search.assert_awaited_once_with("Roma Street Parkland")
+    if has_station:
+        assert result["reason"] == "reconfigure_successful"
+        assert entry.data[CONF_STOP_LOCATION_ID] == "ST:place_rompl"
+        assert entry.unique_id == "stop_ST:place_rompl"
+        reload.assert_called_once_with(entry.entry_id)
+    else:
+        assert result["step_id"] == "reconfigure"
+        assert result["errors"] == {CONF_STOP_NAME: "no_board_location"}
+        assert (entry.data, entry.options, entry.unique_id) == original
+        reload.assert_not_called()
+
+
+async def test_cancel_pending_reconfigure_keeps_entry(hass: HomeAssistant) -> None:
+    """Cancel without changing data, options or unique ID."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="stop_ST:place_censta",
+        data={
+            CONF_MODE: MODE_STOP,
+            CONF_STOP_LOCATION_ID: "ST:place_censta",
+            CONF_STOP_NAME: "Central station",
+        },
+        options={CONF_SCAN_INTERVAL: 90},
+    )
+    entry.add_to_hass(hass)
+    original = (entry.data, entry.options, entry.unique_id)
+    flow = await entry.start_reconfigure_flow(hass)
+
+    with patch(
+        "custom_components.translink.client.TranslinkClient.search_locations",
+        return_value=_ROMA_STREET_RESULTS,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], {CONF_STOP_NAME: "Roma Street"}
+        )
+    assert result["step_id"] == "stop_select"
+    hass.config_entries.flow.async_abort(flow["flow_id"])
+    assert (entry.data, entry.options, entry.unique_id) == original

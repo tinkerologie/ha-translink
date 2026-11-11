@@ -43,6 +43,28 @@
           "transport_modes": "Modes to monitor from this stop."
         }
       },
+      "journey_select": {
+        "title": "Choose journey locations",
+        "description": "Several locations match your search from {start_query} to {end_query}. Choose a location for each field shown.",
+        "data": {
+          "start_location_id": "Starting point",
+          "end_location_id": "Destination"
+        },
+        "data_description": {
+          "start_location_id": "Select the starting point for this journey.",
+          "end_location_id": "Select the destination for this journey."
+        }
+      },
+      "stop_select": {
+        "title": "Choose a stop or station",
+        "description": "Several stops or stations match {stop_query}. Choose the one you want to track.",
+        "data": {
+          "stop_location_id": "Stop or station"
+        },
+        "data_description": {
+          "stop_location_id": "Select the stop or station for this departure board."
+        }
+      },
       "reconfigure": {
         "title": "Reconfigure Translink",
         "description": "Update location and transport settings for this Translink entry.",
@@ -57,6 +79,8 @@
     "error": {
       "cannot_connect": "Failed to connect to Translink API",
       "location_not_found": "Could not find any matching stop or station in Translink network",
+      "no_board_location": "No stop or station matched. Enter a stop or station name, or a stop number.",
+      "invalid_location_selection": "Choose a location from the search results.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
@@ -105,7 +129,10 @@
         "state": {
           "scheduled": "Scheduled",
           "on_time": "On Time",
+          "early": "Early",
           "delayed": "Delayed",
+          "cancelled": "Cancelled",
+          "boarding_skipped": "Boarding stop skipped",
           "departed": "Departed",
           "arrived": "Arrived",
           "no_service": "No Service"

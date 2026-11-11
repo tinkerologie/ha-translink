@@ -8,14 +8,25 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..const import LOCATION_PLACE_PREFIX, LOCATION_STATION_PREFIX, LOCATION_STOP_PREFIX
+
 type JourneyStatus = Literal[
     "scheduled",
     "on_time",
+    "early",
     "delayed",
+    "cancelled",
+    "boarding_skipped",
     "departed",
     "arrived",
     "no_service",
 ]
+
+type RealtimeStatus = Literal[
+    "live", "unavailable", "stale", "no_prediction", "no_data"
+]
+type DelaySource = Literal["stop_event", "trip"]
+type StopRelationship = Literal["scheduled", "skipped", "no_data", "unknown"]
 
 
 class TranslinkApiModel(BaseModel):
@@ -44,6 +55,22 @@ class LocationSearchResult(TranslinkApiModel):
     def name(self) -> str:
         """Alias for Description."""
         return self.Description
+
+    @property
+    def kind(self) -> Literal["station", "stop", "place", "unknown"]:
+        """Classify the public location ID by its prefix."""
+        if self.id.startswith(LOCATION_STATION_PREFIX):
+            return "station"
+        if self.id.startswith(LOCATION_STOP_PREFIX):
+            return "stop"
+        if self.id.startswith(LOCATION_PLACE_PREFIX):
+            return "place"
+        return "unknown"
+
+    @property
+    def is_board_candidate(self) -> bool:
+        """Return whether this location can be used for a departure board."""
+        return self.kind in ("station", "stop")
 
 
 class Position(TranslinkApiModel):
@@ -203,7 +230,16 @@ class JourneySummary(TranslinkApiModel):
     fare_type: str | None = None
     fares_breakdown: list[dict[str, Any]] = Field(default_factory=list)
     walking_distance_m: int = 0
-    delay_mins: int = 0
+    delay_mins: int | None = None
+    departure_delay_seconds: int | None = None
+    arrival_delay_seconds: int | None = None
+    predicted_departure_time: datetime | None = None
+    predicted_arrival_time: datetime | None = None
+    realtime_status: RealtimeStatus = "unavailable"
+    realtime_updated_at: datetime | None = None
+    delay_source: DelaySource | None = None
+    boarding_relationship: StopRelationship | None = None
+    alighting_skipped: bool = False
     disruptions_count: int = 0
     disruptions: list[dict[str, Any]] = Field(default_factory=list)
     disruptions_description: str = "No active disruptions"
@@ -232,7 +268,7 @@ class StopDepartureItem(TranslinkApiModel):
     headsign: str
     departure_time: datetime | None = None
     platform: str | None = None
-    delay_mins: int = 0
+    delay_mins: int | None = None
     trip_id: str | None = None
 
 
@@ -249,7 +285,13 @@ class StopSummary(TranslinkApiModel):
     next_vehicle: str | None = None
     next_platform: str | None = None
     next_headsign: str | None = None
-    delay_mins: int = 0
+    delay_mins: int | None = None
+    departure_delay_seconds: int | None = None
+    arrival_delay_seconds: int | None = None
+    predicted_departure_time: datetime | None = None
+    realtime_status: RealtimeStatus = "unavailable"
+    realtime_updated_at: datetime | None = None
+    delay_source: DelaySource | None = None
     departures: list[dict[str, Any]] = Field(default_factory=list)
     disruptions_count: int = 0
     disruptions: list[dict[str, Any]] = Field(default_factory=list)
@@ -299,9 +341,7 @@ class CallingStopRealtime(TranslinkApiModel):
     """Explicit GTFS-RT values, separate from scheduled timetable information."""
 
     sequence: int | None = None
-    scheduleRelationship: Literal["scheduled", "skipped", "no_data", "unknown"] = (
-        "unknown"
-    )
+    scheduleRelationship: StopRelationship = "unknown"
     arrivalTimeUtc: str | None = None
     arrivalDelaySeconds: int | None = None
     arrivalUncertaintySeconds: int | None = None

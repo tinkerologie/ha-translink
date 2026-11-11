@@ -123,13 +123,17 @@ export function statusLabel(
   status: string | undefined,
   delay?: number,
 ): string {
+  if (status === "cancelled") return "Cancelled";
+  if (status === "boarding_skipped") return "Boarding stop skipped";
   if (delay !== undefined && delay > 0) return `Reported delay +${delay} min`;
+  if (delay !== undefined && delay < 0) return `Reported early −${-delay} min`;
   const labels: Record<string, string> = {
-    scheduled: "Scheduled",
+    scheduled: "Scheduled · No real-time data used",
     on_time: "No delay reported",
+    early: "Early",
     delayed: "Delay reported",
-    departed: "Departed (scheduled)",
-    arrived: "Arrived (scheduled)",
+    departed: "Departed",
+    arrived: "Arrived",
     no_service: "No services found",
   };
   return labels[status ?? ""] ?? "Schedule information";

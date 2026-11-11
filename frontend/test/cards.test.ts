@@ -122,6 +122,16 @@ describe("card states and interactions", () => {
     expect(strip.textContent).toContain(title);
     expect(strip.querySelector("img")).toBeNull();
   });
+  it("shows predicted arrival alongside the schedule", async () => {
+    const hass = structuredClone(fixture) as HomeAssistant;
+    hass.states[
+      "sensor.renamed_journey_arrival_time"
+    ]!.attributes.predicted_time = "2026-10-26T09:00:00Z";
+    const card = await journey(hass);
+    const destination = card.shadowRoot!.querySelector(".destination")!;
+    expect(destination.textContent).toContain("Arrival · Scheduled");
+    expect(destination.textContent).toContain("Predicted 7:00 pm");
+  });
   it("escapes upstream descriptions and validates configuration", async () => {
     const card = document.createElement("translink-alerts-card") as AlertsCard;
     const hass = structuredClone(fixture) as HomeAssistant;
@@ -145,6 +155,29 @@ describe("card states and interactions", () => {
       card.setConfig({ type: "custom:x", max_alerts: 21 }),
     ).toThrow();
   });
+});
+
+it("shows a signed next-service delay and omits it when unknown", async () => {
+  const card = document.createElement(
+    "translink-departures-card",
+  ) as DeparturesCard;
+  card.setConfig({
+    type: "custom:translink-departures-card",
+    entity: "sensor.renamed_stop_departures_board",
+  });
+  const hass = structuredClone(fixture) as HomeAssistant;
+  hass.states["sensor.renamed_stop_delay"]!.state = "-2";
+  card.hass = hass;
+  document.body.append(card);
+  await card.updateComplete;
+  expect(card.shadowRoot!.querySelector(".alert-strip")?.textContent).toContain(
+    "Reported early −2 min",
+  );
+  const withoutDelay = structuredClone(hass);
+  withoutDelay.states["sensor.renamed_stop_delay"]!.state = "unknown";
+  card.hass = withoutDelay;
+  await card.updateComplete;
+  expect(card.shadowRoot!.querySelector(".alert-strip")).toBeNull();
 });
 
 it("shows supplied calling times and keeps predictions separate", async () => {

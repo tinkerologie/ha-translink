@@ -494,6 +494,12 @@ export class JourneyCard extends TranslinkCard {
     const transfers = number(value(related.transfers));
     const walking = number(value(related.walking_distance));
     const fare = number(value(related.fare));
+    const predictedDeparture = validTime(
+      related.next_departure?.attributes.predicted_time,
+    );
+    const predictedArrival = validTime(
+      related.arrival_time?.attributes.predicted_time,
+    );
     return html`
       <div class="timing">
         <div>
@@ -503,6 +509,11 @@ export class JourneyCard extends TranslinkCard {
               value(related.next_departure) ?? first.departureTimeUtc,
             )}
           </div>
+          ${predictedDeparture
+            ? html`<span class="prediction"
+                >Predicted ${this.formatTime(predictedDeparture)}</span
+              >`
+            : nothing}
           <div class="stop-name">${stopName(first.origin) ?? "Origin"}</div>
           ${text(first.originPlatform)
             ? html`<div class="secondary">
@@ -518,6 +529,11 @@ export class JourneyCard extends TranslinkCard {
               value(related.arrival_time) ?? last.arrivalTimeUtc,
             )}
           </div>
+          ${predictedArrival
+            ? html`<span class="prediction"
+                >Predicted ${this.formatTime(predictedArrival)}</span
+              >`
+            : nothing}
           <div class="stop-name">
             ${stopName(last.destination) ?? "Destination"}
           </div>
@@ -724,9 +740,9 @@ export class DeparturesCard extends TranslinkCard {
     return html`<div class="secondary">
         Upcoming departures · Planner results
       </div>
-      ${delay !== undefined && delay > 0
+      ${delay !== undefined && delay !== 0
         ? html`<div class="alert-strip">
-            Next service: reported delay +${delay} min
+            Next service · ${statusLabel(undefined, delay)}
           </div>`
         : nothing}
       <ol class="departures">

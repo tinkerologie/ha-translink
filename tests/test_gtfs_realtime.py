@@ -187,6 +187,23 @@ def test_parse_trip_updates_negative_delay_and_fields() -> None:
     assert rec.route_id == "ROUTE_NEG"
 
 
+def test_trip_delay_and_feed_timestamp_are_independent_of_field_order() -> None:
+    """Preserve trip-wide evidence separately from legacy stop aggregates."""
+    descriptor = _encode_field(1, 2, _encode_field(1, 2, "TRIP"))
+    event = _encode_field(3, 2, _encode_field(1, 0, 900))
+    visit = _encode_field(2, 2, event + _encode_field(4, 2, "STOP"))
+    trip_delay = _encode_field(5, 0, -120)
+    header = _encode_field(1, 2, _encode_field(3, 0, 1728180000))
+
+    for timing, legacy_delay in ((trip_delay + visit, 900), (visit + trip_delay, -120)):
+        entity = _encode_field(3, 2, descriptor + timing)
+        record = parse_trip_updates(_encode_field(2, 2, entity) + header)["TRIP"]
+        assert record.feed_timestamp == 1728180000
+        assert record.trip_delay_seconds == -120
+        assert record.delay_seconds == legacy_delay
+        assert record.stop_id == "STOP"
+
+
 def test_parse_vehicle_positions_custom_fields() -> None:
     """Test parse_vehicle_positions with missing trip_id, vehicle entity without position, etc."""
     # Vehicle position without trip descriptor, only vehicle descriptor and position

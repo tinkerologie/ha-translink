@@ -179,6 +179,53 @@ def test_journey_sensor_properties(sample_journey_summary: JourneySummary) -> No
     assert attrs_none["readable_time"] is None
 
 
+def test_journey_sensors_expose_predictions_and_signed_delay(
+    sample_journey_summary: JourneySummary,
+) -> None:
+    """Scheduled sensor states remain stable while real-time evidence is exposed."""
+    predicted_departure = datetime(2026, 10, 6, 9, 28, tzinfo=UTC)
+    predicted_arrival = datetime(2026, 10, 6, 10, 15, tzinfo=UTC)
+    sample_journey_summary.predicted_departure_time = predicted_departure
+    sample_journey_summary.predicted_arrival_time = predicted_arrival
+    sample_journey_summary.delay_mins = -2
+    sample_journey_summary.departure_delay_seconds = -120
+    sample_journey_summary.arrival_delay_seconds = 240
+    sample_journey_summary.realtime_status = "live"
+    sample_journey_summary.delay_source = "stop_event"
+    sample_journey_summary.realtime_updated_at = predicted_departure
+    coordinator = FakeCoordinator(data=sample_journey_summary)
+    entry = FakeEntry()
+    sensors = {
+        desc.key: TranslinkSensor(coordinator, desc, entry)  # type: ignore[arg-type]
+        for desc in JOURNEY_SENSORS
+    }
+    assert {"early", "cancelled", "boarding_skipped"} <= set(sensors["status"].options)
+    assert sensors["delay"].native_value == -2
+    assert sensors["delay"].extra_state_attributes == {
+        "delay_seconds": -120,
+        "arrival_delay_seconds": 240,
+        "realtime_status": "live",
+        "delay_source": "stop_event",
+        "realtime_updated_at": predicted_departure.isoformat(),
+    }
+    departure = sensors["next_departure"]
+    arrival = sensors["arrival_time"]
+    assert departure.native_value == sample_journey_summary.departure_time
+    assert arrival.native_value == sample_journey_summary.arrival_time
+    assert (
+        departure.extra_state_attributes["predicted_time"]
+        == predicted_departure.isoformat()
+    )
+    assert departure.extra_state_attributes["predicted_readable_time"] == "07:28 PM"
+    assert (
+        arrival.extra_state_attributes["predicted_time"]
+        == predicted_arrival.isoformat()
+    )
+    assert arrival.extra_state_attributes["predicted_readable_time"] == "08:15 PM"
+    sample_journey_summary.delay_mins = None
+    assert sensors["delay"].native_value is None
+
+
 def test_stop_sensor_properties(sample_stop_summary: StopSummary) -> None:
     """Test values and attributes for stop departure sensors."""
     sample_stop_summary.disruptions_count = 1
@@ -204,6 +251,13 @@ def test_stop_sensor_properties(sample_stop_summary: StopSummary) -> None:
     assert sensors["platform"].icon == "mdi:bus-stop-uncovered"
     assert sensors["disruptions"].native_value == 1
     assert sensors["disruption_description"].native_value == "Lift Maintenance"
+
+    sample_stop_summary.delay_mins = -2
+    sample_stop_summary.departure_delay_seconds = -120
+    assert sensors["delay"].native_value == -2
+    assert sensors["delay"].extra_state_attributes["delay_seconds"] == -120
+    sample_stop_summary.delay_mins = None
+    assert sensors["delay"].native_value is None
 
     disruption_attrs = sensors["disruptions"].extra_state_attributes
     assert disruption_attrs["summary"] == "Lift Maintenance"

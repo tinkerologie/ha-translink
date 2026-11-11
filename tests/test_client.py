@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs
@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from custom_components.translink.api.client import (
+    DELAYED_THRESHOLD_MINUTES,
+    EARLY_THRESHOLD_MINUTES,
     JourneySort,
     build_journey_alternatives,
 )
@@ -20,9 +22,11 @@ from custom_components.translink.api.gtfs_realtime import (
     _parse_fields,
     _parse_varint,
 )
+from custom_components.translink.api.models import JourneyLeg, TripTimetable
 from custom_components.translink.client import (
     JourneyPlanResult,
     JourneySummary,
+    LocationSearchResult,
     TranslinkClient,
     TranslinkConnectionError,
     TranslinkResponseError,
@@ -34,6 +38,31 @@ from custom_components.translink.client import (
     parse_vehicle_positions,
     redact_sensitive,
 )
+from custom_components.translink.const import (
+    REALTIME_MAX_AGE_SECONDS,
+    REALTIME_MAX_FUTURE_SKEW_SECONDS,
+)
+from tests.test_gtfs_realtime import _encode_field
+
+
+@pytest.mark.parametrize(
+    ("location_id", "kind", "is_board_candidate"),
+    [
+        ("ST:place_romsta", "station", True),
+        ("SI:600036", "stop", True),
+        ("PL:parkland", "place", False),
+        ("XX:other", "unknown", False),
+    ],
+)
+def test_location_search_result_kind(
+    location_id: str, kind: str, is_board_candidate: bool
+) -> None:
+    """Classify a location without requiring any additional API fields."""
+    result = LocationSearchResult(LocationId=location_id, Description="Roma Street")
+    assert result.id == location_id
+    assert result.name == "Roma Street"
+    assert result.kind == kind
+    assert result.is_board_candidate is is_board_candidate
 
 
 def test_calculate_plan_hash() -> None:
@@ -42,6 +71,472 @@ def test_calculate_plan_hash() -> None:
     h1 = calculate_plan_hash("searchDate=2026-10-06&searchTime=9%3A30am")
     assert isinstance(h1, int)
     assert -0x80000000 <= h1 <= 0x7FFFFFFF
+
+
+DEPARTURE = datetime(2026, 10, 6, 5, tzinfo=UTC)
+ARRIVAL = datetime(2026, 10, 6, 5, 20, tzinfo=UTC)
+BEFORE_DEPARTURE = datetime(2026, 10, 6, 4, 50, tzinfo=UTC)
+
+
+@pytest.fixture
+def realtime_plan() -> JourneyPlanResult:
+    """A single service scheduled from 05:00 to 05:20."""
+    return JourneyPlanResult.model_validate(
+        {
+            "itineraries": [
+                {
+                    "firstDepartureTimeUtc": DEPARTURE.isoformat(),
+                    "lastArrivalTimeUtc": ARRIVAL.isoformat(),
+                    "legs": [
+                        {
+                            "tripId": "trip-1",
+                            "travelMode": "Bus",
+                            "departureTimeUtc": DEPARTURE.isoformat(),
+                            "arrivalTimeUtc": ARRIVAL.isoformat(),
+                            "origin": {"id": "123", "name": "Boarding"},
+                            "destination": {"id": "456", "name": "Alighting"},
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+
+def _stop_update(
+    stop: str,
+    *,
+    sequence: int = 1,
+    event_field: int = 3,
+    predicted_time: datetime | None = None,
+    delay: int | None = None,
+    relationship: int | None = None,
+) -> bytes:
+    visit = _encode_field(1, 0, sequence) + _encode_field(4, 2, stop)
+    if relationship is not None:
+        visit += _encode_field(5, 0, relationship)
+    event = b""
+    if delay is not None:
+        event += _encode_field(1, 0, delay)
+    if predicted_time is not None:
+        event += _encode_field(2, 0, int(predicted_time.timestamp()))
+    if event:
+        visit += _encode_field(event_field, 2, event)
+    return _encode_field(2, 2, visit)
+
+
+def _trip_entity(
+    *visits: bytes,
+    trip: str = "trip-1",
+    delay: int | None = None,
+    timestamp: int | None = None,
+    relationship: int | None = None,
+) -> bytes:
+    descriptor = _encode_field(1, 2, trip)
+    if relationship is not None:
+        descriptor += _encode_field(4, 0, relationship)
+    update = _encode_field(1, 2, descriptor) + b"".join(visits)
+    if timestamp is not None:
+        update += _encode_field(4, 0, timestamp)
+    if delay is not None:
+        update += _encode_field(5, 0, delay)
+    return _encode_field(
+        2, 2, _encode_field(1, 2, f"entity-{trip}") + _encode_field(3, 2, update)
+    )
+
+
+@pytest.mark.parametrize(
+    ("delay", "status", "minutes", "realtime_status"),
+    [
+        (None, "scheduled", None, "unavailable"),
+        (0, "on_time", 0, "live"),
+        (-120, "early", -2, "live"),
+        (EARLY_THRESHOLD_MINUTES * 60, "early", EARLY_THRESHOLD_MINUTES, "live"),
+        (DELAYED_THRESHOLD_MINUTES * 60, "delayed", DELAYED_THRESHOLD_MINUTES, "live"),
+    ],
+)
+def test_journey_distinguishes_scheduled_measured_zero_and_early(
+    realtime_plan: JourneyPlanResult,
+    delay: int | None,
+    status: str,
+    minutes: int | None,
+    realtime_status: str,
+) -> None:
+    """Only the matched boarding visit can report a measured offset."""
+    feed = b""
+    if delay is not None:
+        feed = _trip_entity(
+            _stop_update(
+                "SI:00123",
+                predicted_time=DEPARTURE + timedelta(seconds=delay),
+                delay=delay,
+            ),
+            _stop_update("999", sequence=2, delay=900),
+        )
+    summary = build_journey_summary(
+        realtime_plan, trip_updates=parse_trip_updates(feed), now=BEFORE_DEPARTURE
+    )
+    assert (summary.status, summary.delay_mins, summary.realtime_status) == (
+        status,
+        minutes,
+        realtime_status,
+    )
+    assert summary.departure_time == DEPARTURE
+    assert summary.arrival_time == ARRIVAL
+    assert summary.departure_delay_seconds == delay
+
+
+@pytest.mark.parametrize(
+    ("trip_age", "feed_age", "status", "used_age"),
+    [
+        (REALTIME_MAX_AGE_SECONDS + 1, 0, "stale", REALTIME_MAX_AGE_SECONDS + 1),
+        (None, REALTIME_MAX_AGE_SECONDS + 1, "stale", REALTIME_MAX_AGE_SECONDS + 1),
+        (0, REALTIME_MAX_AGE_SECONDS, "live", REALTIME_MAX_AGE_SECONDS),
+        (None, None, "live", None),
+        (None, 0, "live", 0),
+        (
+            -REALTIME_MAX_FUTURE_SKEW_SECONDS,
+            REALTIME_MAX_AGE_SECONDS + 1,
+            "live",
+            -REALTIME_MAX_FUTURE_SKEW_SECONDS,
+        ),
+        (
+            -REALTIME_MAX_FUTURE_SKEW_SECONDS - 1,
+            0,
+            "stale",
+            -REALTIME_MAX_FUTURE_SKEW_SECONDS - 1,
+        ),
+    ],
+)
+def test_journey_checks_trip_timestamp_then_feed_timestamp(
+    realtime_plan: JourneyPlanResult,
+    trip_age: int | None,
+    feed_age: int | None,
+    status: str,
+    used_age: int | None,
+) -> None:
+    """Ignore stale evidence and permit missing or moderately skewed timestamps."""
+    now = int(BEFORE_DEPARTURE.timestamp())
+    trip_timestamp = (
+        (now - trip_age if trip_age else 0) if trip_age is not None else None
+    )
+    feed = _trip_entity(delay=180, timestamp=trip_timestamp)
+    if feed_age is not None:
+        feed = _encode_field(1, 2, _encode_field(3, 0, now - feed_age)) + feed
+    summary = build_journey_summary(
+        realtime_plan, trip_updates=parse_trip_updates(feed), now=BEFORE_DEPARTURE
+    )
+    assert summary.realtime_status == status
+    assert summary.realtime_updated_at == (
+        BEFORE_DEPARTURE - timedelta(seconds=used_age) if used_age is not None else None
+    )
+    if status == "live":
+        assert summary.status == "delayed"
+        assert summary.delay_source == "trip"
+        assert summary.delay_mins == 3
+        assert summary.predicted_departure_time == DEPARTURE + timedelta(minutes=3)
+    else:
+        assert summary.status == "scheduled"
+        assert summary.delay_mins is None
+        assert summary.predicted_departure_time is None
+
+
+@pytest.mark.parametrize(
+    ("visits", "status", "realtime_status", "boarding", "alighting_skipped"),
+    [
+        (
+            (_stop_update("123", relationship=1),),
+            "boarding_skipped",
+            "no_prediction",
+            "skipped",
+            False,
+        ),
+        (
+            (_stop_update("123", relationship=2),),
+            "scheduled",
+            "no_data",
+            "no_data",
+            False,
+        ),
+        (
+            (_stop_update("456", relationship=1),),
+            "scheduled",
+            "no_prediction",
+            None,
+            True,
+        ),
+        (
+            (_stop_update("456", relationship=2),),
+            "scheduled",
+            "no_data",
+            None,
+            False,
+        ),
+        ((_stop_update("999", delay=900),), "scheduled", "no_prediction", None, False),
+        (
+            (
+                _stop_update("123", predicted_time=DEPARTURE, delay=0),
+                _stop_update(
+                    "123",
+                    sequence=10,
+                    predicted_time=DEPARTURE + timedelta(minutes=20),
+                    delay=0,
+                ),
+            ),
+            "scheduled",
+            "no_prediction",
+            None,
+            False,
+        ),
+        (
+            (_stop_update("123", predicted_time=DEPARTURE),),
+            "scheduled",
+            "no_prediction",
+            None,
+            False,
+        ),
+        (
+            (_stop_update("123", predicted_time=DEPARTURE, delay=30),),
+            "scheduled",
+            "no_prediction",
+            None,
+            False,
+        ),
+    ],
+)
+def test_journey_scopes_stop_evidence_to_a_unique_endpoint(
+    realtime_plan: JourneyPlanResult,
+    visits: tuple[bytes, ...],
+    status: str,
+    realtime_status: str,
+    boarding: str | None,
+    alighting_skipped: bool,
+) -> None:
+    """Skip and no-data apply only to the matching stop visit."""
+    feed = _trip_entity(*visits, delay=None if alighting_skipped else 900)
+    summary = build_journey_summary(
+        realtime_plan, trip_updates=parse_trip_updates(feed), now=BEFORE_DEPARTURE
+    )
+    assert (summary.status, summary.realtime_status, summary.boarding_relationship) == (
+        status,
+        realtime_status,
+        boarding,
+    )
+    assert summary.delay_mins is None
+    assert summary.alighting_skipped is alighting_skipped
+
+
+def test_journey_uses_timetable_to_find_visits_and_preceding_no_data(
+    realtime_plan: JourneyPlanResult,
+) -> None:
+    """A preceding timetable visit can suspend timing until a later update."""
+    timetable = TripTimetable.model_validate(
+        {
+            "id": "trip-1",
+            "departures": [
+                {
+                    "stopId": "555",
+                    "order": 1,
+                    "scheduledDepartureUtc": "2026-10-06T04:40:00Z",
+                },
+                {
+                    "stopId": "123",
+                    "order": 2,
+                    "scheduledDepartureUtc": "2026-10-06T04:45:00Z",
+                },
+                {
+                    "stopId": "123",
+                    "order": 3,
+                    "scheduledDepartureUtc": DEPARTURE.isoformat(),
+                },
+                {
+                    "stopId": "456",
+                    "order": 4,
+                    "scheduledDepartureUtc": ARRIVAL.isoformat(),
+                },
+            ],
+        }
+    )
+    no_data = _stop_update("555", sequence=1, relationship=2)
+    earlier_boarding = _stop_update("123", sequence=2, relationship=2)
+    boarding = _stop_update(
+        "123", sequence=3, predicted_time=DEPARTURE - timedelta(minutes=2), delay=-120
+    )
+    for visits, expected, minutes in (
+        ((no_data,), "no_data", None),
+        ((no_data, earlier_boarding), "no_data", None),
+        ((no_data, earlier_boarding, boarding), "live", -2),
+        ((_stop_update("999", sequence=1, relationship=2),), "no_prediction", None),
+        (
+            (no_data, _stop_update("123", sequence=3, delay=60)),
+            "no_prediction",
+            None,
+        ),
+        (
+            (no_data, _stop_update("456", sequence=4, relationship=2)),
+            "no_data",
+            None,
+        ),
+    ):
+        summary = build_journey_summary(
+            realtime_plan,
+            trip_updates=parse_trip_updates(_trip_entity(*visits)),
+            now=BEFORE_DEPARTURE,
+            trip_timetables={"trip-1": timetable},
+        )
+        assert summary.realtime_status == expected
+        assert summary.delay_mins == minutes
+
+
+def test_journey_uses_the_endpoint_event_even_when_the_overlay_matched_another_event(
+    realtime_plan: JourneyPlanResult,
+) -> None:
+    """A timetable arrival match cannot supply boarding departure evidence."""
+    timetable = TripTimetable.model_validate(
+        {
+            "id": "trip-1",
+            "departures": [
+                {
+                    "stopId": "123",
+                    "order": 1,
+                    "scheduledDepartureUtc": DEPARTURE.isoformat(),
+                    "canBoardDebark": "Alighting",
+                },
+                {
+                    "stopId": "456",
+                    "order": 2,
+                    "scheduledDepartureUtc": ARRIVAL.isoformat(),
+                },
+            ],
+        }
+    )
+    update = _stop_update("123", event_field=2, predicted_time=DEPARTURE, delay=0)
+    summary = build_journey_summary(
+        realtime_plan,
+        trip_updates=parse_trip_updates(_trip_entity(update)),
+        now=BEFORE_DEPARTURE,
+        trip_timetables={"trip-1": timetable},
+    )
+    assert summary.delay_mins is None
+    assert summary.realtime_status == "no_prediction"
+    calling_stop = summary.itinerary_legs[0]["callingStops"][0]
+    assert calling_stop["realtime"]["arrivalDelaySeconds"] == 0
+
+
+@pytest.mark.parametrize(
+    ("relationship", "timestamp_age", "status", "cancelled"),
+    [
+        (3, 0, "cancelled", True),
+        (7, 0, "cancelled", True),
+        (3, REALTIME_MAX_AGE_SECONDS + 1, "scheduled", False),
+    ],
+)
+def test_journey_reports_cancellation_only_for_an_applicable_trip(
+    realtime_plan: JourneyPlanResult,
+    relationship: int,
+    timestamp_age: int,
+    status: str,
+    cancelled: bool,
+) -> None:
+    """A valid cancellation outranks any timing evidence."""
+    later_leg = (
+        realtime_plan.itineraries[0].legs[0].model_copy(update={"tripId": "trip-2"})
+    )
+    realtime_plan.itineraries[0].legs.append(later_leg)
+    now = int(BEFORE_DEPARTURE.timestamp())
+    feed = _trip_entity() + _trip_entity(
+        trip="trip-2", relationship=relationship, timestamp=now - timestamp_age
+    )
+    summary = build_journey_summary(
+        realtime_plan, trip_updates=parse_trip_updates(feed), now=BEFORE_DEPARTURE
+    )
+    assert summary.status == status
+    assert summary.itinerary_legs[0]["tripCancelled"] is False
+    assert summary.itinerary_legs[1]["tripCancelled"] is cancelled
+    assert summary.itinerary_legs[1]["tripScheduleRelationship"] == (
+        relationship if cancelled else None
+    )
+    if not cancelled:
+        assert summary.realtime_status == "stale"
+
+
+@pytest.mark.parametrize(
+    ("current_time", "status"),
+    [
+        (DEPARTURE, "departed"),
+        (ARRIVAL + timedelta(minutes=1), "departed"),
+        (ARRIVAL + timedelta(minutes=12), "departed"),
+        (ARRIVAL + timedelta(minutes=12, seconds=1), "arrived"),
+    ],
+)
+def test_journey_uses_last_transit_arrival_prediction_and_includes_trailing_walk(
+    realtime_plan: JourneyPlanResult, current_time: datetime, status: str
+) -> None:
+    """The alighting prediction offsets the full itinerary arrival."""
+    itinerary = realtime_plan.itineraries[0]
+    itinerary.lastArrivalTimeUtc = "2026-10-06T05:22:00Z"
+    itinerary.legs.extend(
+        [
+            itinerary.legs[0].model_copy(update={"tripId": "trip-2"}),
+            JourneyLeg(travelMode="Walk", durationMins=2),
+        ]
+    )
+    feed = _trip_entity(
+        _stop_update("456", event_field=2, predicted_time=ARRIVAL, delay=0)
+    )
+    feed += _trip_entity(
+        _stop_update(
+            "456",
+            event_field=2,
+            predicted_time=ARRIVAL + timedelta(minutes=10),
+            delay=600,
+        ),
+        trip="trip-2",
+    )
+    summary = build_journey_summary(
+        realtime_plan, trip_updates=parse_trip_updates(feed), now=current_time
+    )
+    assert summary.status == status
+    assert summary.arrival_time == ARRIVAL + timedelta(minutes=2)
+    assert summary.predicted_arrival_time == ARRIVAL + timedelta(minutes=12)
+    assert summary.arrival_delay_seconds == 600
+
+
+def test_journey_does_not_arrive_before_a_late_predicted_departure(
+    realtime_plan: JourneyPlanResult,
+) -> None:
+    """Departure is an inclusive lower bound even if its prediction is very late."""
+    predicted = DEPARTURE + timedelta(minutes=40)
+    feed = _trip_entity(_stop_update("123", predicted_time=predicted, delay=2400))
+    updates = parse_trip_updates(feed)
+    for now, expected in (
+        (ARRIVAL + timedelta(minutes=1), "delayed"),
+        (predicted, "departed"),
+        (predicted + timedelta(seconds=1), "arrived"),
+    ):
+        summary = build_journey_summary(realtime_plan, trip_updates=updates, now=now)
+        assert summary.status == expected
+        assert summary.predicted_arrival_time is None
+
+
+def test_arrival_only_prediction_extends_the_journey(
+    realtime_plan: JourneyPlanResult,
+) -> None:
+    """At 05:21 a 05:30 arrival prediction is still underway."""
+    prediction = ARRIVAL + timedelta(minutes=10)
+    feed = _trip_entity(
+        _stop_update("456", event_field=2, predicted_time=prediction, delay=600)
+    )
+    summary = build_journey_summary(
+        realtime_plan,
+        trip_updates=parse_trip_updates(feed),
+        now=ARRIVAL + timedelta(minutes=1),
+    )
+    assert summary.status == "departed"
+    assert summary.delay_mins is None
+    assert summary.realtime_status == "live"
+    assert summary.arrival_time == ARRIVAL
+    assert summary.predicted_arrival_time == prediction
 
 
 def test_parse_iso_datetime() -> None:
@@ -155,6 +650,7 @@ def test_build_journey_summary_empty() -> None:
         plan=plan,
         origin_name_fallback="Origin",
         destination_name_fallback="Destination",
+        now=BEFORE_DEPARTURE,
     )
     assert summary.status == "no_service"
     assert summary.origin_name == "Origin"
@@ -405,7 +901,7 @@ def test_build_journey_summary_with_delay_and_vehicle(
             entity_id="tu_1",
             trip_id=first_trip_id,
             route_id="RPSP",
-            delay_seconds=300,
+            trip_delay_seconds=300,
         )
     }
     vehicle_positions = {
@@ -526,7 +1022,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
             entity_id="tu_base",
             trip_id="39040630-QR 26_27-44171-DY37",
             route_id="SPRP",
-            delay_seconds=180,
+            trip_delay_seconds=180,
         )
     }
     vehicle_positions = {
@@ -547,6 +1043,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
         plan,
         trip_updates=trip_updates,
         vehicle_positions=vehicle_positions,
+        now=BEFORE_DEPARTURE,
     )
     assert summary.delay_mins == 3
     assert summary.vehicle_id == "DY37"
@@ -561,8 +1058,9 @@ def test_build_journey_summary_with_base_trip_id_correlation(
         plan,
         trip_updates=trip_updates,
         vehicle_positions=vehicle_positions,
+        now=BEFORE_DEPARTURE,
     )
-    assert summary_mismatch.delay_mins == 0
+    assert summary_mismatch.delay_mins is None
     assert summary_mismatch.vehicle_tracked is False
 
 
@@ -691,7 +1189,7 @@ async def test_gtfs_fetch_errors_and_non_200() -> None:
 
 
 def test_build_journey_summary_edge_cases(plan_response_data: dict[str, Any]) -> None:
-    """Test on_time status, walk-only trip, concession fare, and platform coords fallback."""
+    """Test scheduled status, walk-only trip, concession fare, and fallback."""
     from datetime import timedelta
 
     plan = JourneyPlanResult.model_validate(plan_response_data)
@@ -699,8 +1197,8 @@ def test_build_journey_summary_edge_cases(plan_response_data: dict[str, Any]) ->
     assert dep_time is not None
     before_dep = dep_time - timedelta(minutes=10)
 
-    summary_on_time = build_journey_summary(plan, now=before_dep)
-    assert summary_on_time.status == "on_time"
+    summary_scheduled = build_journey_summary(plan, now=before_dep)
+    assert summary_scheduled.status == "scheduled"
 
     # Walk-only itinerary
     walk_plan_data = {
@@ -745,7 +1243,7 @@ def test_build_journey_summary_edge_cases(plan_response_data: dict[str, Any]) ->
     no_legs_plan = JourneyPlanResult.model_validate(
         {"itineraries": [{"durationMins": 0, "legs": []}]}
     )
-    no_legs_sum = build_journey_summary(no_legs_plan)
+    no_legs_sum = build_journey_summary(no_legs_plan, now=BEFORE_DEPARTURE)
     assert no_legs_sum.transfers == 0
 
     # Plan with legs having no origin, destination, or departure time
@@ -768,7 +1266,7 @@ def test_build_journey_summary_edge_cases(plan_response_data: dict[str, Any]) ->
             ]
         }
     )
-    no_dep_sum = build_journey_summary(no_dep_plan)
+    no_dep_sum = build_journey_summary(no_dep_plan, now=BEFORE_DEPARTURE)
     assert no_dep_sum.status == "scheduled"
 
 
