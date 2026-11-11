@@ -5,12 +5,16 @@ import {
   type PropertyValues,
   type TemplateResult,
 } from "lit";
+import { live } from "lit/directives/live.js";
 import {
   available,
+  boardFilterOptions,
   brisbaneInputDefaults,
+  filterDepartures,
   modeIcon,
   normalizeDepartures,
   number,
+  orderDepartures,
   routeColors,
   rows,
   siblings,
@@ -22,15 +26,25 @@ import {
   time,
   validTime,
 } from "./helpers";
+import {
+  buildCalendarFile,
+  buildJourneySharePayload,
+  validateTimetableUrl,
+  type JourneySharePayload,
+} from "./share";
 import { strings } from "./strings";
 import { cardStyles } from "./styles";
 import type {
+  BoardFilterOption,
+  BoardOrder,
+  BoardView,
   CardConfig,
   Departure,
   EntityState,
   HomeAssistant,
   JourneyAlternative,
   JourneyAlternatives,
+  JourneyLegAttributes,
   JourneySort,
   RegistryEntry,
   Row,
@@ -48,9 +62,13 @@ const labels: Record<string, string> = {
   show_disruptions: "Show service alerts",
   max_departures: "Maximum departures",
   show_platform: "Show platform",
+  show_arrivals: strings.showArrivals,
+  show_filters: strings.showFilters,
   max_alerts: "Maximum alerts",
   show_planner: "Show journey planner",
   alternatives_limit: "Maximum alternatives",
+  show_actions: "Show journey actions",
+  calendar_entity: "Calendar for journey events",
 };
 function form(role: string, fields: string[]) {
   return {
@@ -66,11 +84,13 @@ function form(role: string, fields: string[]) {
       ...fields.map((name) => ({
         name,
         selector:
-          name === "alternatives_limit"
-            ? { number: { min: 1, max: MAX_ALTERNATIVES_LIMIT, mode: "box" } }
-            : name.startsWith("max_")
-              ? { number: { min: 1, max: 20, mode: "box" } }
-              : { boolean: {} },
+          name === "calendar_entity"
+            ? { entity: { filter: { domain: "calendar" } } }
+            : name === "alternatives_limit"
+              ? { number: { min: 1, max: MAX_ALTERNATIVES_LIMIT, mode: "box" } }
+              : name.startsWith("max_")
+                ? { number: { min: 1, max: 20, mode: "box" } }
+                : { boolean: {} },
       })),
     ],
     computeLabel: (schema: { name: string }) =>
@@ -135,6 +155,8 @@ export abstract class TranslinkCard extends LitElement {
       "legs_expanded",
       "show_disruptions",
       "show_platform",
+      "show_arrivals",
+      "show_filters",
     ] as const) {
       if (config[key] !== undefined && typeof config[key] !== "boolean")
         throw new Error(`${key} must be a boolean`);
@@ -277,11 +299,16 @@ type PlannerState =
   | { status: "error"; message: string }
   | { status: "complete"; result: JourneyAlternatives };
 
+type SharePreview = Extract<JourneySharePayload, { available: true }>;
+
 export class JourneyCard extends TranslinkCard {
   static override properties = {
     ...TranslinkCard.properties,
     planner: { state: true },
     plannerSort: { state: true },
+    sharePreview: { state: true },
+    shareStatus: { state: true },
+    calendarSaving: { state: true },
   };
   static override role = "itinerary";
   static override title = strings.journey;
@@ -292,6 +319,8 @@ export class JourneyCard extends TranslinkCard {
       "show_disruptions",
       "show_planner",
       "alternatives_limit",
+      "show_actions",
+      "calendar_entity",
     ]);
   }
   protected entityRole = "itinerary";
@@ -300,6 +329,9 @@ export class JourneyCard extends TranslinkCard {
   private planner?: PlannerState;
   private plannerSort: JourneySort = "departure";
   private readonly plannerDefaults = brisbaneInputDefaults();
+  private sharePreview?: SharePreview;
+  private shareStatus = "";
+  private calendarSaving = false;
 
   override setConfig(config: CardConfig): void {
     if (
@@ -307,6 +339,19 @@ export class JourneyCard extends TranslinkCard {
       typeof config.show_planner !== "boolean"
     )
       throw new Error("show_planner must be a boolean");
+    if (
+      config?.show_actions !== undefined &&
+      typeof config.show_actions !== "boolean"
+    )
+      throw new Error("show_actions must be a boolean");
+    const calendar = config?.calendar_entity;
+    if (
+      calendar !== undefined &&
+      (typeof calendar !== "string" ||
+        calendar.trim() !== calendar ||
+        !/^calendar\.[a-z0-9_]+$/.test(calendar))
+    )
+      throw new Error("calendar_entity must be a calendar entity ID");
     const limit = config?.alternatives_limit;
     if (
       limit !== undefined &&
@@ -315,8 +360,284 @@ export class JourneyCard extends TranslinkCard {
       throw new Error("alternatives_limit must be between 1 and 10");
     const oldEntity = this.config.entity;
     super.setConfig(config);
+    this.sharePreview = undefined;
+    this.shareStatus = "";
     if (oldEntity !== config.entity || !config.show_planner)
       this.planner = undefined;
+  }
+
+  protected override shouldUpdate(changed: PropertyValues<this>): boolean {
+    if (super.shouldUpdate(changed)) return true;
+    return (
+      !!this.sharePreview &&
+      this.calendarTarget(changed.get("hass") as HomeAssistant | undefined) !==
+        this.calendarTarget(this.hass)
+    );
+  }
+
+  private calendarTarget(hass?: HomeAssistant): string | undefined {
+    const entity = this.config.calendar_entity;
+    const state = entity ? hass?.states[entity] : undefined;
+    if (!available(state) || typeof hass?.callService !== "function")
+      return undefined;
+    const features = number(state.attributes.supported_features);
+    // Home Assistant CalendarEntityFeature.CREATE_EVENT is bit 1.
+    return features !== undefined &&
+      Number.isInteger(features) &&
+      features >= 0 &&
+      (features & 1) !== 0
+      ? entity
+      : undefined;
+  }
+
+  private async addToCalendar(preview: SharePreview): Promise<void> {
+    const hass = this.hass;
+    const entity = this.calendarTarget(hass);
+    if (this.calendarSaving || !entity || !preview.calendar.available) return;
+    const { data } = preview.calendar;
+    this.calendarSaving = true;
+    try {
+      await this.runShareAction(
+        preview,
+        () =>
+          hass?.callService?.(
+            "calendar",
+            "create_event",
+            data,
+            { entity_id: entity },
+            false,
+          ),
+        strings.share.calendarFailed,
+        strings.share.calendarAdded,
+      );
+    } finally {
+      this.calendarSaving = false;
+    }
+  }
+
+  private downloadCalendar(preview: SharePreview): void {
+    if (!preview.calendar.available) return;
+    const calendar = preview.calendar;
+    void this.runShareAction(
+      preview,
+      () => {
+        const link = document.createElement("a");
+        const file = new Blob([buildCalendarFile(calendar)], {
+          type: "text/calendar;charset=utf-8",
+        });
+        const url = URL.createObjectURL(file);
+        try {
+          link.href = url;
+          link.download = "translink-journey.ics";
+          document.body.append(link);
+          link.click();
+        } finally {
+          link.remove();
+          // Give the browser the next turn to start consuming the object URL.
+          setTimeout(() => URL.revokeObjectURL(url), 0);
+        }
+      },
+      strings.share.downloadFailed,
+    );
+  }
+
+  private async runShareAction(
+    preview: SharePreview,
+    action: () => unknown,
+    failure: string,
+    success = "",
+    ignoreAbort = false,
+  ): Promise<void> {
+    if (this.sharePreview !== preview) return;
+    this.shareStatus = "";
+    try {
+      await action();
+      if (this.sharePreview === preview) this.shareStatus = success;
+    } catch (error) {
+      if (
+        this.sharePreview === preview &&
+        !(
+          ignoreAbort &&
+          (error instanceof Error || error instanceof DOMException) &&
+          error.name === "AbortError"
+        )
+      )
+        this.shareStatus = failure;
+    }
+  }
+
+  protected override willUpdate(changed: PropertyValues<this>): void {
+    if (!this.sharePreview || !changed.has("hass")) return;
+    const payload = this.currentSharePayload();
+    if (!payload?.available) {
+      this.sharePreview = undefined;
+      this.shareStatus = "";
+    } else if (JSON.stringify(payload) !== JSON.stringify(this.sharePreview)) {
+      this.sharePreview = payload;
+      this.shareStatus = strings.share.updated;
+    }
+  }
+
+  private currentSharePayload() {
+    const entity = this.config.entity ?? "";
+    const entry = this.hass?.entities?.[entity];
+    if (
+      this.config.show_actions === false ||
+      entry?.platform !== "translink" ||
+      entry.translation_key !== this.entityRole
+    )
+      return undefined;
+    return buildJourneySharePayload(
+      this.hass?.states[entity],
+      this.related,
+      this.hass,
+    );
+  }
+
+  private async toggleSharePreview(): Promise<void> {
+    if (this.sharePreview) {
+      this.closeSharePreview();
+      return;
+    }
+    const payload = this.currentSharePayload();
+    if (!payload?.available) return;
+    this.sharePreview = payload;
+    this.shareStatus = "";
+    await this.updateComplete;
+    this.renderRoot
+      .querySelector<HTMLElement>("#share-preview-heading")
+      ?.focus();
+  }
+
+  private closeSharePreview(): void {
+    this.sharePreview = undefined;
+    this.shareStatus = "";
+    this.renderRoot.querySelector<HTMLButtonElement>(".share-toggle")?.focus();
+  }
+
+  private renderShareActions() {
+    const preview = this.sharePreview;
+    const labels = strings.share;
+    return html`
+      <button
+        class="share-toggle"
+        type="button"
+        aria-expanded=${!!preview}
+        aria-controls="journey-share"
+        @click=${this.toggleSharePreview}
+      >
+        ${labels.open}
+      </button>
+      ${preview
+        ? html`<section
+            id="journey-share"
+            class="share-preview"
+            aria-labelledby="share-preview-heading"
+            @keydown=${(event: KeyboardEvent) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              event.stopPropagation();
+              this.closeSharePreview();
+            }}
+          >
+            <h3 id="share-preview-heading" tabindex="-1">${labels.preview}</h3>
+            <pre class="share-text" tabindex="0" aria-label=${labels.text}>
+${preview.shareText}</pre
+            >
+            <p class="secondary">${labels.included}</p>
+            <p class="secondary">${labels.excluded}</p>
+            ${preview.calendar.available
+              ? html`<dl class="share-calendar">
+                  <dt>${labels.calendarSummary}</dt>
+                  <dd>${preview.calendar.data.summary}</dd>
+                  ${preview.calendar.data.location
+                    ? html`<dt>${labels.calendarLocation}</dt>
+                        <dd>${preview.calendar.data.location}</dd>`
+                    : nothing}
+                  <dt>${labels.departure} · ${preview.timeZone}</dt>
+                  <dd>
+                    <time datetime=${preview.calendar.data.start_date_time}
+                      >${preview.calendar.displayStart}</time
+                    >
+                  </dd>
+                  <dt>${labels.arrival} · ${preview.timeZone}</dt>
+                  <dd>
+                    <time datetime=${preview.calendar.data.end_date_time}
+                      >${preview.calendar.displayEnd}</time
+                    >
+                  </dd>
+                </dl>`
+              : html`<p id="calendar-unavailable" class="secondary">
+                  ${preview.calendar.reason}
+                </p>`}
+            <div class="share-buttons">
+              ${typeof navigator.share === "function"
+                ? html`<button
+                    type="button"
+                    class="share-native"
+                    @click=${() =>
+                      this.runShareAction(
+                        preview,
+                        () => navigator.share({ text: preview.shareText }),
+                        labels.shareFailed,
+                        "",
+                        true,
+                      )}
+                  >
+                    ${labels.share}
+                  </button>`
+                : nothing}
+              ${typeof navigator.clipboard?.writeText === "function"
+                ? html`<button
+                    type="button"
+                    class="share-copy"
+                    @click=${() =>
+                      this.runShareAction(
+                        preview,
+                        () => navigator.clipboard.writeText(preview.shareText),
+                        labels.copyFailed,
+                        labels.copied,
+                      )}
+                  >
+                    ${labels.copy}
+                  </button>`
+                : nothing}
+              <button
+                type="button"
+                class="share-download"
+                ?disabled=${!preview.calendar.available}
+                aria-describedby=${preview.calendar.available
+                  ? nothing
+                  : "calendar-unavailable"}
+                @click=${() => this.downloadCalendar(preview)}
+              >
+                ${labels.download}
+              </button>
+              ${this.calendarTarget(this.hass)
+                ? html`<button
+                    type="button"
+                    class="share-add-calendar"
+                    ?disabled=${this.calendarSaving ||
+                    !preview.calendar.available}
+                    @click=${() => this.addToCalendar(preview)}
+                  >
+                    ${labels.addCalendar}
+                  </button>`
+                : nothing}
+              <button
+                type="button"
+                class="share-cancel"
+                @click=${this.closeSharePreview}
+              >
+                ${labels.cancel}
+              </button>
+            </div>
+            <div class="share-status secondary" aria-live="polite">
+              ${this.shareStatus}
+            </div>
+          </section>`
+        : html`<div id="journey-share" hidden></div>`}
+    `;
   }
 
   protected override renderExtra(entry?: RegistryEntry) {
@@ -505,7 +826,7 @@ export class JourneyCard extends TranslinkCard {
         ? undefined
         : (tracker?.attributes as VehicleTrackerAttributes | undefined);
     const activeLeg = number(vehicle?.active_leg_index);
-    const legs = rows(state.attributes.legs);
+    const legs: JourneyLegAttributes[] = rows(state.attributes.legs);
     if (value(related.status) === "no_service" || !legs.length)
       return html`
         <div class="state" role="status">${strings.noServices}</div>
@@ -609,6 +930,11 @@ export class JourneyCard extends TranslinkCard {
           : nothing}
       </div>
       ${this.renderDisruptionStrip(related.disruptions)}
+      ${this.config.show_actions !== false &&
+      text(state.state) &&
+      state.state !== "no_service"
+        ? this.renderShareActions()
+        : nothing}
       <button
         class="disclosure"
         aria-expanded=${this.expanded}
@@ -662,7 +988,14 @@ export class JourneyCard extends TranslinkCard {
       >
     </div>`;
   }
-  private renderLeg(leg: Row, active: boolean) {
+  private renderLeg(leg: JourneyLegAttributes, active: boolean) {
+    const timetable =
+      this.config.show_actions !== false &&
+      text(leg.travelMode)?.toLowerCase() !== "walk"
+        ? validateTimetableUrl(leg.timetableUrl)
+        : undefined;
+    const route =
+      text(leg.routeCode) ?? text(leg.route) ?? text(leg.travelMode);
     const calls = rows(leg.callingStops);
     const source = text(leg.callingStopsSource);
     const showCalls =
@@ -704,6 +1037,18 @@ export class JourneyCard extends TranslinkCard {
         min${number(leg.numberOfStops) ? ` · ${leg.numberOfStops} stops` : ""} ·
         Scheduled
       </div>
+      ${timetable
+        ? html`<a
+            class="trip-timetable"
+            href=${timetable}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label=${route
+              ? `${strings.share.timetable} · ${route}`
+              : strings.share.timetable}
+            >${strings.share.timetable}</a
+          >`
+        : nothing}
       ${showCalls
         ? html`<details class="stop-details">
             <summary>Calling stops · ${calls.length}</summary>
@@ -768,23 +1113,182 @@ export class JourneyCard extends TranslinkCard {
 }
 
 export class DeparturesCard extends TranslinkCard {
+  static override properties = {
+    ...TranslinkCard.properties,
+    boardView: { state: true },
+    boardRoute: { state: true },
+    boardDirection: { state: true },
+    boardOrder: { state: true },
+  };
   static override role = "departures_board";
   static override title = strings.departures;
   static getConfigForm() {
-    return form(this.role, ["max_departures", "show_platform"]);
+    return form(this.role, [
+      "max_departures",
+      "show_platform",
+      "show_arrivals",
+      "show_filters",
+    ]);
   }
   protected entityRole = "departures_board";
   protected defaultTitle = strings.departures;
   protected icon = "mdi:train-bus";
+  declare private boardView: BoardView;
+  declare private boardRoute?: BoardFilterOption;
+  declare private boardDirection?: BoardFilterOption;
+  declare private boardOrder: BoardOrder;
+
+  constructor() {
+    super();
+    this.boardView = "departures";
+    this.boardOrder = "scheduled";
+  }
+
   protected renderContent(state: EntityState) {
-    const departures = normalizeDepartures(state.attributes.departures);
+    const view = this.config.show_arrivals ? this.boardView : "departures";
+    const visits = normalizeDepartures(state.attributes[view]);
+    const showFilters = this.config.show_filters === true;
+    const filtered = showFilters
+      ? filterDepartures(
+          visits,
+          this.boardRoute?.value,
+          this.boardDirection?.value,
+        )
+      : visits;
+    const ordered = orderDepartures(
+      filtered,
+      showFilters ? this.boardOrder : "scheduled",
+    );
+    return html`${this.config.show_arrivals
+      ? this.renderViewSwitch(view)
+      : nothing}
+    ${showFilters ? this.renderBoardFilters(visits) : nothing}
+    ${this.renderBoard(view, ordered, visits.length > 0)}`;
+  }
+
+  private renderViewSwitch(view: BoardView) {
+    const views = ["departures", "arrivals"] as const;
+    return html`<div
+      class="board-views"
+      role="group"
+      aria-label=${strings.boardView}
+    >
+      ${views.map(
+        (option) =>
+          html`<button
+            type="button"
+            value=${option}
+            aria-pressed=${String(view === option)}
+            @click=${() => {
+              this.boardView = option;
+            }}
+          >
+            ${strings[option]}
+          </button>`,
+      )}
+    </div>`;
+  }
+
+  private renderBoardFilters(visits: Departure[]) {
+    const routes = boardFilterOptions(visits, "route", this.boardRoute);
+    const directions = boardFilterOptions(
+      visits,
+      "direction",
+      this.boardDirection,
+    );
+    return html`<div class="board-filters">
+      ${this.renderBoardSelect(
+        "route",
+        [{ value: "", label: strings.allRoutes }, ...routes],
+        this.boardRoute?.value ?? "",
+        (value) => {
+          this.boardRoute = routes.find((option) => option.value === value);
+        },
+      )}
+      ${this.renderBoardSelect(
+        "direction",
+        [{ value: "", label: strings.allDirections }, ...directions],
+        this.boardDirection?.value ?? "",
+        (value) => {
+          this.boardDirection = directions.find(
+            (option) => option.value === value,
+          );
+        },
+      )}
+      ${this.renderBoardSelect(
+        "order",
+        [
+          { value: "scheduled", label: strings.scheduledOrder },
+          { value: "route", label: strings.route },
+        ],
+        this.boardOrder,
+        (value) => {
+          this.boardOrder = value === "route" ? "route" : "scheduled";
+        },
+      )}
+    </div>`;
+  }
+
+  private renderBoardSelect(
+    name: "route" | "direction" | "order",
+    options: BoardFilterOption[],
+    selected: string,
+    onChange: (value: string) => void,
+  ) {
+    return html`<label>
+      ${strings[name]}
+      <select
+        name=${name}
+        @change=${(event: Event) =>
+          onChange((event.target as HTMLSelectElement).value)}
+      >
+        ${options.map(
+          ({ value, label }) =>
+            html`<option value=${value} .selected=${live(value === selected)}>
+              ${label}
+            </option>`,
+        )}
+      </select>
+    </label>`;
+  }
+
+  private clearBoardFilters() {
+    this.boardRoute = undefined;
+    this.boardDirection = undefined;
+    this.renderRoot
+      .querySelector<HTMLSelectElement>('select[name="route"]')
+      ?.focus();
+  }
+
+  private renderBoard(
+    view: BoardView,
+    visits: Departure[],
+    hasVisits: boolean,
+  ) {
+    const arrivals = view === "arrivals";
     const related = this.related;
-    if (!departures.length)
+    if (!visits.length)
       return html`
-        <div class="state" role="status">${strings.noServices}</div>
+        <div class="state" role="status">
+          ${hasVisits
+            ? strings.noMatchingServices
+            : arrivals
+              ? strings.noArrivals
+              : strings.noServices}
+        </div>
+        ${hasVisits
+          ? html`<button
+              type="button"
+              class="clear-board-filters"
+              @click=${this.clearBoardFilters}
+            >
+              ${strings.clearFilters}
+            </button>`
+          : nothing}
         ${this.renderDisruptionStrip(related.disruptions)}
       `;
-    const delay = number(value(related.delay));
+    const delay = arrivals ? undefined : number(value(related.delay));
+    const limit = this.config.max_departures ?? 5;
     return html`<div class="secondary">${strings.stopTimetable}</div>
       ${delay !== undefined && delay !== 0
         ? html`<div class="alert-strip">
@@ -792,18 +1296,18 @@ export class DeparturesCard extends TranslinkCard {
           </div>`
         : nothing}
       <ol class="departures">
-        ${departures
-          .slice(0, this.config.max_departures ?? 5)
-          .map((row) => this.renderDeparture(row))}
+        ${visits
+          .slice(0, limit)
+          .map((row) => this.renderDeparture(row, arrivals))}
       </ol>
-      ${departures.length > (this.config.max_departures ?? 5)
+      ${visits.length > limit
         ? html`<div class="note">
-            Showing ${this.config.max_departures ?? 5} of ${departures.length}
-            departures
+            ${strings.boardCount(limit, visits.length, arrivals)}
           </div>`
         : nothing}`;
   }
-  private renderDeparture(row: Departure) {
+
+  private renderDeparture(row: Departure, arrivals: boolean) {
     const showPlatform = this.config.show_platform !== false;
     const change = row.platformChange;
     const statuses = [
@@ -835,13 +1339,17 @@ export class DeparturesCard extends TranslinkCard {
       </div>
       <div class="when">
         <time datetime=${row.time ?? ""}>${this.formatTime(row.time)}</time>
-        <div class="secondary">${strings.scheduled}</div>
+        <div class="secondary">
+          ${arrivals ? strings.scheduledStopTime : strings.scheduled}
+        </div>
         ${row.expectedTime
           ? html`<div class="expected-time">
               <time datetime=${row.expectedTime}
                 >${this.formatTime(row.expectedTime)}</time
               >
-              <div class="secondary">${strings.expected}</div>
+              <div class="secondary">
+                ${arrivals ? strings.expectedStopTime : strings.expected}
+              </div>
             </div>`
           : nothing}
       </div>

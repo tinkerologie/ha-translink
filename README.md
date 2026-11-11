@@ -156,7 +156,7 @@ data only shows that no notice was issued. [Routing research](docs/routing-optio
 | **Platform** | `sensor` | Platform or bay for the next service. |
 | **Delay** | `sensor` (`duration`, `min`) | Signed delay in minutes for the same visit as **Next Departure**, or `unknown` without a prediction offset. |
 | **Disruptions** | `sensor` (`diagnostic`) | Current notices returned for the selected station or platform, including when the board has zero departures. |
-| **Departures Board** | `sensor` (`diagnostic`) | Boardable visits from the selected timetable with routes, directions, platforms and available prediction details. |
+| **Departures Board** | `sensor` (`diagnostic`) | Departure count, with `departures` and drop-off-only `arrivals` attributes from the selected stop timetable. Both lists include routes, directions, platforms and available prediction details. |
 
 A platform board uses its platform response for notices. A station board uses
 its station response. If the current notice section is unavailable, the board
@@ -203,8 +203,8 @@ Use each card's visual editor to choose the appropriate Translink sensor:
 
 | Card | Entity to select | Options |
 | --- | --- | --- |
-| `custom:translink-journey-card` | Journey **Itinerary** sensor | `title`, `show_fare`, `legs_expanded`, `show_disruptions`, `show_planner` (default false), `alternatives_limit` (1–10, default 5) |
-| `custom:translink-departures-card` | Stop **Departures board** sensor | `title`, `max_departures` (1–20, default 5), `show_platform` |
+| `custom:translink-journey-card` | Journey **Itinerary** sensor | `title`, `show_fare`, `legs_expanded`, `show_disruptions`, `show_planner` (default false), `alternatives_limit` (1–10, default 5), `show_actions` (default true), `calendar_entity` (optional) |
+| `custom:translink-departures-card` | Stop **Departures board** sensor | `title`, `max_departures` (1–20, default 5), `show_platform`, `show_arrivals` (default false), `show_filters` (default false) |
 | `custom:translink-alerts-card` | Journey or stop **Disruptions** count sensor | `title`, `max_alerts` (1–20, default 5) |
 
 Cards find related sensors through Home Assistant's entity registry and device
@@ -216,6 +216,15 @@ expand with keyboard-accessible controls. The stop timetable card shows
 for that visit.
 An empty board shows any current stop notices alongside the no-services
 message. A reported delay belongs to the next-service summary.
+
+Enable **Show Arrivals view** to switch between Departures and Arrivals. Arrivals
+lists drop-off-only visits from the sensor's `arrivals` attribute. The timetable's
+arrival-time semantics are unverified, so the card uses **Scheduled stop time**
+and **Expected stop time**. An expected time appears only when supplied.
+
+Enable **Show board filters** to filter the active view by route and direction.
+Choose **Scheduled time** or **Route** order. Within each route, services appear in
+scheduled-time order. The display limit applies after filtering in either view.
 
 Example for a Sections dashboard (replace these IDs with your actual entities):
 
@@ -343,6 +352,24 @@ use the Brisbane date and time picker. **Maximum alternatives**
 to 10 alternatives when you press **Plan**. Changing **Sort by** reorders
 those results locally. Press **Plan** with the new sort order to search across
 all upstream alternatives when the previous response was truncated.
+
+### Sharing a journey or adding it to a calendar
+
+Select **Share or export** on the Journey card to preview the text and calendar
+fields. The preview includes scheduled times, modes, routes, verified trip links,
+and public stop names and platforms. Walking legs appear as “Walk”. Private
+endpoints, coordinates, polylines, fare, vehicle data, configuration names and
+access tokens are excluded.
+
+You can select the text manually, use **Share** or **Copy text** where supported,
+or download a local `.ics` file. Set `calendar_entity` to a writable Home
+Assistant calendar to enable **Add to Home Assistant calendar**. Calendar
+exports use scheduled UTC instants and exclude realtime predictions. The
+preview labels times in the dashboard's selected time zone.
+
+Journey details show a **Trip timetable** link only after Translink's timetable
+matches that leg. The links are date-specific. Set `show_actions: false` to
+hide sharing, export and timetable controls.
 
 ## Dashboard Examples
 

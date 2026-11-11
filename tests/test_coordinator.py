@@ -207,6 +207,26 @@ async def test_coordinator_stop_timetable_keeps_distinct_boardable_visits(
     assert unresolved["vehicle"] is None
     assert unresolved["boarding"] == "Other"
 
+    first, repeat = summary.arrivals
+    assert [row["trip_id"] for row in summary.arrivals] == ["alighting", "alighting"]
+    assert first["visit_id"] != repeat["visit_id"]
+    assert [row["boarding"] for row in summary.arrivals] == ["Alighting", "Alighting"]
+    assert (first["route_id"], first["direction"], first["platform"]) == (
+        "T:Train:LOOP",
+        "Outbound",
+        "1",
+    )
+    assert first["scheduled_departure_time"] == "2099-01-01T02:02:00Z"
+    assert first["expected_departure_time"] is None
+    assert (repeat["route_id"], repeat["direction"], repeat["platform"]) == (
+        "T:Train:LOOP",
+        "Inbound",
+        "2",
+    )
+    assert repeat["scheduled_departure_time"] == "2099-01-01T02:05:00Z"
+    assert repeat["expected_departure_time"] == "2099-01-01T02:07:00Z"
+    assert repeat["is_skipped"] is True
+
     assert summary.next_departure_time == datetime(2099, 1, 1, 2, 10, tzinfo=UTC)
     assert (summary.next_route, summary.next_vehicle, summary.next_platform) == (
         "Harbour Loop",
@@ -549,7 +569,7 @@ async def test_timetable_cache_ttls_bounds_and_failures(
     from types import SimpleNamespace
 
     from custom_components.translink import coordinator as module
-    from custom_components.translink.api.models import TripTimetable
+    from custom_components.translink.api.models import TripDeparture, TripTimetable
     from custom_components.translink.api.trip_page import TripPageParseError
 
     with patch("custom_components.translink.coordinator.async_get_clientsession"):
@@ -582,14 +602,37 @@ async def test_timetable_cache_ttls_bounds_and_failures(
         now[0] += module.TRIP_PAGE_NEGATIVE_TTL + 1
     many = plan.model_copy(deep=True)
     many.itineraries[0].legs = [
-        leg.model_copy(update={"tripId": str(i)}) for i in range(10)
+        leg.model_copy(update={"tripId": f"trip-{i}"}) for i in range(5)
     ]
-    coordinator.client.async_get_trip_timetable = AsyncMock(return_value=None)
-    await coordinator._async_get_trip_timetables(many)
+    scheduled_calls = [
+        TripDeparture(
+            stopId=leg.origin.id.removeprefix("SI:"),
+            order=1,
+            scheduledDepartureUtc=leg.departureTimeUtc,
+        ),
+        TripDeparture(
+            stopId=leg.destination.id.removeprefix("SI:"),
+            order=2,
+            scheduledDepartureUtc=leg.arrivalTimeUtc,
+        ),
+    ]
+    coordinator.client.async_get_trip_timetable = AsyncMock(
+        side_effect=lambda trip_id: TripTimetable(
+            id=trip_id, departures=scheduled_calls
+        )
+    )
+    coordinator.client.plan_journey = AsyncMock(return_value=many)
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=[])
+    summary = await coordinator._async_update_data()
     assert (
         coordinator.client.async_get_trip_timetable.await_count
         == module.TRIP_PAGE_MAX_PER_REFRESH
     )
+    assert isinstance(summary, JourneySummary)
+    assert len(summary.itinerary_legs) == 5
+    assert all(leg["timetableUrl"] for leg in summary.itinerary_legs[:4])
+    assert summary.itinerary_legs[4]["timetableUrl"] is None
     coordinator._trip_cache = {
         f"old-{i}": (now[0] + 100, None) for i in range(module.TRIP_PAGE_CACHE_LIMIT)
     }

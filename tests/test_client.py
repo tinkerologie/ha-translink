@@ -655,6 +655,61 @@ def test_build_journey_summary_with_plan(
     assert summary_concession.fare_price == 0.5
 
 
+def test_journey_share_flags_require_public_transit_stop_provenance() -> None:
+    """Address and untyped endpoints never receive public-stop provenance."""
+    plan = JourneyPlanResult.model_validate(
+        {
+            "itineraries": [
+                {
+                    "legs": [
+                        {
+                            "travelMode": "Walk",
+                            "origin": {"id": "AD:example", "name": "14 Private Street"},
+                            "destination": {
+                                "id": "SI:1",
+                                "name": "Public station",
+                                "stopType": "Train",
+                            },
+                        },
+                        {
+                            "travelMode": "Train",
+                            "origin": {
+                                "id": "SI:1",
+                                "name": "Public station",
+                                "stopType": "Train",
+                            },
+                            "destination": {
+                                "name": "Unverified location",
+                                "stopType": "Train",
+                            },
+                        },
+                        {
+                            "travelMode": "Train",
+                            "origin": {"id": "SI:2", "name": "Untyped location"},
+                            "destination": {
+                                "id": "AD:example",
+                                "name": "14 Private Street",
+                                "stopType": "Address",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    legs = build_journey_summary(plan).itinerary_legs
+    assert [
+        (leg["originIsPublicStop"], leg["destinationIsPublicStop"]) for leg in legs
+    ] == [(False, False), (True, False), (False, False)]
+    assert all(leg["timetableUrl"] is None for leg in legs)
+    assert {
+        leg[endpoint]
+        for leg in legs
+        for endpoint in ("origin", "destination")
+        if leg[f"{endpoint}IsPublicStop"]
+    } == {"Public station"}
+
+
 def test_build_journey_summary_empty() -> None:
     """Test build_journey_summary when no itineraries are returned."""
     plan = JourneyPlanResult(itineraries=[])

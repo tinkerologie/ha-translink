@@ -96,7 +96,7 @@ def _timetable_vehicle(
     return None
 
 
-def _departure_row(
+def _stop_visit_row(
     departure: TimetableDeparture,
     routes: list[TimetableRoute],
     vehicle: str | None,
@@ -145,18 +145,18 @@ def _departure_row(
     )
 
 
-def _stop_departure_rows(
+def _stop_board_rows(
     timetable: StopTimetable, modes: list[str]
-) -> list[StopDepartureItem]:
-    """Select boardable visits and deduplicate only complete visit identities."""
+) -> tuple[list[StopDepartureItem], list[StopDepartureItem]]:
+    """Split alighting-only visits and deduplicate within each view."""
     routes_by_id: dict[str, list[TimetableRoute]] = defaultdict(list)
     for route in timetable.routes:
         routes_by_id[route.id].append(route)
 
-    visits: dict[str, tuple[TimetableDeparture, list[TimetableRoute], str | None]] = {}
+    visits: dict[
+        tuple[bool, str], tuple[TimetableDeparture, list[TimetableRoute], str | None]
+    ] = {}
     for index, departure in enumerate(timetable.departures):
-        if departure.canBoardDebark == "Alighting":
-            continue
         routes = [
             route
             for route in routes_by_id.get(departure.routeId or "", ())
@@ -182,11 +182,12 @@ def _stop_departure_rows(
             )
             else f"unidentified:{index}"
         )
-        previous = visits.get(visit_id)
+        key = departure.canBoardDebark == "Alighting", visit_id
+        previous = visits.get(key)
         if previous is None or (
             previous[0].realtime is None and departure.realtime is not None
         ):
-            visits[visit_id] = departure, routes, vehicle
+            visits[key] = departure, routes, vehicle
 
     ordered = sorted(
         visits.items(),
@@ -195,10 +196,12 @@ def _stop_departure_rows(
             or datetime.max.replace(tzinfo=UTC)
         ),
     )
-    return [
-        _departure_row(departure, routes, vehicle, visit_id)
-        for visit_id, (departure, routes, vehicle) in ordered
-    ]
+    departures: list[StopDepartureItem] = []
+    arrivals: list[StopDepartureItem] = []
+    for (alighting_only, visit_id), (departure, routes, vehicle) in ordered:
+        board = arrivals if alighting_only else departures
+        board.append(_stop_visit_row(departure, routes, vehicle, visit_id))
+    return departures, arrivals
 
 
 class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
@@ -435,7 +438,7 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         stop_name = self.entry.data.get(CONF_STOP_NAME, "")
 
         timetable = await self.client.fetch_stop_timetable(stop_id)
-        rows = _stop_departure_rows(timetable, self.transport_modes)
+        departures, arrivals = _stop_board_rows(timetable, self.transport_modes)
         now = datetime.now(UTC)
         disruptions = stop_disruption_fields(
             timetable.serviceAlerts,
@@ -445,11 +448,12 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         summary = StopSummary(
             stop_id=stop_id,
             stop_name=stop_name or timetable.name,
-            departures=[row.model_dump() for row in rows],
+            departures=[row.model_dump() for row in departures],
+            arrivals=[row.model_dump() for row in arrivals],
             last_updated=now,
             **disruptions,
         )
-        for row in rows:
+        for row in departures:
             if row.is_cancelled or row.is_skipped:
                 continue
             scheduled = parse_iso_datetime(row.scheduled_departure_time)

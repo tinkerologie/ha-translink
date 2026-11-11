@@ -34,6 +34,13 @@ export interface HomeAssistant {
     notifyOnError: boolean,
     returnResponse: true,
   ): Promise<{ response: JourneyAlternatives }>;
+  callService?(
+    domain: "calendar",
+    service: "create_event",
+    serviceData: Record<string, unknown>,
+    target: { entity_id: string },
+    notifyOnError: boolean,
+  ): Promise<unknown>;
   states: Record<string, EntityState>;
   entities?: Record<string, RegistryEntry>;
   devices?: Record<string, { name?: string; name_by_user?: string }>;
@@ -49,12 +56,21 @@ export interface CardConfig {
   legs_expanded?: boolean;
   show_disruptions?: boolean;
   show_platform?: boolean;
+  show_arrivals?: boolean;
+  show_filters?: boolean;
   max_departures?: number;
   max_alerts?: number;
   show_planner?: boolean;
   alternatives_limit?: number;
+  show_actions?: boolean;
+  calendar_entity?: string;
 }
 export type Row = Record<string, unknown>;
+export interface JourneyLegAttributes extends Row {
+  timetableUrl?: string | null;
+  originIsPublicStop?: boolean;
+  destinationIsPublicStop?: boolean;
+}
 export interface Departure {
   tripId?: string;
   visitId?: string;
@@ -71,10 +87,19 @@ export interface Departure {
   };
   boarding?: string;
   route: string;
+  routeId?: string;
+  direction?: string;
   vehicle: string;
   headsign?: string;
   platform?: string;
   color?: string;
+}
+
+export type BoardView = "departures" | "arrivals";
+export type BoardOrder = "scheduled" | "route";
+export interface BoardFilterOption {
+  value: string;
+  label: string;
 }
 
 export type JourneySort = "departure" | "arrival" | "duration";

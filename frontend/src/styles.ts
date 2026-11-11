@@ -102,7 +102,15 @@ export const cardStyles = css`
       var(--secondary-background-color)
     );
   }
-  :is(button, summary, a):focus-visible {
+  :is(
+    button,
+    summary,
+    a,
+    input,
+    select,
+    .share-text,
+    #share-preview-heading
+  ):focus-visible {
     outline: 2px solid var(--ha-color-focus, var(--primary-color));
     outline-offset: 2px;
   }
@@ -111,6 +119,57 @@ export const cardStyles = css`
     height: 22px;
     display: inline-flex;
     vertical-align: middle;
+  }
+  .trip-timetable {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    color: var(--primary-color);
+  }
+  .share-toggle,
+  .share-buttons button {
+    min-width: 44px;
+    padding-inline: 12px;
+    border: 1px solid var(--divider-color);
+  }
+  .share-toggle {
+    margin-top: 12px;
+  }
+  .share-preview {
+    padding: 12px;
+    margin-top: 12px;
+    border: 1px solid var(--divider-color);
+    border-radius: var(--ha-border-radius-md, 8px);
+    overflow-wrap: anywhere;
+  }
+  .share-text {
+    margin: 8px 0;
+    padding: 8px;
+    border-radius: var(--ha-border-radius-md, 8px);
+    background: var(--secondary-background-color);
+    font: inherit;
+    white-space: pre-wrap;
+    user-select: text;
+  }
+  .share-calendar dt {
+    font-size: var(--ha-font-size-m, 14px);
+    color: var(--secondary-text-color);
+  }
+  .share-calendar dd {
+    margin: 0 0 8px;
+  }
+  .share-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .share-buttons button {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .share-buttons button:disabled {
+    opacity: 0.65;
+    cursor: default;
   }
   .planner {
     border-top: 1px solid var(--divider-color);
@@ -154,10 +213,6 @@ export const cardStyles = css`
   .planner button:disabled {
     opacity: 0.65;
     cursor: wait;
-  }
-  .planner :is(input, select):focus-visible {
-    outline: 2px solid var(--ha-color-focus, var(--primary-color));
-    outline-offset: 2px;
   }
   .planner-sort {
     margin-block: 8px;
@@ -352,6 +407,49 @@ export const cardStyles = css`
     padding: var(--ha-space-3, 12px) var(--ha-space-1, 4px);
     border-radius: var(--ha-border-radius-md, 8px);
     font-size: var(--ha-font-size-m, 14px);
+  }
+  .board-views,
+  .board-filters {
+    gap: var(--ha-space-2, 8px);
+    margin-block-end: var(--ha-space-3, 12px);
+  }
+  .board-views {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .board-views button,
+  .clear-board-filters,
+  .board-filters select {
+    min-inline-size: 44px;
+    min-block-size: 44px;
+    padding-inline: var(--ha-space-2, 8px);
+    border: 1px solid var(--divider-color);
+    border-radius: var(--ha-border-radius-md, 8px);
+  }
+  .board-views button[aria-pressed="true"] {
+    border-color: var(--primary-color);
+    background: var(
+      --ha-color-fill-primary-quiet-resting,
+      var(--secondary-background-color)
+    );
+    font-weight: var(--ha-font-weight-bold, 700);
+  }
+  .board-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr));
+  }
+  .board-filters label {
+    display: grid;
+    gap: var(--ha-space-1, 4px);
+    min-inline-size: 0;
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-m, 14px);
+  }
+  .board-filters select {
+    inline-size: 100%;
+    background: var(--secondary-background-color);
+    color: var(--primary-text-color);
+    font: inherit;
   }
   .departure {
     display: grid;

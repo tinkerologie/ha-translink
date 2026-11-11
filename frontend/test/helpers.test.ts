@@ -1,7 +1,10 @@
 import alternatives from "./fixtures/alternatives.json";
 import { describe, expect, it } from "vitest";
 import {
+  boardFilterOptions,
   brisbaneInputDefaults,
+  filterDepartures,
+  orderDepartures,
   sortJourneyAlternatives,
   available,
   modeIcon,
@@ -34,21 +37,23 @@ describe("entity and departure contracts", () => {
     });
   });
   it("normalizes current rows and legacy itinerary fallback, sorts missing times last", () => {
-    const result = normalizeDepartures([
-      {
-        route: "Late",
-        departure_time: "2026-10-26T08:00:00Z",
-        vehicle: "Train",
-      },
-      null,
-      { route: "Unknown" },
-      {
-        route: "Early",
-        departureTimeUtc: "2026-10-26T07:00:00Z",
-        travelMode: "Walk",
-        originPlatform: "1",
-      },
-    ]);
+    const result = orderDepartures(
+      normalizeDepartures([
+        {
+          route: "Late",
+          departure_time: "2026-10-26T08:00:00Z",
+          vehicle: "Train",
+        },
+        null,
+        { route: "Unknown" },
+        {
+          route: "Early",
+          departureTimeUtc: "2026-10-26T07:00:00Z",
+          travelMode: "Walk",
+          originPlatform: "1",
+        },
+      ]),
+    );
     expect(result.map((r) => r.route)).toEqual(["Early", "Late", "Unknown"]);
     expect(result[0]).toMatchObject({ vehicle: "Walk", platform: "1" });
   });
@@ -164,6 +169,85 @@ it("deduplicates timetable rows by visit ID while keeping repeated visits", () =
   ]);
   expect(rows.map((row) => row.visitId)).toEqual(["first", "repeat"]);
   expect(rows[0]?.time).toBe("2026-10-26T08:46:00Z");
+});
+
+it("filters a shared route by direction and keeps a stale option readable", () => {
+  const visits = normalizeDepartures([
+    {
+      visit_id: "first",
+      route_id: "T:Train:T2",
+      route: "T2",
+      direction: "Inbound",
+    },
+    {
+      visit_id: "second",
+      route_id: "T:Train:T2",
+      route: "T2",
+      direction: "Outbound",
+    },
+    { visit_id: "third", route_id: "T:Train:T2", route: "T2" },
+    { route: "77", direction: "Inbound" },
+  ]);
+  const routes = boardFilterOptions(visits, "route");
+  expect(routes).toEqual([
+    { value: "77", label: "77" },
+    { value: "T:Train:T2", label: "T2" },
+  ]);
+  expect(
+    boardFilterOptions(visits, "direction").map(({ label }) => label),
+  ).toEqual(["Inbound", "Outbound"]);
+  expect(filterDepartures(visits, "T:Train:T2", "Outbound")).toEqual([
+    visits[1],
+  ]);
+  expect(filterDepartures(visits, "T:Train:T2")).toHaveLength(3);
+  expect(boardFilterOptions(visits.slice(3), "route", routes[1])).toEqual(
+    routes,
+  );
+});
+
+it("orders by schedule or route, independently of predictions, with untimed visits last", () => {
+  const visits = normalizeDepartures([
+    { route: "77" },
+    {
+      route: "T2",
+      visit_id: "first",
+      scheduled_departure_time: "2026-10-26T07:46:00Z",
+      expected_departure_time: "2026-10-26T08:46:00Z",
+    },
+    {
+      route: "77",
+      visit_id: "middle",
+      scheduled_departure_time: "2026-10-26T07:47:00Z",
+      expected_departure_time: "invalid",
+    },
+    {
+      route: "77",
+      visit_id: "last",
+      scheduled_departure_time: "2026-10-26T07:48:00Z",
+      expected_departure_time: null,
+    },
+  ]);
+  expect(orderDepartures(visits).map(({ visitId }) => visitId)).toEqual([
+    "first",
+    "middle",
+    "last",
+    undefined,
+  ]);
+  const byRoute = orderDepartures(visits, "route");
+  expect(byRoute.map(({ visitId }) => visitId)).toEqual([
+    "middle",
+    "last",
+    "first",
+    undefined,
+  ]);
+  expect(byRoute.map(({ expectedTime }) => expectedTime)).toEqual([
+    undefined,
+    undefined,
+    "2026-10-26T08:46:00Z",
+    undefined,
+  ]);
+  expect(byRoute[0]?.time).toBe("2026-10-26T07:47:00Z");
+  expect(byRoute[1]?.time).toBe("2026-10-26T07:48:00Z");
 });
 
 it.each([

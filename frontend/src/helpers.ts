@@ -1,4 +1,6 @@
 import type {
+  BoardFilterOption,
+  BoardOrder,
   CardConfig,
   Departure,
   EntityState,
@@ -28,13 +30,7 @@ export const validTime = (value: unknown): string | undefined => {
   const result = text(value);
   return result && Number.isFinite(Date.parse(result)) ? result : undefined;
 };
-export function time(
-  value: unknown,
-  hass?: HomeAssistant,
-  date = false,
-): string {
-  const iso = validTime(value);
-  if (!iso) return "—";
+function clockFormatter(hass?: HomeAssistant, date = false) {
   const preference = hass?.locale?.time_format;
   const language = hass?.locale?.language ?? hass?.language ?? "en-AU";
   const hour12 =
@@ -54,13 +50,24 @@ export function time(
     return new Intl.DateTimeFormat(
       preference === "system" ? undefined : language,
       options,
-    ).format(new Date(iso));
+    );
   } catch {
     return new Intl.DateTimeFormat("en-AU", {
       ...options,
       timeZone: "Australia/Brisbane",
-    }).format(new Date(iso));
+    });
   }
+}
+export function time(
+  value: unknown,
+  hass?: HomeAssistant,
+  date = false,
+): string {
+  const iso = validTime(value);
+  return iso ? clockFormatter(hass, date).format(new Date(iso)) : "—";
+}
+export function timeZoneLabel(hass?: HomeAssistant): string {
+  return clockFormatter(hass).resolvedOptions().timeZone;
 }
 export function siblings(
   hass: HomeAssistant | undefined,
@@ -99,55 +106,99 @@ function optionalBoolean(value: unknown): boolean | undefined {
 }
 export function normalizeDepartures(value: unknown): Departure[] {
   const seen = new Set<string>();
-  return rows(value)
-    .flatMap((row) => {
-      const departure = {
-        tripId: text(row.trip_id ?? row.tripId),
-        time: validTime(
-          row.scheduled_departure_time ??
-            row.departure_time ??
-            row.departureTimeUtc,
-        ),
-        route: text(row.route) ?? text(row.routeCode) ?? "Transit",
-        vehicle: text(row.vehicle) ?? text(row.travelMode) ?? "Transit",
-        headsign: text(row.headsign) ?? text(row.destination),
-        platform: text(row.platform) ?? text(row.originPlatform),
-        color: text(row.route_color ?? row.routeColor),
-      };
-      const visitId = text(row.visit_id);
-      // Preserve the seven-field key used by legacy planner departures.
-      const key = visitId ? `visit:${visitId}` : JSON.stringify(departure);
-      if (seen.has(key)) return [];
-      seen.add(key);
-      const change = rows([row.platform_change])[0];
-      const source = row.time_source;
-      return [
-        {
-          ...departure,
-          visitId,
-          expectedTime: validTime(row.expected_departure_time),
-          timeSource:
-            source === "scheduled" || source === "realtime"
-              ? source
-              : undefined,
-          cancelled: optionalBoolean(row.is_cancelled),
-          skipped: optionalBoolean(row.is_skipped),
-          extra: optionalBoolean(row.is_extra),
-          platformChange: change && {
-            platform: text(change.platform),
-            oldPlatform: text(change.old_platform),
-            isSource: optionalBoolean(change.is_source),
-          },
-          boarding: text(row.boarding),
-        } satisfies Departure,
-      ];
-    })
-    .sort(
-      (a, b) =>
-        (a.time ? Date.parse(a.time) : Infinity) -
-        (b.time ? Date.parse(b.time) : Infinity),
-    );
+  return rows(value).flatMap((row) => {
+    const departure = {
+      tripId: text(row.trip_id ?? row.tripId),
+      time: validTime(
+        row.scheduled_departure_time ??
+          row.departure_time ??
+          row.departureTimeUtc,
+      ),
+      route: text(row.route) ?? text(row.routeCode) ?? "Transit",
+      vehicle: text(row.vehicle) ?? text(row.travelMode) ?? "Transit",
+      headsign: text(row.headsign) ?? text(row.destination),
+      platform: text(row.platform) ?? text(row.originPlatform),
+      color: text(row.route_color ?? row.routeColor),
+    };
+    const visitId = text(row.visit_id);
+    // Preserve the seven-field key used by legacy planner departures.
+    const key = visitId ? `visit:${visitId}` : JSON.stringify(departure);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const change = rows([row.platform_change])[0];
+    const source = row.time_source;
+    return [
+      {
+        ...departure,
+        visitId,
+        expectedTime: validTime(row.expected_departure_time),
+        timeSource:
+          source === "scheduled" || source === "realtime" ? source : undefined,
+        cancelled: optionalBoolean(row.is_cancelled),
+        skipped: optionalBoolean(row.is_skipped),
+        extra: optionalBoolean(row.is_extra),
+        platformChange: change && {
+          platform: text(change.platform),
+          oldPlatform: text(change.old_platform),
+          isSource: optionalBoolean(change.is_source),
+        },
+        boarding: text(row.boarding),
+        routeId: text(row.route_id),
+        direction: text(row.direction),
+      } satisfies Departure,
+    ];
+  });
 }
+const boardLabels = new Intl.Collator(undefined, { numeric: true });
+
+export function boardFilterOptions(
+  visits: Departure[],
+  field: "route" | "direction",
+  selected?: BoardFilterOption,
+): BoardFilterOption[] {
+  const labelsByValue = new Map<string, Set<string>>();
+  for (const visit of visits) {
+    const label = visit[field];
+    if (!label) continue;
+    const value = field === "route" ? (visit.routeId ?? label) : label;
+    const labels = labelsByValue.get(value) ?? new Set<string>();
+    labels.add(label);
+    labelsByValue.set(value, labels);
+  }
+  const options = [...labelsByValue].map(([value, labels]) => ({
+    value,
+    label: [...labels].sort(boardLabels.compare).join(" / "),
+  }));
+  if (selected && !labelsByValue.has(selected.value)) options.push(selected);
+  return options.sort((a, b) => boardLabels.compare(a.label, b.label));
+}
+
+export function filterDepartures(
+  visits: Departure[],
+  route?: string,
+  direction?: string,
+): Departure[] {
+  return visits.filter(
+    (visit) =>
+      (!route || (visit.routeId ?? visit.route) === route) &&
+      (!direction || visit.direction === direction),
+  );
+}
+
+export function orderDepartures(
+  visits: Departure[],
+  order: BoardOrder = "scheduled",
+): Departure[] {
+  return [...visits].sort((a, b) => {
+    if (Boolean(a.time) !== Boolean(b.time)) return a.time ? -1 : 1;
+    if (order === "route") {
+      const byRoute = boardLabels.compare(a.route, b.route);
+      if (byRoute !== 0) return byRoute;
+    }
+    return a.time && b.time ? Date.parse(a.time) - Date.parse(b.time) : 0;
+  });
+}
+
 export function statusLabel(
   status: string | undefined,
   delay?: number,

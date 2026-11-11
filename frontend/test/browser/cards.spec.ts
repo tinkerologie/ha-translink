@@ -48,6 +48,49 @@ for (const width of [320, 768, 1440]) {
         board.getByText("Boarding only", { exact: true }),
       ).toBeVisible();
       await expect(board.getByText("Platform change: 5 → 6")).toBeVisible();
+      const boardViews = board.getByRole("group", { name: "Board view" });
+      const arrivals = boardViews.getByRole("button", { name: "Arrivals" });
+      const departures = boardViews.getByRole("button", { name: "Departures" });
+      await expect(departures).toHaveAttribute("aria-pressed", "true");
+      await arrivals.focus();
+      await page.keyboard.press("Enter");
+      await expect(arrivals).toHaveAttribute("aria-pressed", "true");
+      await expect(departures).toHaveAttribute("aria-pressed", "false");
+      await expect(board.getByText("Expected stop time")).toBeVisible();
+      await expect(board.getByText("Drop-off terminal")).toBeVisible();
+      expect(
+        await arrivals.evaluate(
+          (element) => getComputedStyle(element).outlineStyle,
+        ),
+      ).toBe("solid");
+
+      const direction = board.getByRole("combobox", {
+        name: "Direction",
+        exact: true,
+      });
+      await direction.focus();
+      await page.keyboard.press("o");
+      await expect(direction).toHaveValue("Outbound");
+      await expect(board.getByText("Return terminal")).toBeVisible();
+      await expect(board.getByText("Drop-off terminal")).toHaveCount(0);
+      await expect(board.getByText("Expected stop time")).toHaveCount(0);
+      expect(
+        await direction.evaluate(
+          (element) => getComputedStyle(element).outlineStyle,
+        ),
+      ).toBe("solid");
+      for (const controls of [board.locator(".board-filters"), boardViews]) {
+        expect(
+          await controls.evaluate(
+            (element) => element.scrollWidth <= element.clientWidth,
+          ),
+        ).toBe(true);
+      }
+      await departures.focus();
+      await page.keyboard.press("Space");
+      await expect(departures).toHaveAttribute("aria-pressed", "true");
+      await expect(arrivals).toHaveAttribute("aria-pressed", "false");
+      await expect(board.getByText("Return terminal")).toHaveCount(0);
       const toggle = page.getByRole("button", { name: /Journey details/ });
       await toggle.focus();
       await page.keyboard.press("Enter");
@@ -72,6 +115,31 @@ for (const width of [320, 768, 1440]) {
           (element) => getComputedStyle(element).outlineStyle,
         ),
       ).toBe("solid");
+      const share = page.getByRole("button", { name: "Share or export" });
+      await share.focus();
+      await page.keyboard.press("Enter");
+      const preview = page.getByRole("region", {
+        name: "Preview journey sharing",
+      });
+      const heading = preview.getByRole("heading");
+      await expect(heading).toBeFocused();
+      expect(
+        await heading.evaluate(
+          (element) => getComputedStyle(element).outlineStyle,
+        ),
+      ).toBe("solid");
+      await expect(preview.locator(".share-text")).toContainText(
+        "Trip timetable",
+      );
+      await expect(preview).not.toContainText("14 Private Street");
+      expect(
+        await preview.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth,
+        ),
+      ).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(preview).toBeHidden();
+      await expect(share).toBeFocused();
       const planner = page.getByRole("region", { name: "Journey planner" });
       await expect(planner.getByLabel("Date (Brisbane)")).toBeVisible();
       await expect(planner.getByLabel("Time (Brisbane)")).toBeVisible();
@@ -152,3 +220,47 @@ for (const width of [320, 768, 1440]) {
     });
   }
 }
+
+test("downloads a calendar file by keyboard when share and clipboard APIs are absent", async ({
+  page,
+}) => {
+  // Serve the local harness under a plain HTTP origin that Chromium does not
+  // treat as a secure context. Requests are fulfilled from the local harness.
+  await page.route("http://ha.test/**", async (route) => {
+    const { pathname } = new URL(route.request().url());
+    await route.fulfill({ response: await page.request.get(pathname) });
+  });
+  await page.goto("http://ha.test/frontend/test/browser/index.html");
+  expect(
+    await page.evaluate(() => ({
+      secure: window.isSecureContext,
+      share: typeof navigator.share,
+      clipboard: typeof navigator.clipboard,
+      randomUUID: typeof crypto.randomUUID,
+    })),
+  ).toEqual({
+    secure: false,
+    share: "undefined",
+    clipboard: "undefined",
+    randomUUID: "undefined",
+  });
+  const share = page.getByRole("button", { name: "Share or export" });
+  await share.focus();
+  await page.keyboard.press("Enter");
+  const preview = page.getByRole("region", { name: "Preview journey sharing" });
+  await expect(
+    preview.getByRole("button", { name: "Share", exact: true }),
+  ).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "Copy text" })).toHaveCount(
+    0,
+  );
+  const download = page.waitForEvent("download");
+  const button = preview.getByRole("button", {
+    name: "Download calendar file",
+  });
+  await button.focus();
+  await page.keyboard.press("Space");
+  expect((await download).suggestedFilename()).toBe("translink-journey.ics");
+  await page.keyboard.press("Escape");
+  await expect(share).toBeFocused();
+});

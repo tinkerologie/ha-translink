@@ -8,7 +8,11 @@ import type {
   HomeAssistant,
   JourneyAlternatives,
 } from "../src/types";
-afterEach(() => document.body.replaceChildren());
+afterEach(() => {
+  document.body.replaceChildren();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 async function journey(
   hass?: HomeAssistant,
   entity = "sensor.renamed_journey_itinerary",
@@ -20,6 +24,23 @@ async function journey(
   await card.updateComplete;
   return card;
 }
+const stopBoard = "sensor.renamed_stop_departures_board";
+
+async function board(hass: HomeAssistant, config: Partial<CardConfig> = {}) {
+  const card = document.createElement(
+    "translink-departures-card",
+  ) as DeparturesCard;
+  card.setConfig({
+    type: "custom:translink-departures-card",
+    entity: stopBoard,
+    ...config,
+  });
+  card.hass = hass;
+  document.body.append(card);
+  await card.updateComplete;
+  return card;
+}
+
 const vehicleTracker = "device_tracker.renamed_train";
 const journeyDisruptions = "sensor.renamed_journey_disruptions";
 function emptyJourney(
@@ -50,6 +71,12 @@ describe("card states and interactions", () => {
     expect(JourneyCard.getConfigForm().schema[0]?.selector).toMatchObject({
       entity: { filter: { integration: "translink" } },
     });
+    expect(DeparturesCard.getConfigForm().schema).toEqual(
+      expect.arrayContaining([
+        { name: "show_arrivals", selector: { boolean: {} } },
+        { name: "show_filters", selector: { boolean: {} } },
+      ]),
+    );
     expect(JourneyCard.getStubConfig(fixture)).toEqual({
       entity: "sensor.renamed_journey_itinerary",
     });
@@ -198,7 +225,7 @@ it("shows supplied calling times and keeps predictions separate", async () => {
       string,
       unknown
     >[]
-  )[0]!;
+  )[1]!;
   leg.callingStopsSource = "realtime_partial";
   leg.callingStops = [
     {
@@ -295,6 +322,8 @@ it.each([
   ...["show_fare", "legs_expanded", "show_disruptions", "show_platform"].map(
     (key) => ({ [key]: "true" }),
   ),
+  { show_arrivals: "true" },
+  { show_filters: "true" },
   ...["max_departures", "max_alerts"].flatMap((key) =>
     [0, 21, 1.5, "2"].map((value) => ({ [key]: value })),
   ),
@@ -348,6 +377,143 @@ it("limits departures, can hide platforms, and explains an empty board", async (
   expect(card.shadowRoot!.querySelector("img")).toBeNull();
 });
 
+it("shows drop-off visits only when the opt-in Arrivals view is selected", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  hass.states[stopBoard]!.attributes.arrivals = [
+    {
+      route: "T2",
+      visit_id: "alighting",
+      boarding: "Alighting",
+      headsign: "Drop-off terminal",
+      scheduled_departure_time: "2026-10-26T07:46:00Z",
+      expected_departure_time: null,
+      is_skipped: true,
+    },
+    {
+      route: "77",
+      visit_id: "alighting-live",
+      boarding: "Alighting",
+      scheduled_departure_time: "2026-10-26T07:51:00Z",
+      expected_departure_time: "2026-10-26T07:54:00Z",
+    },
+  ];
+  const defaultCard = await board(hass);
+  expect(defaultCard.shadowRoot!.querySelectorAll("button")).toHaveLength(1);
+  expect(defaultCard.shadowRoot!.querySelectorAll("select")).toHaveLength(0);
+  expect(defaultCard.shadowRoot!.textContent).not.toContain(
+    "Drop-off terminal",
+  );
+
+  const card = await board(hass, { show_arrivals: true });
+  const root = card.shadowRoot!;
+  const arrivals = root.querySelector<HTMLButtonElement>(
+    'button[value="arrivals"]',
+  )!;
+  expect(arrivals.getAttribute("aria-pressed")).toBe("false");
+  expect(root.textContent).not.toContain("Drop-off terminal");
+  arrivals.click();
+  await card.updateComplete;
+  expect(arrivals.getAttribute("aria-pressed")).toBe("true");
+  const [unknown, predicted] = root.querySelectorAll(".departure");
+  expect(unknown!.textContent).toContain("Drop-off terminal");
+  expect(unknown!.textContent).toContain("Scheduled stop time");
+  expect(unknown!.textContent).toContain("Skipped");
+  expect(unknown!.textContent).not.toContain("Expected stop time");
+  expect(predicted!.textContent).toContain("Expected stop time");
+  expect(
+    [...predicted!.querySelectorAll("time")].map((el) => el.dateTime),
+  ).toEqual(["2026-10-26T07:51:00Z", "2026-10-26T07:54:00Z"]);
+  expect(root.textContent).not.toContain("Springfield Central");
+  expect(root.textContent).not.toContain("Next service");
+  expect(root.querySelector("select")).toBeNull();
+
+  const refreshed = structuredClone(hass);
+  refreshed.states[stopBoard]!.attributes.arrivals = [];
+  card.hass = refreshed;
+  await card.updateComplete;
+  expect(arrivals.getAttribute("aria-pressed")).toBe("true");
+  expect(root.querySelector('[role="status"]')!.textContent).toContain(
+    "No arrivals found",
+  );
+});
+
+it("filters before limiting, keeps selections on refresh, and separates board states", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  hass.states[stopBoard]!.attributes.departures = [
+    {
+      route: "Zeta",
+      headsign: "Park",
+      direction: "Outbound",
+      visit_id: "park",
+      scheduled_departure_time: "2026-10-26T07:46:00Z",
+    },
+    ...[
+      ["Inbound", "City"],
+      ["Inbound", "River"],
+      ["Outbound", "Beach"],
+    ].map(([direction, headsign], index) => ({
+      route: "T2",
+      route_id: "T:Train:T2",
+      direction,
+      headsign,
+      visit_id: headsign,
+      scheduled_departure_time: `2026-10-26T07:5${index}:00Z`,
+    })),
+  ];
+  const card = await board(hass, { show_filters: true, max_departures: 1 });
+  const root = card.shadowRoot!;
+  const field = (name: string) =>
+    root.querySelector<HTMLSelectElement>(`select[name="${name}"]`)!;
+  const choose = async (name: string, value: string) => {
+    const select = field(name);
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await card.updateComplete;
+  };
+  const visibleVisit = () => root.querySelector(".departure")?.textContent;
+  const status = () => root.querySelector('[role="status"]')?.textContent;
+  expect(visibleVisit()).toContain("Park");
+  await choose("order", "route");
+  expect(visibleVisit()).toContain("City");
+  await choose("route", "T:Train:T2");
+  await choose("direction", "Inbound");
+  expect(visibleVisit()).toContain("City");
+  expect(root.textContent).toContain("Showing 1 of 2 departures");
+
+  const refreshed = structuredClone(hass);
+  refreshed.states[stopBoard]!.attributes.departures = [
+    { route: "Zeta", direction: "Outbound", headsign: "Park" },
+  ];
+  card.hass = refreshed;
+  await card.updateComplete;
+  expect(field("route").value).toBe("T:Train:T2");
+  expect(field("route").selectedOptions[0]?.text).toBe("T2");
+  expect(field("direction").value).toBe("Inbound");
+  expect(field("order").value).toBe("route");
+  expect(visibleVisit()).toBeUndefined();
+  expect(status()).toContain("No services match the selected filters");
+  root.querySelector<HTMLButtonElement>(".clear-board-filters")!.click();
+  await card.updateComplete;
+  expect(field("route").value).toBe("");
+  expect(field("direction").value).toBe("");
+  expect(field("order").value).toBe("route");
+  expect(visibleVisit()).toContain("Park");
+
+  const empty = structuredClone(refreshed);
+  empty.states[stopBoard]!.attributes.departures = [];
+  card.hass = empty;
+  await card.updateComplete;
+  expect(status()).toContain("No services found");
+  expect(root.querySelector(".clear-board-filters")).toBeNull();
+
+  const unavailable = structuredClone(empty);
+  unavailable.states[stopBoard]!.state = "unavailable";
+  card.hass = unavailable;
+  await card.updateComplete;
+  expect(status()).toContain("Transport information is unavailable");
+  expect(root.querySelector("select")).toBeNull();
+});
+
 it("limits alerts and distinguishes no disruptions from unavailable data", async () => {
   const hass = structuredClone(fixture) as HomeAssistant;
   const state = hass.states["sensor.renamed_journey_disruptions"]!;
@@ -380,7 +546,7 @@ it("keeps scheduled predictions, signed delays and missing-data relationships di
       string,
       unknown
     >[]
-  )[0]!;
+  )[1]!;
   leg.callingStopsSource = "scheduled_with_realtime";
   leg.callingStops = [
     {
@@ -650,4 +816,284 @@ it("shows loading and action failure without a second in-flight request", async 
     ),
   );
   expect(form.querySelector("button")?.disabled).toBe(false);
+});
+
+it("opens the share preview explicitly and restores focus on Cancel and Escape", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  const callService = vi.fn().mockResolvedValue(undefined);
+  const card = await journey({ ...hass, callService });
+  card.setConfig({ ...card.config, title: "Private card title" });
+  await card.updateComplete;
+  const root = card.shadowRoot!;
+  const share = root.querySelector<HTMLButtonElement>(".share-toggle")!;
+  expect(share).not.toBeNull();
+  expect(root.querySelector(".share-preview")).toBeNull();
+  share.click();
+  await card.updateComplete;
+  const heading = root.querySelector("#share-preview-heading");
+  expect(root.activeElement).toBe(heading);
+  const preview = root.querySelector(".share-preview")!;
+  expect(preview.textContent).toContain("Kippa-Ring station");
+  expect(preview.textContent).not.toMatch(
+    /Private card title|14 Private Street/,
+  );
+  expect(callService).not.toHaveBeenCalled();
+  root.querySelector<HTMLButtonElement>(".share-cancel")!.click();
+  await card.updateComplete;
+  expect(root.querySelector(".share-preview")).toBeNull();
+  expect(root.activeElement).toBe(share);
+  share.click();
+  await card.updateComplete;
+  root.activeElement!.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  await card.updateComplete;
+  expect(root.querySelector(".share-preview")).toBeNull();
+  expect(root.activeElement).toBe(share);
+  expect(root.querySelector(".timing")).not.toBeNull();
+});
+
+async function openSharePreview(card: JourneyCard) {
+  const root = card.shadowRoot!;
+  root.querySelector<HTMLButtonElement>(".share-toggle")!.click();
+  await card.updateComplete;
+  return root;
+}
+
+it("targets only the configured writable calendar with the previewed fields", async () => {
+  const callService = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("ServiceNotSupported"))
+    .mockResolvedValueOnce(undefined);
+  const card = await journey({ ...structuredClone(fixture), callService });
+  card.setConfig({
+    ...card.config,
+    calendar_entity: "calendar.travel",
+    legs_expanded: true,
+  });
+  await card.updateComplete;
+  const root = await openSharePreview(card);
+  expect(callService).not.toHaveBeenCalled();
+  const add = root.querySelector<HTMLButtonElement>(".share-add-calendar")!;
+  add.click();
+  add.click();
+  await vi.waitFor(() =>
+    expect(root.querySelector(".share-status")?.textContent).toContain(
+      "Could not add",
+    ),
+  );
+  expect(callService).toHaveBeenCalledExactlyOnceWith(
+    "calendar",
+    "create_event",
+    {
+      summary: "Kippa-Ring station → Fortitude Valley station · Scheduled",
+      description: root.querySelector(".share-text")?.textContent,
+      location: "Kippa-Ring station",
+      start_date_time: "2026-10-26T07:46:00.000Z",
+      end_date_time: "2026-10-26T08:39:00.000Z",
+    },
+    { entity_id: "calendar.travel" },
+    false,
+  );
+  expect(root.querySelector(".timing")).not.toBeNull();
+  expect(root.querySelectorAll(".leg")).toHaveLength(2);
+  add.click();
+  await vi.waitFor(() =>
+    expect(root.querySelector(".share-status")?.textContent).toContain(
+      "Added to calendar",
+    ),
+  );
+  const hass = card.hass!;
+  card.hass = {
+    ...hass,
+    states: {
+      ...hass.states,
+      "calendar.travel": {
+        ...hass.states["calendar.travel"]!,
+        attributes: { supported_features: 2 },
+      },
+    },
+  };
+  await card.updateComplete;
+  expect(root.querySelector(".share-add-calendar")).toBeNull();
+  card.setConfig({ ...card.config, calendar_entity: "calendar.unavailable" });
+  await card.updateComplete;
+  expect(root.querySelector(".share-preview")).toBeNull();
+  await openSharePreview(card);
+  expect(root.querySelector(".share-add-calendar")).toBeNull();
+});
+
+it("shares and copies only the visible text on click and handles capability failures", async () => {
+  const share = vi
+    .fn()
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new DOMException("Cancelled", "AbortError"))
+    .mockRejectedValueOnce(new Error("Permission denied"));
+  const writeText = vi
+    .fn()
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error("Clipboard blocked"));
+  vi.stubGlobal("navigator", { share, clipboard: { writeText } });
+  const root = await openSharePreview(await journey(fixture));
+  const preview = root.querySelector(".share-text")?.textContent;
+  const shareButton = root.querySelector<HTMLButtonElement>(".share-native")!;
+  const copyButton = root.querySelector<HTMLButtonElement>(".share-copy")!;
+  const status = root.querySelector(".share-status")!;
+  expect(share).not.toHaveBeenCalled();
+  expect(writeText).not.toHaveBeenCalled();
+  shareButton.click();
+  expect(share).toHaveBeenCalledExactlyOnceWith({ text: preview });
+  shareButton.click();
+  await vi.waitFor(() => expect(share).toHaveBeenCalledTimes(2));
+  expect(status.textContent?.trim()).toBe("");
+  shareButton.click();
+  await vi.waitFor(() =>
+    expect(status.textContent).toContain("Could not share"),
+  );
+  copyButton.click();
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(preview);
+  await vi.waitFor(() => expect(status.textContent).toContain("Copied"));
+  copyButton.click();
+  await vi.waitFor(() =>
+    expect(status.textContent).toContain("Could not copy"),
+  );
+  expect(root.querySelector(".timing")).not.toBeNull();
+});
+
+it("downloads a local ICS file without Web Share, clipboard or secure crypto", async () => {
+  vi.stubGlobal("navigator", {});
+  vi.stubGlobal("crypto", {});
+  const createObjectURL = vi.fn().mockReturnValue("blob:local-calendar");
+  const revokeObjectURL = vi.fn();
+  vi.stubGlobal(
+    "URL",
+    class extends URL {
+      static override createObjectURL = createObjectURL;
+      static override revokeObjectURL = revokeObjectURL;
+    },
+  );
+  const download = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.download).toBe("translink-journey.ics");
+      expect(this.href).toBe("blob:local-calendar");
+    });
+  const root = await openSharePreview(await journey(fixture));
+  expect(root.querySelector(".share-native")).toBeNull();
+  expect(root.querySelector(".share-copy")).toBeNull();
+  expect(root.querySelector(".share-text")?.textContent).toContain("RPSP");
+  expect(createObjectURL).not.toHaveBeenCalled();
+  root.querySelector<HTMLButtonElement>(".share-download")!.click();
+  expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(expect.any(Blob));
+  expect(download).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() =>
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith(
+      "blob:local-calendar",
+    ),
+  );
+});
+
+it("keeps only validated public trip timetable links in the leg details", async () => {
+  const card = await journey(fixture);
+  card.setConfig({ ...card.config, legs_expanded: true });
+  await card.updateComplete;
+  const root = card.shadowRoot!;
+  const link = root.querySelector<HTMLAnchorElement>(".trip-timetable")!;
+  expect(link.href).toBe(
+    "https://jp.translink.com.au/plan-your-journey/timetables/trip/s_T_RPSP_8_20261026_39766414",
+  );
+  expect(link.getAttribute("aria-label")).toBe("Trip timetable · RPSP");
+  expect(link.target).toBe("_blank");
+  expect(link.rel).toBe("noopener noreferrer");
+
+  const hass: HomeAssistant = structuredClone(fixture);
+  const legs = hass.states[card.config.entity!]!.attributes.legs as Record<
+    string,
+    unknown
+  >[];
+  legs[1]!.timetableUrl = "https://example.invalid/?token=secret";
+  card.hass = hass;
+  await card.updateComplete;
+  expect(root.querySelector(".trip-timetable")).toBeNull();
+  expect(root.querySelectorAll(".leg")).toHaveLength(2);
+  expect(
+    (await openSharePreview(card)).querySelector(".share-text")?.textContent,
+  ).not.toContain("example.invalid");
+});
+
+it("updates the preview on journey changes and closes it when no services remain", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+  const card = await journey(fixture);
+  const root = await openSharePreview(card);
+  const hass: HomeAssistant = structuredClone(fixture);
+  hass.states["sensor.renamed_journey_next_departure"]!.state =
+    "2026-10-26T07:55:00Z";
+  card.hass = hass;
+  await card.updateComplete;
+  expect(root.querySelector(".share-status")?.textContent).toContain(
+    "Journey updated",
+  );
+  expect(root.querySelector(".share-text")?.textContent).toContain("5:55 pm");
+  root.querySelector<HTMLButtonElement>(".share-copy")!.click();
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(
+    root.querySelector(".share-text")?.textContent,
+  );
+  card.hass = emptyJourney();
+  await card.updateComplete;
+  expect(root.querySelector(".share-preview")).toBeNull();
+  expect(root.querySelector(".share-toggle")).toBeNull();
+  expect(root.textContent).toContain("No services found");
+  card.hass = fixture;
+  await card.updateComplete;
+  expect(root.querySelector(".share-toggle")).not.toBeNull();
+  expect(root.querySelector(".share-preview")).toBeNull();
+});
+
+it("keeps sharing and the ordinary journey display when calendar export is unavailable", async () => {
+  const hass: HomeAssistant = structuredClone(fixture);
+  hass.states["sensor.renamed_journey_next_departure"]!.state = "unknown";
+  const legs = hass.states["sensor.renamed_journey_itinerary"]!.attributes
+    .legs as Record<string, unknown>[];
+  legs[0]!.departureTimeUtc = "2026-10-26T07:39:00";
+  const card = await journey(hass);
+  card.setConfig({
+    ...card.config,
+    calendar_entity: "calendar.travel",
+    legs_expanded: true,
+  });
+  await card.updateComplete;
+  const root = await openSharePreview(card);
+  expect(
+    root.querySelector<HTMLButtonElement>(".share-download")?.disabled,
+  ).toBe(true);
+  expect(root.querySelector("#calendar-unavailable")?.textContent).toContain(
+    "requires valid scheduled",
+  );
+  expect(root.querySelector(".share-add-calendar")).toBeNull();
+  expect(root.querySelector(".share-text")?.textContent).toContain("RPSP");
+  expect(root.querySelectorAll(".leg")).toHaveLength(2);
+
+  card.setConfig({ ...card.config, show_actions: false });
+  await card.updateComplete;
+  expect(root.querySelector(".share-toggle")).toBeNull();
+  expect(root.querySelector(".share-preview")).toBeNull();
+  expect(root.querySelector(".trip-timetable")).toBeNull();
+  expect(root.querySelector(".timing")).not.toBeNull();
+  expect(root.querySelectorAll(".leg")).toHaveLength(2);
+});
+
+it.each([
+  { show_actions: "false" },
+  { calendar_entity: "sensor.calendar" },
+  { calendar_entity: 1 },
+  { calendar_entity: "calendar.travel\n" },
+])("rejects invalid share settings %j synchronously", (options) => {
+  const card = document.createElement("translink-journey-card") as JourneyCard;
+  expect(() =>
+    card.setConfig({
+      type: "custom:translink-journey-card",
+      ...options,
+    } as CardConfig),
+  ).toThrow(/show_actions|calendar_entity/);
 });

@@ -1,7 +1,7 @@
 {
   "hub.json": {
     "provenance": "synthetic",
-    "purpose": "Multi-direction hub with a loop, alighting-only visit, exact duplicate, platform-change pair, and scheduled and realtime rows."
+    "purpose": "Multi-direction hub with a loop, repeated alighting-only visits, exact duplicate, platform-change pair, and scheduled and realtime rows."
   },
   "platform.json": {
     "provenance": "synthetic",

@@ -413,7 +413,7 @@ class StopDeparturePlatformChange(TranslinkApiModel):
 
 
 class StopDepartureItem(TranslinkApiModel):
-    """Normalized departure row exposed in the Home Assistant board attribute."""
+    """Normalized stop timetable visit exposed on the Home Assistant board."""
 
     route: str
     vehicle: str | None
@@ -456,6 +456,7 @@ class StopSummary(TranslinkApiModel):
     realtime_updated_at: datetime | None = None
     delay_source: DelaySource | None = None
     departures: list[dict[str, Any]] = Field(default_factory=list)
+    arrivals: list[dict[str, Any]] = Field(default_factory=list)
     disruptions_count: int = 0
     disruptions: list[dict[str, Any]] = Field(default_factory=list)
     disruptions_description: str = "No active disruptions"
