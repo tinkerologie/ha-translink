@@ -7,12 +7,14 @@ import {
 } from "lit";
 import {
   available,
+  brisbaneInputDefaults,
   modeIcon,
   normalizeDepartures,
   number,
   routeColors,
   rows,
   siblings,
+  sortJourneyAlternatives,
   statusLabel,
   stopName,
   stub,
@@ -22,7 +24,19 @@ import {
 } from "./helpers";
 import { strings } from "./strings";
 import { cardStyles } from "./styles";
-import type { CardConfig, EntityState, HomeAssistant, Row } from "./types";
+import type {
+  CardConfig,
+  EntityState,
+  HomeAssistant,
+  JourneyAlternative,
+  JourneyAlternatives,
+  JourneySort,
+  RegistryEntry,
+  Row,
+} from "./types";
+
+const MAX_ALTERNATIVES_LIMIT = 10;
+const DEFAULT_ALTERNATIVES_LIMIT = 5;
 
 const labels: Record<string, string> = {
   entity: "Translink entity",
@@ -33,6 +47,8 @@ const labels: Record<string, string> = {
   max_departures: "Maximum departures",
   show_platform: "Show platform",
   max_alerts: "Maximum alerts",
+  show_planner: "Show journey planner",
+  alternatives_limit: "Maximum alternatives",
 };
 function form(role: string, fields: string[]) {
   return {
@@ -47,9 +63,12 @@ function form(role: string, fields: string[]) {
       { name: "title", selector: { text: {} } },
       ...fields.map((name) => ({
         name,
-        selector: name.startsWith("max_")
-          ? { number: { min: 1, max: 20, mode: "box" } }
-          : { boolean: {} },
+        selector:
+          name === "alternatives_limit"
+            ? { number: { min: 1, max: MAX_ALTERNATIVES_LIMIT, mode: "box" } }
+            : name.startsWith("max_")
+              ? { number: { min: 1, max: 20, mode: "box" } }
+              : { boolean: {} },
       })),
     ],
     computeLabel: (schema: { name: string }) =>
@@ -222,23 +241,244 @@ export abstract class TranslinkCard extends LitElement {
           : state
             ? this.renderContent(state)
             : nothing}
+        ${this.renderExtra(entry)}
       </div>
     </ha-card>`;
+  }
+  protected renderExtra(
+    _entry?: RegistryEntry,
+  ): TemplateResult | typeof nothing {
+    return nothing;
   }
   protected formatTime(value: unknown, date = false) {
     return time(value, this.hass, date);
   }
 }
 
+type PlannerState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "complete"; result: JourneyAlternatives };
+
 export class JourneyCard extends TranslinkCard {
+  static override properties = {
+    ...TranslinkCard.properties,
+    planner: { state: true },
+    plannerSort: { state: true },
+  };
   static override role = "itinerary";
   static override title = strings.journey;
   static getConfigForm() {
-    return form(this.role, ["show_fare", "legs_expanded", "show_disruptions"]);
+    return form(this.role, [
+      "show_fare",
+      "legs_expanded",
+      "show_disruptions",
+      "show_planner",
+      "alternatives_limit",
+    ]);
   }
   protected entityRole = "itinerary";
   protected defaultTitle = strings.journey;
   protected icon = "mdi:routes";
+  private planner?: PlannerState;
+  private plannerSort: JourneySort = "departure";
+  private readonly plannerDefaults = brisbaneInputDefaults();
+
+  override setConfig(config: CardConfig): void {
+    if (
+      config?.show_planner !== undefined &&
+      typeof config.show_planner !== "boolean"
+    )
+      throw new Error("show_planner must be a boolean");
+    const limit = config?.alternatives_limit;
+    if (
+      limit !== undefined &&
+      (!Number.isInteger(limit) || limit < 1 || limit > MAX_ALTERNATIVES_LIMIT)
+    )
+      throw new Error("alternatives_limit must be between 1 and 10");
+    const oldEntity = this.config.entity;
+    super.setConfig(config);
+    if (oldEntity !== config.entity || !config.show_planner)
+      this.planner = undefined;
+  }
+
+  protected override renderExtra(entry?: RegistryEntry) {
+    if (
+      !this.config.show_planner ||
+      entry?.platform !== "translink" ||
+      entry.translation_key !== this.entityRole
+    )
+      return nothing;
+    const result =
+      this.planner?.status === "complete" ? this.planner.result : undefined;
+    const sorted = result
+      ? sortJourneyAlternatives(result.alternatives, this.plannerSort).slice(
+          0,
+          this.config.alternatives_limit ?? DEFAULT_ALTERNATIVES_LIMIT,
+        )
+      : [];
+    const planNoticeTitles = result?.plan_notices
+      ?.map(({ title }) => title)
+      .filter(Boolean);
+
+    return html`<section class="planner" aria-label="Journey planner">
+      <h3>Plan a journey</h3>
+      <form @submit=${this.submitPlan}>
+        <label>
+          Date (Brisbane)
+          <input
+            name="date"
+            type="date"
+            required
+            .value=${this.plannerDefaults.date}
+          />
+        </label>
+        <label>
+          Time (Brisbane)
+          <input
+            name="time"
+            type="time"
+            required
+            .value=${this.plannerDefaults.time}
+          />
+        </label>
+        <label>
+          Time preference
+          <select name="time_search_mode">
+            <option value="LeaveAfter">Leave after</option>
+            <option value="ArriveBefore">Arrive before</option>
+          </select>
+        </label>
+        <button type="submit" ?disabled=${this.planner?.status === "loading"}>
+          Plan
+        </button>
+      </form>
+      <label class="planner-sort">
+        Sort by
+        <select
+          .value=${this.plannerSort}
+          @change=${(event: Event) => {
+            this.plannerSort = (event.target as HTMLSelectElement)
+              .value as JourneySort;
+          }}
+        >
+          <option value="departure">Departure</option>
+          <option value="arrival">Arrival</option>
+          <option value="duration">Duration</option>
+        </select>
+      </label>
+      ${this.planner?.status === "loading"
+        ? html`<div role="status">Planning journey…</div>`
+        : nothing}
+      ${this.planner?.status === "error"
+        ? html`<div role="alert">${this.planner.message}</div>`
+        : nothing}
+      ${result && !sorted.length
+        ? html`<div role="status">No journeys found</div>`
+        : nothing}
+      ${sorted.length
+        ? html`<ol class="alternatives" aria-label="Journey alternatives">
+            ${sorted.map((alternative) => this.renderAlternative(alternative))}
+          </ol>`
+        : nothing}
+      ${result?.truncated
+        ? html`<div class="secondary">
+            Received ${result.returned} of ${result.total_alternatives}
+            journeys.
+          </div>`
+        : nothing}
+      ${planNoticeTitles?.length
+        ? html`<div class="secondary">
+            Planner notices · ${planNoticeTitles.join("; ")}
+          </div>`
+        : nothing}
+    </section>`;
+  }
+
+  private async submitPlan(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const { hass } = this;
+    if (this.planner?.status === "loading") return;
+    if (!hass?.callService) {
+      this.planner = {
+        status: "error",
+        message: "Journey planning is unavailable",
+      };
+      return;
+    }
+    const fields = new FormData(event.currentTarget as HTMLFormElement);
+    const pending = { status: "loading" } as const;
+    this.planner = pending;
+    try {
+      const { response } = await hass.callService(
+        "translink",
+        "plan_journey",
+        {
+          entity_id: this.config.entity,
+          date: fields.get("date"),
+          time: fields.get("time"),
+          time_search_mode: fields.get("time_search_mode"),
+          sort_by: this.plannerSort,
+          limit: MAX_ALTERNATIVES_LIMIT,
+        },
+        undefined,
+        false,
+        true,
+      );
+      if (this.planner === pending)
+        this.planner = { status: "complete", result: response };
+    } catch (error) {
+      if (this.planner !== pending) return;
+      const message = text((error as { message?: unknown } | null)?.message);
+      this.planner = {
+        status: "error",
+        message: message ?? "Unable to plan journey",
+      };
+    }
+  }
+
+  private renderAlternative(option: JourneyAlternative) {
+    const notices = option.notices.length;
+    return html`<li class="alternative">
+      <dl>
+        <div>
+          <dt>Departure</dt>
+          <dd>${this.formatTime(option.departure, true)}</dd>
+        </div>
+        <div>
+          <dt>Arrival</dt>
+          <dd>${this.formatTime(option.arrival, true)}</dd>
+        </div>
+        <div>
+          <dt>Duration</dt>
+          <dd>
+            ${option.duration_mins === null
+              ? "—"
+              : `${option.duration_mins} min`}
+          </dd>
+        </div>
+        <div>
+          <dt>Transfers</dt>
+          <dd>${option.transfers ?? "—"}</dd>
+        </div>
+      </dl>
+      ${option.planner_first
+        ? html`<span class="secondary">Planner first</span>`
+        : nothing}
+      ${notices
+        ? html`<details>
+            <summary>
+              ${notices} service notice${notices === 1 ? "" : "s"}
+            </summary>
+            <ul>
+              ${option.notices.map(
+                ({ title }) => html`<li>${title ?? "Service notice"}</li>`,
+              )}
+            </ul>
+          </details>`
+        : nothing}
+    </li>`;
+  }
   protected renderContent(state: EntityState) {
     const related = this.related;
     const legs = rows(state.attributes.legs);

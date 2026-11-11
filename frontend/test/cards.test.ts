@@ -1,8 +1,13 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import "../src/index";
 import { AlertsCard, DeparturesCard, JourneyCard } from "../src/cards";
+import alternatives from "./fixtures/alternatives.json";
 import fixture from "./fixtures/hass.json";
-import type { CardConfig, HomeAssistant } from "../src/types";
+import type {
+  CardConfig,
+  HomeAssistant,
+  JourneyAlternatives,
+} from "../src/types";
 afterEach(() => document.body.replaceChildren());
 async function journey(
   hass?: HomeAssistant,
@@ -377,4 +382,110 @@ it("keeps scheduled predictions, signed delays and missing-data relationships di
   expect(calls[4]!.textContent).toContain("Stop 600010");
   expect(calls[4]!.textContent).toContain("No prediction available");
   expect(calls[4]!.textContent).not.toContain("+2 min");
+});
+
+it("calls the planner once with Brisbane inputs when Plan is submitted", async () => {
+  const callService = vi.fn().mockResolvedValue({
+    response: {
+      ...alternatives,
+      total_alternatives: 0,
+      returned: 0,
+      alternatives: [],
+    },
+  });
+  const card = await journey({ ...fixture, callService });
+  expect(card.shadowRoot!.querySelector(".planner")).toBeNull();
+  card.setConfig({ ...card.config, show_planner: true });
+  await card.updateComplete;
+  const form =
+    card.shadowRoot!.querySelector<HTMLFormElement>(".planner form")!;
+  form.querySelector<HTMLInputElement>('[name="date"]')!.value = "2026-10-06";
+  form.querySelector<HTMLInputElement>('[name="time"]')!.value = "00:00";
+  form.querySelector<HTMLSelectElement>('[name="time_search_mode"]')!.value =
+    "ArriveBefore";
+  form.requestSubmit();
+  await vi.waitFor(() => {
+    expect(card.shadowRoot!.textContent).toContain("No journeys found");
+  });
+  expect(callService).toHaveBeenCalledExactlyOnceWith(
+    "translink",
+    "plan_journey",
+    {
+      entity_id: card.config.entity,
+      date: "2026-10-06",
+      time: "00:00",
+      time_search_mode: "ArriveBefore",
+      sort_by: "departure",
+      limit: 10,
+    },
+    undefined,
+    false,
+    true,
+  );
+});
+
+it("reorders results locally and shows missing values, counts and safe notice text", async () => {
+  const callService = vi.fn().mockResolvedValue({ response: alternatives });
+  const card = await journey({ ...fixture, callService });
+  card.setConfig({ ...card.config, show_planner: true, alternatives_limit: 3 });
+  await card.updateComplete;
+  const root = card.shadowRoot!;
+  root.querySelector<HTMLFormElement>(".planner form")!.requestSubmit();
+  await vi.waitFor(() =>
+    expect(root.querySelectorAll(".alternative")).toHaveLength(3),
+  );
+  const options = [...root.querySelectorAll(".alternative")];
+  expect(options[0]?.textContent).toContain("56 min");
+  expect(options[0]?.textContent).toContain("1 service notice");
+  expect(options[0]?.textContent).toContain(
+    '<img src="https://example.invalid/notice">',
+  );
+  expect(options[0]?.querySelector("img")).toBeNull();
+  expect(options[1]?.textContent).toContain("Planner first");
+  expect(
+    [...options[2]!.querySelectorAll("dd")].map((cell) =>
+      cell.textContent?.trim(),
+    ),
+  ).toEqual(["—", "—", "—", "—"]);
+
+  const sort = root.querySelector<HTMLSelectElement>(".planner-sort select")!;
+  sort.value = "duration";
+  sort.dispatchEvent(new Event("change"));
+  await card.updateComplete;
+
+  expect(root.querySelector(".alternative")?.textContent).toContain("41 min");
+  expect(callService).toHaveBeenCalledTimes(1);
+  card.setConfig({ ...card.config, alternatives_limit: 1 });
+  await card.updateComplete;
+  expect(root.querySelectorAll(".alternative")).toHaveLength(1);
+});
+
+it("shows loading and action failure without a second in-flight request", async () => {
+  let rejectPlan!: (reason: { message: string }) => void;
+  const callService = vi.fn(
+    () =>
+      new Promise<{ response: JourneyAlternatives }>((_resolve, reject) => {
+        rejectPlan = reject;
+      }),
+  );
+  const card = await journey({ ...fixture, callService });
+  card.setConfig({ ...card.config, show_planner: true });
+  await card.updateComplete;
+  const root = card.shadowRoot!;
+  const form = root.querySelector<HTMLFormElement>(".planner form")!;
+  form.requestSubmit();
+  form.requestSubmit();
+  await card.updateComplete;
+  expect(root.querySelector(".planner [role=status]")?.textContent).toContain(
+    "Planning journey",
+  );
+  expect(form.querySelector("button")?.disabled).toBe(true);
+  expect(callService).toHaveBeenCalledTimes(1);
+  rejectPlan({ message: "Planner unavailable" });
+  await vi.waitFor(() =>
+    expect(root.querySelector("[role=alert]")?.textContent).toBe(
+      "Planner unavailable",
+    ),
+  );
+  expect(form.querySelector("button")?.disabled).toBe(false);
 });

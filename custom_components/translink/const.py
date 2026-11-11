@@ -40,6 +40,13 @@ DEFAULT_TRACK_VEHICLE: Final = True
 DEFAULT_SCAN_INTERVAL: Final = 60  # seconds
 MIN_SCAN_INTERVAL: Final = 30  # seconds
 
+# On-demand journey planner response bounds
+DEFAULT_ALTERNATIVES_LIMIT: Final = 5
+MAX_ALTERNATIVES_LIMIT: Final = 10
+MAX_ALTERNATIVE_LEGS: Final = 20
+MAX_ALTERNATIVE_NOTICES: Final = 10
+JOURNEY_SORT_OPTIONS: Final = ("departure", "arrival", "duration")
+
 # Options lists
 AVAILABLE_MODES: Final = [MODE_JOURNEY, MODE_STOP]
 AVAILABLE_TRANSPORT_MODES: Final = ["Bus", "Ferry", "Train", "Tram"]

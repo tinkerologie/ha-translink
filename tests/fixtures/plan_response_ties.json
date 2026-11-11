@@ -1,0 +1,47 @@
+{
+  "itineraries": [
+    {
+      "firstDepartureTimeUtc": "2026-10-06T10:00:00Z",
+      "lastArrivalTimeUtc": "2026-10-06T10:40:00Z",
+      "durationMins": 40
+    },
+    {
+      "firstDepartureTimeUtc": "2026-10-06T20:00:00+10:00",
+      "lastArrivalTimeUtc": "2026-10-06T20:40:00+10:00",
+      "durationMins": 40
+    },
+    {
+      "firstDepartureTimeUtc": "2026-10-06T10:00:00Z",
+      "lastArrivalTimeUtc": "2026-10-06T10:30:00Z",
+      "durationMins": 40
+    },
+    {
+      "lastArrivalTimeUtc": "2026-10-06T10:20:00Z",
+      "durationMins": 0,
+      "legs": [
+        {
+          "travelMode": "Walk"
+        }
+      ]
+    },
+    {
+      "firstDepartureTimeUtc": "2026-10-06T10:00:00",
+      "lastArrivalTimeUtc": "invalid"
+    },
+    {
+      "firstDepartureTimeUtc": "2026-10-06T09:50:00Z",
+      "lastArrivalTimeUtc": "2026-10-06T10:45:00Z",
+      "durationMins": -1
+    },
+    {
+      "firstDepartureTimeUtc": "2026-10-06T10:05:00Z",
+      "lastArrivalTimeUtc": "2026-10-06T10:25:00Z",
+      "durationMins": 70
+    },
+    {
+      "firstDepartureTimeUtc": "2026-10-06T09:55:00Z",
+      "lastArrivalTimeUtc": "2026-10-06T10:45:00Z",
+      "durationMins": 40
+    }
+  ]
+}

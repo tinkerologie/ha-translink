@@ -1,0 +1,52 @@
+{
+  "sort_by": "departure",
+  "total_alternatives": 3,
+  "returned": 3,
+  "truncated": false,
+  "alternatives": [
+    {
+      "planner_index": 1,
+      "planner_first": false,
+      "departure": "2026-10-05T23:28:00+00:00",
+      "arrival": "2026-10-06T00:24:00+00:00",
+      "duration_mins": 56,
+      "transfers": 1,
+      "legs": [],
+      "legs_truncated": false,
+      "notices": [
+        {
+          "id": 17,
+          "title": "<img src=\"https://example.invalid/notice\">"
+        }
+      ]
+    },
+    {
+      "planner_index": 0,
+      "planner_first": true,
+      "departure": "2026-10-05T23:43:00+00:00",
+      "arrival": "2026-10-06T00:24:00+00:00",
+      "duration_mins": 41,
+      "transfers": 0,
+      "legs": [],
+      "legs_truncated": false,
+      "notices": []
+    },
+    {
+      "planner_index": 2,
+      "planner_first": false,
+      "departure": null,
+      "arrival": null,
+      "duration_mins": null,
+      "transfers": null,
+      "legs": [],
+      "legs_truncated": false,
+      "notices": []
+    }
+  ],
+  "plan_notices": [
+    {
+      "id": 20,
+      "title": "Check for timetable changes"
+    }
+  ]
+}

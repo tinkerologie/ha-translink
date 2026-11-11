@@ -407,6 +407,30 @@ def plan_response_data() -> dict[str, Any]:
 
 
 @pytest.fixture
+def plan_response_arrive_before() -> dict[str, Any]:
+    """Load a synthetic ArriveBefore planner response."""
+    return json.loads(
+        (FIXTURES_DIR / "plan_response_arrive_before.json").read_text(encoding="utf-8")
+    )
+
+
+@pytest.fixture
+def plan_response_ties() -> dict[str, Any]:
+    """Load a synthetic planner response with ties and missing values."""
+    return json.loads(
+        (FIXTURES_DIR / "plan_response_ties.json").read_text(encoding="utf-8")
+    )
+
+
+@pytest.fixture
+def plan_response_empty() -> dict[str, Any]:
+    """Load a synthetic planner response with no itineraries."""
+    return json.loads(
+        (FIXTURES_DIR / "plan_response_empty.json").read_text(encoding="utf-8")
+    )
+
+
+@pytest.fixture
 def sample_vehicle_positions_bytes() -> bytes:
     """Load sample GTFS-RT VehiclePositions protobuf payload."""
     with open(FIXTURES_DIR / "sample_vehicle_positions.pb", "rb") as f:

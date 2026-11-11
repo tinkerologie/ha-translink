@@ -3,6 +3,8 @@ import type {
   Departure,
   EntityState,
   HomeAssistant,
+  JourneyAlternative,
+  JourneySort,
   Row,
 } from "./types";
 
@@ -167,4 +169,47 @@ export const available = (state?: EntityState): state is EntityState =>
 /** Compact a supplied station label; platform remains a separate labelled field. */
 export function stopName(value: unknown): string | undefined {
   return text(value)?.replace(/, platform [^,]+(?:,.*)?$/i, "");
+}
+
+const plannerSortKeys = {
+  departure: ["departure", "arrival", "duration_mins"],
+  arrival: ["arrival", "departure", "duration_mins"],
+  duration: ["duration_mins", "departure", "arrival"],
+} as const;
+
+export function sortJourneyAlternatives(
+  alternatives: JourneyAlternative[],
+  sortBy: JourneySort,
+): JourneyAlternative[] {
+  return [...alternatives].sort((left, right) => {
+    for (const key of plannerSortKeys[sortBy]) {
+      const a = left[key];
+      const b = right[key];
+      if (a === b) continue;
+      if (a === null) return 1;
+      if (b === null) return -1;
+      return a < b ? -1 : 1;
+    }
+    return left.planner_index - right.planner_index;
+  });
+}
+
+const brisbaneClock = new Intl.DateTimeFormat("en-AU", {
+  timeZone: "Australia/Brisbane",
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+export function brisbaneInputDefaults(now = new Date()) {
+  const parts = Object.fromEntries(
+    brisbaneClock.formatToParts(now).map(({ type, value }) => [type, value]),
+  );
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+  };
 }

@@ -49,6 +49,34 @@ for (const width of [320, 768, 1440]) {
           (element) => getComputedStyle(element).outlineStyle,
         ),
       ).toBe("solid");
+      const planner = page.getByRole("region", { name: "Journey planner" });
+      await expect(planner.getByLabel("Date (Brisbane)")).toBeVisible();
+      await expect(planner.getByLabel("Time (Brisbane)")).toBeVisible();
+      const plan = planner.getByRole("button", { name: "Plan", exact: true });
+      await plan.focus();
+      await page.keyboard.press("Enter");
+      const options = planner.getByRole("list", {
+        name: "Journey alternatives",
+      });
+      await expect(options.locator(":scope > li")).toHaveCount(3);
+      await expect(options.locator(":scope > li").first()).toContainText(
+        "56 min",
+      );
+      await planner.getByLabel("Sort by").selectOption("duration");
+      await expect(options.locator(":scope > li").first()).toContainText(
+        "41 min",
+      );
+      const notice = options.getByText("1 service notice", { exact: true });
+      await notice.focus();
+      await page.keyboard.press("Space");
+      await expect(
+        options.getByText('<img src="https://example.invalid/notice">'),
+      ).toBeVisible();
+      expect(
+        await planner.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth,
+        ),
+      ).toBe(true);
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= window.innerWidth,
