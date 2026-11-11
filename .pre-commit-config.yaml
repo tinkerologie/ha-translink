@@ -1,0 +1,11 @@
+# Ruff's CI directory scan omits this extensionless Python CLI.
+exclude: ^script/query-api$
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep this revision aligned with the Ruff pin in .github/workflows/ci.yml.
+    rev: 44b5042edab9382aba712eed4f9c7bab7a3d6a3e # v0.17.0
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+        args: [--check]

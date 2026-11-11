@@ -67,6 +67,7 @@ jobs:
           CHANNEL: ${{ matrix.channel }}
           REQUESTED_VERSION: ${{ inputs.ha_version }}
         run: |
+          set -eo pipefail
           if [[ "$CHANNEL" == dev ]]; then
             # Pin one commit so the install and Hassfest test the same Core.
             revision=$(git ls-remote https://github.com/home-assistant/core.git refs/heads/dev | cut -f1)
@@ -90,32 +91,29 @@ jobs:
             fi
             ha_version="$REQUESTED_VERSION"
           else
-            # Newest non-yanked release, pre-releases included; when no beta is
-            # out this is the latest stable release.
+            # Select a release the runner can install, including pre-releases.
             ha_version=$(curl -fsSL --retry 3 https://pypi.org/pypi/homeassistant/json |
-              uv run --no-project --with packaging python -c '
-          import json, sys
+              uv run --no-project --python 3.14.2 --with packaging python -c '
+          import json, platform, sys
+          from packaging.specifiers import SpecifierSet
           from packaging.version import Version
+          python = Version(platform.python_version())
           releases = json.load(sys.stdin)["releases"]
           print(max(
               (v for v, files in releases.items()
-               if files and not all(f.get("yanked") for f in files)),
+               if any(
+                   not file.get("yanked") and file.get("requires_python")
+                   and python in SpecifierSet(file["requires_python"])
+                   for file in files
+               )),
               key=Version,
           ))
           ')
           fi
-          revision=$(git ls-remote https://github.com/home-assistant/core.git \
-            "refs/tags/$ha_version" "refs/tags/$ha_version^{}" | tail -n 1 | cut -f1)
-          if [[ ! "$revision" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "::error::Could not resolve the Core tag for Home Assistant $ha_version"
-            exit 1
-          fi
           echo "Home Assistant $ha_version"
           {
             echo "ha_version=$ha_version"
-            echo "revision=$revision"
             echo "requirement=homeassistant==$ha_version"
-            echo "hassfest_ref=$revision"
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out the resolved Core development commit
@@ -137,6 +135,7 @@ jobs:
           set -euo pipefail
           if [[ "$CHANNEL" == dev ]]; then
             [[ "$(git -C .local/ha-next-core rev-parse HEAD)" == "$CORE_REVISION" ]]
+            echo "core_available=true" >> "$GITHUB_OUTPUT"
             if [[ -f .local/ha-next-core/packages/pytest-homeassistant/pyproject.toml ]]; then
               echo "harness=supported" >> "$GITHUB_OUTPUT"
               echo "reason=official plugin present at resolved Core commit" >> "$GITHUB_OUTPUT"
@@ -159,38 +158,69 @@ jobs:
           from packaging.version import Version
 
           version = Version(os.environ["HA_VERSION"])
-          try:
-              with urlopen(f"https://pypi.org/pypi/pytest-homeassistant/{version}/json", timeout=30) as response:
-                  metadata = json.load(response)
-          except HTTPError as err:
-              if err.code != 404:
+          python = Version(platform.python_version())
+
+          def release(package):
+              try:
+                  with urlopen(f"https://pypi.org/pypi/{package}/{version}/json", timeout=30) as response:
+                      return json.load(response)
+              except HTTPError as err:
+                  if err.code == 404:
+                      return None
                   raise
-              state, reason = "unsupported", "no matching pytest-homeassistant release"
-          else:
-              python = Version(platform.python_version())
+
+          def compatible(metadata):
               files = metadata["urls"]
               requirements = metadata["info"]["requires_dist"]
               if not isinstance(files, list) or not isinstance(requirements, list):
-                  raise ValueError("Invalid plugin release metadata")
-              compatible = [
-                  file for file in files
-                  if python in SpecifierSet(file["requires_python"])
-                  and not file.get("yanked", False)
-              ]
-              ha_requirements = [
-                  req for value in requirements
-                  if canonicalize_name((req := Requirement(value)).name) == "homeassistant"
-              ]
-              if not ha_requirements:
-                  raise ValueError("Plugin metadata has no Home Assistant requirement")
-              state, reason = "supported", "matching official plugin release"
-              if not compatible:
-                  state, reason = "unsupported", "matching release is yanked or Python-incompatible"
-              elif not all(version in req.specifier for req in ha_requirements):
-                  state, reason = "unsupported", "release does not pin the selected Home Assistant version"
+                  raise ValueError("Invalid PyPI release metadata")
+              return any(
+                  python in SpecifierSet(file["requires_python"]) and not file.get("yanked", False)
+                  for file in files
+              )
+
+          core = release("homeassistant")
+          state, core_available = "unsupported", "false"
+          if core is None:
+              reason = "Home Assistant release not published"
+          elif not compatible(core):
+              reason = "Home Assistant release is yanked or Python-incompatible"
+          else:
+              core_available = "true"
+              plugin = release("pytest-homeassistant")
+              if plugin is None:
+                  reason = "no matching pytest-homeassistant release"
+              elif not compatible(plugin):
+                  reason = "matching release is yanked or Python-incompatible"
+              else:
+                  ha_requirements = [
+                      req for value in plugin["info"]["requires_dist"]
+                      if canonicalize_name((req := Requirement(value)).name) == "homeassistant"
+                  ]
+                  if not ha_requirements:
+                      raise ValueError("Plugin metadata has no Home Assistant requirement")
+                  if all(version in req.specifier for req in ha_requirements):
+                      state, reason = "supported", "matching official plugin release"
+                  else:
+                      reason = "release does not pin the selected Home Assistant version"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"harness={state}\nreason={reason}\n")
+              output.write(f"harness={state}\nreason={reason}\ncore_available={core_available}\n")
           PYTHON
+
+      - name: Resolve the Core release tag
+        id: release_revision
+        if: matrix.channel == 'release' && steps.classify.outputs.core_available == 'true'
+        env:
+          HA_VERSION: ${{ steps.resolve.outputs.ha_version }}
+        run: |
+          set -eo pipefail
+          revision=$(git ls-remote https://github.com/home-assistant/core.git \
+            "refs/tags/$HA_VERSION" "refs/tags/$HA_VERSION^{}" | tail -n 1 | cut -f1)
+          if [[ ! "$revision" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::Could not resolve the Core tag for Home Assistant $HA_VERSION"
+            exit 1
+          fi
+          echo "ref=$revision" >> "$GITHUB_OUTPUT"
 
       - name: Build the Core development test plugin
         if: matrix.channel == 'dev' && steps.classify.outputs.harness == 'supported'
@@ -198,6 +228,7 @@ jobs:
 
       - name: Install Home Assistant and the test harness
         id: install
+        if: steps.classify.outputs.core_available == 'true'
         env:
           CHANNEL: ${{ matrix.channel }}
           HA_VERSION: ${{ steps.resolve.outputs.ha_version }}
@@ -245,6 +276,7 @@ jobs:
 
       - name: Import every module and check for deprecations
         id: smoke
+        if: steps.classify.outputs.core_available == 'true'
         continue-on-error: true
         run: python script/import_smoke.py
 
@@ -256,9 +288,10 @@ jobs:
 
       - name: Validate with Hassfest from the same release
         id: hassfest
+        if: steps.classify.outputs.core_available == 'true'
         continue-on-error: true
         env:
-          HA_VERSION: ${{ steps.resolve.outputs.hassfest_ref }}
+          HA_VERSION: ${{ steps.resolve.outputs.hassfest_ref || steps.release_revision.outputs.ref }}
         run: ./script/hassfest --skip-plugins ""
 
       - name: Summarize
@@ -271,24 +304,27 @@ jobs:
           CLASSIFY: ${{ steps.classify.outcome }}
           REASON: ${{ steps.classify.outputs.reason }}
           HARNESS: ${{ steps.classify.outputs.harness }}
+          CORE_AVAILABLE: ${{ steps.classify.outputs.core_available }}
           SMOKE: ${{ steps.smoke.outcome }}
           TESTS: ${{ steps.tests.outcome }}
           HASSFEST: ${{ steps.hassfest.outcome }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # A check that never ran fails too: a step that stops the job, such as
-          # resolving the version, skips every check after it. Only the tests
-          # may be skipped, and only when no matching harness exists.
+          # Require each check that the resolved release can run.
           status=success
-          if [[ "$JOB_STATUS" != success ]]; then
+          if [[ "$JOB_STATUS" != success || "$CLASSIFY" != success ]]; then
             status=failure
           fi
-          for outcome in "$CLASSIFY" "$INSTALL" "$SMOKE" "$HASSFEST"; do
-            if [[ "$outcome" != success ]]; then
-              status=failure
-            fi
-          done
-          if [[ "$HARNESS" != unsupported && "$TESTS" != success ]]; then
+          if [[ "$CORE_AVAILABLE" == true ]]; then
+            for outcome in "$INSTALL" "$SMOKE" "$HASSFEST"; do
+              if [[ "$outcome" != success ]]; then
+                status=failure
+              fi
+            done
+          elif [[ "$CORE_AVAILABLE" != false ]]; then
+            status=failure
+          fi
+          if [[ "$HARNESS" == supported && "$TESTS" != success ]]; then
             status=failure
           fi
           tests="$TESTS"

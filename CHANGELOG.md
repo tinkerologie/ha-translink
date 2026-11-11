@@ -16,6 +16,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Fixed
 
+- Pre-commit runs check-only Ruff hooks pinned to CI. Tests filter two known upstream deprecations while continuing to fail on Translink deprecations. [#45](https://github.com/tinkerologie/ha-translink/issues/45)
 - CI retains the coverage report when the test gate fails. Dependabot runs enforce the 100% gate and retain the report for review, and maintainers can publish a reviewed head through a manual CI run. [#43](https://github.com/tinkerologie/ha-translink/issues/43)
 - Location search, nearby-stop search and journey planning report only the operation and HTTP status when the server returns an error. This keeps upstream content out of Home Assistant logs and avoids downloading and decoding error bodies. [#44](https://github.com/tinkerologie/ha-translink/issues/44)
 - The release workflow retries `gh release verify` for about a minute, because GitHub writes the release attestation shortly after publishing. The 2026.10.6 run published correctly but failed this check. [#32](https://github.com/tinkerologie/ha-translink/issues/32)

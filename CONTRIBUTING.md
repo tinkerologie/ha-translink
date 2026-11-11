@@ -82,12 +82,16 @@ Before a pull request can be merged, it must satisfy all automated quality gates
 - `script/setup/bootstrap` for development tools and the latest Home Assistant
 - Pre-commit (`pre-commit install`)
 
+The pre-commit hooks check lint and formatting with the Ruff version pinned in
+CI. Run `./script/lint` to apply Ruff fixes.
+
 ### Validation Commands
 
 `script/test` installs Home Assistant and the official `pytest-homeassistant`
 plugin at the same pinned release in an isolated virtual environment. Set
 `TEST_HOME_ASSISTANT_VERSION` to test another release with a matching plugin
-on PyPI. Set `TEST_VENV_PATH` to choose a different test environment.
+on PyPI. `TEST_PLUGIN_VERSION` defaults to the selected Core version. Set
+`TEST_VENV_PATH` to choose a different test environment.
 
 ```bash
 # Run pytest with the CI coverage threshold
