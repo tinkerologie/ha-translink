@@ -6,6 +6,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+## [2026.11.1] - 2026-11-11
+
 ### Added
 
 - Added a journey progress sensor, schematic dashboard card and vehicle-confirmed transfer and alighting events. Progress follows the departing itinerary through subsequent replans using an in-memory snapshot. [#57](https://github.com/tinkerologie/ha-translink/issues/57)
