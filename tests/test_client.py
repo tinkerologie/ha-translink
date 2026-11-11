@@ -198,7 +198,10 @@ async def test_search_locations_error() -> None:
     """Test searching locations error handling."""
     mock_response = MagicMock()
     mock_response.status = 500
-    mock_response.text = AsyncMock(return_value="Server error")
+    mock_response.text = AsyncMock(return_value="<html>Reflected search</html>")
+    mock_response.json = AsyncMock(return_value={"error": "Reflected search"})
+    mock_response.read = AsyncMock(return_value=b"Reflected search")
+    mock_response.content = MagicMock()
 
     mock_session = MagicMock()
     mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_response)
@@ -206,8 +209,14 @@ async def test_search_locations_error() -> None:
     mock_session.closed = False
 
     client = TranslinkClient(session=mock_session)
-    with pytest.raises(TranslinkResponseError):
+    with pytest.raises(
+        TranslinkResponseError, match=r"^Location search failed with status 500$"
+    ):
         await client.search_locations("Central")
+    mock_response.text.assert_not_called()
+    mock_response.json.assert_not_called()
+    mock_response.read.assert_not_called()
+    assert mock_response.content.mock_calls == []
 
 
 @pytest.mark.asyncio
@@ -543,15 +552,25 @@ async def test_get_stops_by_geolocation_errors() -> None:
 
     mock_resp = MagicMock()
     mock_resp.status = 500
-    mock_resp.text = AsyncMock(return_value="Server error")
+    mock_resp.text = AsyncMock(return_value="<html>Reflected coordinates</html>")
+    mock_resp.json = AsyncMock(return_value={"error": "Reflected coordinates"})
+    mock_resp.read = AsyncMock(return_value=b"Reflected coordinates")
+    mock_resp.content = MagicMock()
     mock_session = MagicMock()
     mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
     mock_session.closed = False
     c = TranslinkClient(session=mock_session)
 
-    with pytest.raises(TranslinkResponseError):
+    with pytest.raises(
+        TranslinkResponseError,
+        match=r"^Geolocation stop search failed with status 500$",
+    ):
         await c.get_stops_by_geolocation(-27.46, 153.02)
+    mock_resp.text.assert_not_called()
+    mock_resp.json.assert_not_called()
+    mock_resp.read.assert_not_called()
+    assert mock_resp.content.mock_calls == []
 
     mock_resp.status = 200
     mock_resp.json = AsyncMock(return_value={"not": "a list"})
@@ -569,15 +588,24 @@ async def test_plan_journey_errors() -> None:
 
     mock_resp = MagicMock()
     mock_resp.status = 400
-    mock_resp.text = AsyncMock(return_value="Bad Request")
+    mock_resp.text = AsyncMock(return_value="<html>Reflected journey</html>")
+    mock_resp.json = AsyncMock(return_value={"error": "Reflected journey"})
+    mock_resp.read = AsyncMock(return_value=b"Reflected journey")
+    mock_resp.content = MagicMock()
     mock_session = MagicMock()
     mock_session.post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
     mock_session.closed = False
     c = TranslinkClient(session=mock_session)
 
-    with pytest.raises(TranslinkResponseError):
+    with pytest.raises(
+        TranslinkResponseError, match=r"^Journey planner failed with status 400$"
+    ):
         await c.plan_journey("S1", "Start", "S2", "End")
+    mock_resp.text.assert_not_called()
+    mock_resp.json.assert_not_called()
+    mock_resp.read.assert_not_called()
+    assert mock_resp.content.mock_calls == []
 
     mock_session.post.side_effect = aiohttp.ClientError("Conn timeout")
     with pytest.raises(TranslinkConnectionError):

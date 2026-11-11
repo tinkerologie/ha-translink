@@ -385,12 +385,6 @@ if "homeassistant" not in sys.modules:
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations: Any) -> Any:
-    """Enable custom integrations in tests."""
-    yield
-
-
-@pytest.fixture(autouse=True)
 def fail_on_ha_deprecation_reports() -> Generator[None]:
     """Fail when Home Assistant logs deprecated use by this integration.
 

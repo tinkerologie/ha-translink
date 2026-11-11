@@ -46,14 +46,16 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Run tests
+        id: tests
         run: bash script/test --cov-report=xml --cov-fail-under=100
 
       - name: Upload coverage artifact
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
           path: coverage.xml
-          if-no-files-found: error
+          if-no-files-found: ${{ steps.tests.outcome == 'success' && 'error' || 'warn' }}
 
   coverage:
     name: Coverage
@@ -63,9 +65,10 @@ jobs:
       contents: read
       id-token: write # Codecov OIDC; no repository credentials are required
     env:
-      CODECOV_OIDC: ${{ !(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || github.event.pull_request.user.login == 'dependabot[bot]')) }}
+      CODECOV_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+      CODECOV_DEPENDABOT: ${{ github.actor == 'dependabot[bot]' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
     steps:
-      # Only the report and file names are read here; no PR code executes with OIDC.
+      # This job reads the report and file names without executing PR code.
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -75,11 +78,14 @@ jobs:
         with:
           name: coverage
       - name: Publish coverage to Codecov
+        # Dependabot keeps the report artifact and the enforced Test coverage
+        # gate. A maintainer can dispatch CI on a reviewed head to upload it.
+        if: env.CODECOV_DEPENDABOT != 'true'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           slug: ${{ github.repository }}
           files: ./coverage.xml
-          use_oidc: ${{ env.CODECOV_OIDC == 'true' }}
+          use_oidc: ${{ env.CODECOV_FORK != 'true' }}
           fail_ci_if_error: true
 
   frontend:

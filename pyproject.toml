@@ -1,6 +1,6 @@
 [project]
 name = "ha-translink"
-version = "2026.10.6"
+version = "2026.11.0"
 description = "Translink Queensland Home Assistant custom integration"
 readme = "README.md"
 dependencies = [
@@ -34,14 +34,20 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = [
+	"-p", "no:respx",
 	"--cov=custom_components.translink",
 	"--cov-branch",
 	"--cov-report=term-missing",
 ]
 # Deprecation warnings attributed to the integration's own modules are errors.
 # The module field is a regex matched from the start of the warning's module, so
-# it covers every submodule; third-party deprecations keep the default action.
+# it covers every integration submodule.
 filterwarnings = [
+	# Core's HTTP application subclass emits this with Python 3.14.2 and aiohttp 3.14.5.
+	# See the matching filter in Core's pyproject.toml.
+	'ignore:^Inheritance class HomeAssistantApplication from web\.Application is discouraged\Z:DeprecationWarning:^homeassistant\.components\.http\.server\Z',
+	# Python 3.14 deprecates the check used by backoff 2.2.1. Core's pyproject.toml links backoff PR #220.
+	'''ignore:^'asyncio\.iscoroutinefunction' is deprecated and slated for removal in Python 3\.16; use inspect\.iscoroutinefunction\(\) instead\Z:DeprecationWarning:^backoff\.(_async|_decorator)\Z''',
 	'error::DeprecationWarning:custom_components\.translink(\.|$)',
 	'error::PendingDeprecationWarning:custom_components\.translink(\.|$)',
 ]
