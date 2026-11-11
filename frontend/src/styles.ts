@@ -112,6 +112,78 @@ export const cardStyles = css`
     display: inline-flex;
     vertical-align: middle;
   }
+  .planner {
+    border-top: 1px solid var(--divider-color);
+    margin-top: 16px;
+    padding-top: 16px;
+    overflow-wrap: anywhere;
+  }
+  .planner form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+    gap: 8px;
+  }
+  .alternative dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .planner label {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-m, 14px);
+  }
+  .planner :is(input, select, button) {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding-inline: 8px;
+    border: 1px solid var(--divider-color);
+    border-radius: var(--ha-border-radius-md, 8px);
+    background: var(--secondary-background-color);
+    color: var(--primary-text-color);
+    font: inherit;
+  }
+  .planner button {
+    align-self: end;
+    border-color: var(--primary-color);
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .planner button:disabled {
+    opacity: 0.65;
+    cursor: wait;
+  }
+  .planner :is(input, select):focus-visible {
+    outline: 2px solid var(--ha-color-focus, var(--primary-color));
+    outline-offset: 2px;
+  }
+  .planner-sort {
+    margin-block: 8px;
+  }
+  .alternatives {
+    display: grid;
+    gap: 8px;
+    padding: 0;
+    margin: 8px 0;
+    list-style: none;
+  }
+  .alternative {
+    padding: 8px;
+    border: 1px solid var(--divider-color);
+    border-radius: var(--ha-border-radius-md, 8px);
+  }
+  .alternative dl {
+    margin: 0;
+  }
+  .alternative dt {
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-m, 14px);
+  }
+  .alternative dd {
+    margin: 0;
+  }
   .timing {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);

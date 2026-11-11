@@ -1,0 +1,43 @@
+plan_journey:
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          filter:
+            - integration: translink
+              domain: sensor
+    date:
+      required: true
+      selector:
+        date:
+    time:
+      required: true
+      selector:
+        time:
+    time_search_mode:
+      default: LeaveAfter
+      selector:
+        select:
+          options:
+            - value: LeaveAfter
+              label: Leave after
+            - value: ArriveBefore
+              label: Arrive before
+    sort_by:
+      default: departure
+      selector:
+        select:
+          translation_key: planner_sort
+          options:
+            - departure
+            - arrival
+            - duration
+    limit:
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 1
+          mode: box

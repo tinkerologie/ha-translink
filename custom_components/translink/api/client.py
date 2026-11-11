@@ -26,6 +26,9 @@ from ..const import (
     GTFS_FEED_VEHICLE_POSITIONS,
     GTFSRT_API_BASE_URL,
     JP_API_BASE_URL,
+    MAX_ALTERNATIVE_LEGS,
+    MAX_ALTERNATIVE_NOTICES,
+    MAX_ALTERNATIVES_LIMIT,
     REALTIME_MAX_AGE_SECONDS,
     REALTIME_MAX_FUTURE_SKEW_SECONDS,
     TRIP_PAGE_CONCURRENCY,
@@ -748,18 +751,13 @@ def _notice_expired(ends_utc: str | None, now: datetime) -> bool:
     return ends_at.tzinfo is not None and now > ends_at
 
 
-def _build_disruption_fields(
-    notices: list[PlanNotice],
-    itinerary: JourneyItinerary | None,
-    now: datetime,
-) -> _DisruptionFields:
-    """Summarize leg notices or planner notices scoped to this request."""
-    notice_lookup = {str(n.id): n for n in notices if n.id is not None}
-
-    # Aggregate disruptions
+def _collect_leg_notices(
+    itinerary: JourneyItinerary, notice_lookup: dict[str, PlanNotice]
+) -> list[dict[str, Any]]:
+    """Collect each usable leg notice once, enriched with planner details."""
     disruptions: list[dict[str, Any]] = []
     seen_notice_ids: set[str] = set()
-    for leg in itinerary.legs if itinerary is not None else ():
+    for leg in itinerary.legs:
         for notice in leg.notices:
             nid = str(notice.id) if notice.id is not None else None
             if nid and nid not in seen_notice_ids:
@@ -780,25 +778,46 @@ def _build_disruption_fields(
                     }
                 )
 
+    return disruptions
+
+
+def _collect_plan_notices(
+    notices: list[PlanNotice], excluded: set[str]
+) -> list[dict[str, Any]]:
+    """Collect the first occurrence of each usable plan notice ID."""
+    disruptions: list[dict[str, Any]] = []
+    seen = set(excluded)
+    for notice in notices:
+        notice_id = str(notice.id) if notice.id is not None else None
+        if notice_id and notice_id not in seen:
+            seen.add(notice_id)
+            disruptions.append(
+                {
+                    "id": notice.id,
+                    "title": notice.title,
+                    "description": notice.description,
+                    "cause": notice.cause,
+                    "effect": notice.effect,
+                    "severity": "Informative",
+                    "starts_utc": notice.startsUtc,
+                    "ends_utc": notice.endsUtc,
+                    "leg": None,
+                    "route": None,
+                }
+            )
+    return disruptions
+
+
+def _build_disruption_fields(
+    notices: list[PlanNotice],
+    itinerary: JourneyItinerary | None,
+    now: datetime,
+) -> _DisruptionFields:
+    """Summarize leg notices or planner notices scoped to this request."""
+    notice_lookup = {str(n.id): n for n in notices if n.id is not None}
+    disruptions = _collect_leg_notices(itinerary, notice_lookup) if itinerary else []
     if not disruptions:
-        for n in notices:
-            nid = str(n.id) if n.id is not None else None
-            if nid and nid not in seen_notice_ids:
-                seen_notice_ids.add(nid)
-                disruptions.append(
-                    {
-                        "id": n.id,
-                        "title": n.title,
-                        "description": n.description,
-                        "cause": n.cause,
-                        "effect": n.effect,
-                        "severity": "Informative",
-                        "starts_utc": n.startsUtc,
-                        "ends_utc": n.endsUtc,
-                        "leg": None,
-                        "route": None,
-                    }
-                )
+        disruptions = _collect_plan_notices(notices, set())
 
     # Apply expiry after choosing the notice scope and winning detail.
     disruptions = [d for d in disruptions if not _notice_expired(d["ends_utc"], now)]
@@ -822,6 +841,152 @@ def _build_disruption_fields(
         "disruptions_summary": disruptions_summary,
         "latest_disruption_title": titles[0] if titles else None,
         "latest_disruption_description": descriptions[0] if descriptions else None,
+    }
+
+
+type JourneySort = Literal["departure", "arrival", "duration"]
+
+
+class AlternativeLeg(TypedDict):
+    """Compact schedule for one planner leg."""
+
+    mode: str
+    route_code: str | None
+    route_name: str | None
+    headsign: str | None
+    origin: str | None
+    destination: str | None
+    departure: str | None
+    arrival: str | None
+
+
+class JourneyAlternative(TypedDict):
+    """One scheduled itinerary in an on-demand journey plan."""
+
+    planner_index: int
+    planner_first: bool
+    departure: str | None
+    arrival: str | None
+    duration_mins: int | None
+    transfers: int | None
+    legs: list[AlternativeLeg]
+    legs_truncated: bool
+    notices: list[dict[str, Any]]
+
+
+class JourneyAlternatives(TypedDict):
+    """Bounded response from on-demand journey planning."""
+
+    sort_by: JourneySort
+    total_alternatives: int
+    returned: int
+    truncated: bool
+    alternatives: list[JourneyAlternative]
+    plan_notices: list[dict[str, Any]]
+
+
+def _scheduled_time(value: str | None) -> str | None:
+    """Normalize an aware planner time without using the host timezone."""
+    if not value:
+        return None
+    try:
+        if datetime.fromisoformat(value).tzinfo is None:
+            return None
+        parsed = parse_iso_datetime(value)
+    except (ValueError, OverflowError):
+        return None
+    return parsed.isoformat() if parsed is not None else None
+
+
+def _alternative_leg(leg: JourneyLeg) -> AlternativeLeg:
+    """Expose only the scheduled fields needed to compare routes."""
+    return {
+        "mode": leg.travelMode,
+        "route_code": leg.legRoute.code if leg.legRoute else None,
+        "route_name": leg.legRoute.name if leg.legRoute else None,
+        "headsign": leg.tripHeadsign,
+        "origin": leg.origin.name if leg.origin else None,
+        "destination": leg.destination.name if leg.destination else None,
+        "departure": _scheduled_time(leg.departureTimeUtc),
+        "arrival": _scheduled_time(leg.arrivalTimeUtc),
+    }
+
+
+_ALTERNATIVE_SORT_KEYS: dict[
+    JourneySort, tuple[Literal["departure", "arrival", "duration_mins"], ...]
+] = {
+    "departure": ("departure", "arrival", "duration_mins"),
+    "arrival": ("arrival", "departure", "duration_mins"),
+    "duration": ("duration_mins", "departure", "arrival"),
+}
+
+
+def _alternative_sort_key(
+    alternative: JourneyAlternative, sort_by: JourneySort
+) -> tuple[tuple[bool, str | int], ...]:
+    # Each position compares the same type. UTC strings sort chronologically.
+    return (
+        *(
+            (value is None, value if value is not None else 0)
+            for key in _ALTERNATIVE_SORT_KEYS[sort_by]
+            for value in (alternative[key],)
+        ),
+        (False, alternative["planner_index"]),
+    )
+
+
+def build_journey_alternatives(
+    plan: JourneyPlanResult, sort_by: JourneySort, limit: int
+) -> JourneyAlternatives:
+    """Return bounded, sorted schedules from one planner response."""
+    notice_lookup = {str(n.id): n for n in plan.notices if n.id is not None}
+    referenced_notices: set[str] = set()
+    alternatives: list[JourneyAlternative] = []
+
+    for index, itinerary in enumerate(plan.itineraries):
+        notices = _collect_leg_notices(itinerary, notice_lookup)
+        referenced_notices.update(str(notice["id"]) for notice in notices)
+        duration = itinerary.durationMins
+        alternatives.append(
+            {
+                "planner_index": index,
+                "planner_first": index == 0,
+                "departure": _scheduled_time(itinerary.firstDepartureTimeUtc),
+                "arrival": _scheduled_time(itinerary.lastArrivalTimeUtc),
+                "duration_mins": (
+                    duration
+                    if "durationMins" in itinerary.model_fields_set and duration >= 0
+                    else None
+                ),
+                "transfers": (
+                    max(
+                        0,
+                        sum(leg.travelMode.lower() != "walk" for leg in itinerary.legs)
+                        - 1,
+                    )
+                    if itinerary.legs
+                    else None
+                ),
+                "legs": [
+                    _alternative_leg(leg)
+                    for leg in itinerary.legs[:MAX_ALTERNATIVE_LEGS]
+                ],
+                "legs_truncated": len(itinerary.legs) > MAX_ALTERNATIVE_LEGS,
+                "notices": notices[:MAX_ALTERNATIVE_NOTICES],
+            }
+        )
+
+    alternatives.sort(key=lambda option: _alternative_sort_key(option, sort_by))
+    limited = alternatives[: min(MAX_ALTERNATIVES_LIMIT, max(1, limit))]
+    return {
+        "sort_by": sort_by,
+        "total_alternatives": len(alternatives),
+        "returned": len(limited),
+        "truncated": len(limited) < len(alternatives),
+        "alternatives": limited,
+        "plan_notices": _collect_plan_notices(plan.notices, referenced_notices)[
+            :MAX_ALTERNATIVE_NOTICES
+        ],
     }
 
 

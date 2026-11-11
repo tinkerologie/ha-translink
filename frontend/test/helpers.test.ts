@@ -1,5 +1,8 @@
+import alternatives from "./fixtures/alternatives.json";
 import { describe, expect, it } from "vitest";
 import {
+  brisbaneInputDefaults,
+  sortJourneyAlternatives,
   available,
   modeIcon,
   normalizeDepartures,
@@ -145,3 +148,38 @@ it.each(["unknown", "unavailable", "missing"])(
     );
   },
 );
+
+it.each([
+  ["departure", [1, 0, 3, 4, 2]],
+  ["arrival", [4, 1, 0, 3, 2]],
+  ["duration", [0, 3, 1, 4, 2]],
+] as const)(
+  "sorts planner alternatives by %s with nulls last and original ties",
+  (sort, expected) => {
+    const options = alternatives.alternatives;
+    const fasterArrival = {
+      ...options[1]!,
+      planner_index: 4,
+      departure: "2026-10-05T23:55:00+00:00",
+      arrival: "2026-10-06T00:14:00+00:00",
+      duration_mins: 70,
+    };
+    const ordered = sortJourneyAlternatives(
+      [{ ...options[1]!, planner_index: 3 }, fasterArrival, ...options],
+      sort,
+    );
+    expect(ordered.map(({ planner_index }) => planner_index)).toEqual(expected);
+    expect(options[0]!.planner_index).toBe(1);
+  },
+);
+
+it("uses the next Brisbane calendar day at UTC 14:00", () => {
+  expect(brisbaneInputDefaults(new Date("2026-10-05T13:59:00Z"))).toEqual({
+    date: "2026-10-05",
+    time: "23:59",
+  });
+  expect(brisbaneInputDefaults(new Date("2026-10-05T14:00:00Z"))).toEqual({
+    date: "2026-10-06",
+    time: "00:00",
+  });
+});
