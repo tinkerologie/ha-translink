@@ -185,6 +185,7 @@ export const cardStyles = css`
     border-radius: var(--ha-border-radius-lg, 12px);
     margin: var(--ha-space-3, 12px) 0;
     font-size: var(--ha-font-size-m, 14px);
+    overflow-wrap: anywhere;
   }
   .alert-strip ha-icon {
     color: var(--warning-color);

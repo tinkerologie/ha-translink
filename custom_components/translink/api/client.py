@@ -6,7 +6,7 @@ import asyncio
 import logging
 import urllib.parse
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -41,11 +41,13 @@ from .gtfs_realtime import (
 from .models import (
     CallingStop,
     CallingStopRealtime,
+    JourneyItinerary,
     JourneyLeg,
     JourneyPlanResult,
     JourneyStatus,
     JourneySummary,
     LocationSearchResult,
+    PlanNotice,
     TripTimetable,
 )
 
@@ -640,6 +642,105 @@ def build_calling_stops(
     )
 
 
+class _DisruptionFields(TypedDict):
+    """Disruption fields shared by both journey summary paths."""
+
+    disruptions_count: int
+    disruptions: list[dict[str, Any]]
+    disruptions_description: str
+    disruptions_summary: str
+    latest_disruption_title: str | None
+    latest_disruption_description: str | None
+
+
+def _notice_expired(ends_utc: str | None, now: datetime) -> bool:
+    """Treat missing, malformed and timezone-naive end times as unknown."""
+    if not ends_utc:
+        return False
+    try:
+        ends_at = datetime.fromisoformat(ends_utc)
+    except ValueError:
+        return False
+    return ends_at.tzinfo is not None and now > ends_at
+
+
+def _build_disruption_fields(
+    notices: list[PlanNotice],
+    itinerary: JourneyItinerary | None,
+    now: datetime,
+) -> _DisruptionFields:
+    """Summarize leg notices or planner notices scoped to this request."""
+    notice_lookup = {str(n.id): n for n in notices if n.id is not None}
+
+    # Aggregate disruptions
+    disruptions: list[dict[str, Any]] = []
+    seen_notice_ids: set[str] = set()
+    for leg in itinerary.legs if itinerary is not None else ():
+        for notice in leg.notices:
+            nid = str(notice.id) if notice.id is not None else None
+            if nid and nid not in seen_notice_ids:
+                seen_notice_ids.add(nid)
+                detail = notice_lookup.get(nid)
+                disruptions.append(
+                    {
+                        "id": notice.id,
+                        "title": detail.title if detail else None,
+                        "description": detail.description if detail else None,
+                        "cause": detail.cause if detail else None,
+                        "effect": detail.effect if detail else None,
+                        "severity": notice.severity,
+                        "starts_utc": detail.startsUtc if detail else None,
+                        "ends_utc": detail.endsUtc if detail else None,
+                        "leg": leg.travelMode,
+                        "route": leg.legRoute.name if leg.legRoute else None,
+                    }
+                )
+
+    if not disruptions:
+        for n in notices:
+            nid = str(n.id) if n.id is not None else None
+            if nid and nid not in seen_notice_ids:
+                seen_notice_ids.add(nid)
+                disruptions.append(
+                    {
+                        "id": n.id,
+                        "title": n.title,
+                        "description": n.description,
+                        "cause": n.cause,
+                        "effect": n.effect,
+                        "severity": "Informative",
+                        "starts_utc": n.startsUtc,
+                        "ends_utc": n.endsUtc,
+                        "leg": None,
+                        "route": None,
+                    }
+                )
+
+    # Apply expiry after choosing the notice scope and winning detail.
+    disruptions = [d for d in disruptions if not _notice_expired(d["ends_utc"], now)]
+    titles = [str(d["title"]) for d in disruptions if d.get("title")]
+    descriptions = [str(d["description"]) for d in disruptions if d.get("description")]
+    disruptions_summary = "; ".join(titles) if titles else "Normal"
+    disruptions_description = (
+        "\n".join(
+            f"• {d['title']}: {d['description']}"
+            if d.get("title") and d.get("description")
+            else str(d.get("title") or d.get("description") or "Disruption")
+            for d in disruptions
+        )
+        if disruptions
+        else "No active disruptions"
+    )
+    return {
+        "disruptions_count": len(disruptions),
+        "disruptions": disruptions,
+        "disruptions_description": disruptions_description,
+        "disruptions_summary": disruptions_summary,
+        "latest_disruption_title": titles[0] if titles else None,
+        "latest_disruption_description": descriptions[0] if descriptions else None,
+    }
+
+
 def build_journey_summary(
     plan: JourneyPlanResult,
     vehicle_positions: dict[str, VehiclePositionRecord] | None = None,
@@ -655,15 +756,17 @@ def build_journey_summary(
     if now is None:
         now = datetime.now(UTC)
 
-    if not plan.itineraries:
+    itinerary = plan.itineraries[0] if plan.itineraries else None
+    disruption_fields = _build_disruption_fields(plan.notices, itinerary, now)
+    if itinerary is None:
         return JourneySummary(
             status="no_service",
             origin_name=origin_name_fallback,
             destination_name=destination_name_fallback,
             last_updated=now,
+            **disruption_fields,
         )
 
-    itinerary = plan.itineraries[0]
     departure_time = parse_iso_datetime(itinerary.firstDepartureTimeUtc)
     arrival_time = parse_iso_datetime(itinerary.lastArrivalTimeUtc)
 
@@ -792,69 +895,6 @@ def build_journey_summary(
         veh_lat = primary_leg.origin.position.lat
         veh_lng = primary_leg.origin.position.lng
 
-    # Map notices by id from plan.notices
-    notice_lookup = {str(n.id): n for n in plan.notices if n.id is not None}
-
-    # Aggregate disruptions
-    disruptions: list[dict[str, Any]] = []
-    seen_notice_ids: set[str] = set()
-    for leg in itinerary.legs:
-        for notice in leg.notices:
-            nid = str(notice.id) if notice.id is not None else None
-            if nid and nid not in seen_notice_ids:
-                seen_notice_ids.add(nid)
-                detail = notice_lookup.get(nid)
-                disruptions.append(
-                    {
-                        "id": notice.id,
-                        "title": detail.title if detail else None,
-                        "description": detail.description if detail else None,
-                        "cause": detail.cause if detail else None,
-                        "effect": detail.effect if detail else None,
-                        "severity": notice.severity,
-                        "starts_utc": detail.startsUtc if detail else None,
-                        "ends_utc": detail.endsUtc if detail else None,
-                        "leg": leg.travelMode,
-                        "route": leg.legRoute.name if leg.legRoute else None,
-                    }
-                )
-
-    if not disruptions and plan.notices:
-        for n in plan.notices:
-            nid = str(n.id) if n.id is not None else None
-            if nid and nid not in seen_notice_ids:
-                seen_notice_ids.add(nid)
-                disruptions.append(
-                    {
-                        "id": n.id,
-                        "title": n.title,
-                        "description": n.description,
-                        "cause": n.cause,
-                        "effect": n.effect,
-                        "severity": "Informative",
-                        "starts_utc": n.startsUtc,
-                        "ends_utc": n.endsUtc,
-                        "leg": None,
-                        "route": None,
-                    }
-                )
-
-    titles = [str(d["title"]) for d in disruptions if d.get("title")]
-    descriptions = [str(d["description"]) for d in disruptions if d.get("description")]
-    disruptions_summary = "; ".join(titles) if titles else "Normal"
-    disruptions_description = (
-        "\n".join(
-            f"• {d['title']}: {d['description']}"
-            if d.get("title") and d.get("description")
-            else str(d.get("title") or d.get("description") or "Disruption")
-            for d in disruptions
-        )
-        if disruptions
-        else "No active disruptions"
-    )
-    latest_disruption_title = titles[0] if titles else None
-    latest_disruption_description = descriptions[0] if descriptions else None
-
     # Detailed legs representation
     legs_summary: list[dict[str, Any]] = []
     for leg in itinerary.legs:
@@ -911,12 +951,6 @@ def build_journey_summary(
         fares_breakdown=fares_breakdown,
         walking_distance_m=walking_distance,
         delay_mins=delay_mins,
-        disruptions_count=len(disruptions),
-        disruptions=disruptions,
-        disruptions_description=disruptions_description,
-        disruptions_summary=disruptions_summary,
-        latest_disruption_title=latest_disruption_title,
-        latest_disruption_description=latest_disruption_description,
         trip_id=trip_id,
         vehicle_id=veh_id,
         vehicle_label=veh_label,
@@ -928,4 +962,5 @@ def build_journey_summary(
         polyline=polyline,
         itinerary_legs=legs_summary,
         last_updated=now,
+        **disruption_fields,
     )

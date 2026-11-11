@@ -6,6 +6,10 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+### Fixed
+
+- Journey and stop disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notices with a confirmed end time drop out once that time has passed. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
+
 ## [2026.11.0] - 2026-11-11
 
 ### Changed

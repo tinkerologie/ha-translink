@@ -243,7 +243,10 @@ export class JourneyCard extends TranslinkCard {
     const related = this.related;
     const legs = rows(state.attributes.legs);
     if (value(related.status) === "no_service" || !legs.length)
-      return html`<div class="state" role="status">${strings.noServices}</div>`;
+      return html`
+        <div class="state" role="status">${strings.noServices}</div>
+        ${this.renderDisruptionStrip(related.disruptions)}
+      `;
     const first = legs[0]!;
     const last = legs[legs.length - 1]!;
     const service = related.next_service?.attributes ?? {};
@@ -251,7 +254,6 @@ export class JourneyCard extends TranslinkCard {
     const transfers = number(value(related.transfers));
     const walking = number(value(related.walking_distance));
     const fare = number(value(related.fare));
-    const alerts = number(value(related.disruptions));
     return html`
       <div class="timing">
         <div>
@@ -324,18 +326,7 @@ export class JourneyCard extends TranslinkCard {
             >`
           : nothing}
       </div>
-      ${this.config.show_disruptions !== false &&
-      alerts !== undefined &&
-      alerts > 0
-        ? html`<div class="alert-strip">
-            <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon
-            ><span
-              >${alerts} service alert${alerts === 1 ? "" : "s"} ·
-              ${text(related.disruptions?.attributes.latest_title) ??
-              "Check service information"}</span
-            >
-          </div>`
-        : nothing}
+      ${this.renderDisruptionStrip(related.disruptions)}
       <button
         class="disclosure"
         aria-expanded=${this.expanded}
@@ -358,6 +349,21 @@ export class JourneyCard extends TranslinkCard {
           </ol>`
         : html`<div id="journey-legs" hidden></div>`}
     `;
+  }
+  private renderDisruptionStrip(state?: EntityState) {
+    const alerts = number(value(state));
+    return this.config.show_disruptions !== false &&
+      alerts !== undefined &&
+      alerts > 0
+      ? html`<div class="alert-strip">
+          <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon
+          ><span
+            >${alerts} service alert${alerts === 1 ? "" : "s"} ·
+            ${text(state?.attributes.latest_title) ??
+            "Check service information"}</span
+          >
+        </div>`
+      : nothing;
   }
   private renderLeg(leg: Row) {
     const calls = rows(leg.callingStops);

@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import type { JourneyCard } from "../../src/cards";
+
 for (const width of [320, 768, 1440]) {
   for (const dark of [false, true]) {
     test(`cards fit at ${width}px in ${dark ? "dark" : "light"} mode`, async ({
@@ -60,6 +62,40 @@ for (const width of [320, 768, 1440]) {
           cards.some((card) => card.scrollWidth > card.clientWidth),
         );
       expect(overflows).toBe(false);
+
+      const journey = page.locator("translink-journey-card");
+      const title = `Line closure ${"ReplacementBusTimetable".repeat(8)}`;
+      await journey.evaluate((element: JourneyCard, latestTitle) => {
+        const hass = element.hass!;
+        const itinerary = "sensor.renamed_journey_itinerary";
+        const status = "sensor.renamed_journey_status";
+        const disruptions = "sensor.renamed_journey_disruptions";
+        element.hass = {
+          ...hass,
+          states: {
+            ...hass.states,
+            [itinerary]: {
+              ...hass.states[itinerary]!,
+              attributes: { ...hass.states[itinerary]!.attributes, legs: [] },
+            },
+            [status]: { ...hass.states[status]!, state: "no_service" },
+            [disruptions]: {
+              ...hass.states[disruptions]!,
+              state: "1",
+              attributes: { latest_title: latestTitle },
+            },
+          },
+        };
+      }, title);
+      await expect(journey.getByRole("status")).toHaveText("No services found");
+      const strip = journey.locator(".alert-strip");
+      await expect(strip).toBeVisible();
+      await expect(strip).toHaveText(`1 service alert · ${title}`);
+      expect(
+        await strip.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth,
+        ),
+      ).toBe(true);
       expect(external).toEqual([]);
       expect(errors).toEqual([]);
     });

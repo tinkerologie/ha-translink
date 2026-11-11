@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -116,6 +116,7 @@ def test_build_journey_summary_with_plan(
         fare_preference="Adult",
         origin_name_fallback="Central",
         destination_name_fallback="Springfield Central",
+        now=datetime(2026, 10, 6, tzinfo=UTC),
     )
 
     assert isinstance(summary, JourneySummary)
@@ -136,6 +137,7 @@ def test_build_journey_summary_with_plan(
     summary_concession = build_journey_summary(
         plan=plan,
         fare_preference="Concession",
+        now=datetime(2026, 10, 6, tzinfo=UTC),
     )
     assert summary_concession.fare_price == 0.5
 
@@ -152,6 +154,53 @@ def test_build_journey_summary_empty() -> None:
     assert summary.origin_name == "Origin"
     assert summary.destination_name == "Destination"
     assert summary.duration_mins == 0
+    assert summary.disruptions_count == 0
+    assert summary.disruptions_description == "No active disruptions"
+    assert summary.disruptions_summary == "Normal"
+
+
+def test_build_journey_summary_empty_with_notice() -> None:
+    """A closure can explain why the planner returned no services."""
+    plan = JourneyPlanResult.model_validate(
+        {
+            "itineraries": [],
+            "notices": [
+                {
+                    "id": 101,
+                    "title": "Line closure",
+                    "description": "Buses replace trains.",
+                }
+            ],
+        }
+    )
+
+    now = datetime(2026, 10, 6, tzinfo=UTC)
+    summary = build_journey_summary(plan, now=now)
+
+    assert summary.status == "no_service"
+    assert summary.last_updated == now
+    assert summary.itinerary_legs == []
+    assert summary.disruptions_count == 1
+    assert summary.disruptions_summary == "Line closure"
+    assert summary.disruptions_description == "• Line closure: Buses replace trains."
+    assert summary.latest_disruption_title == "Line closure"
+    assert summary.latest_disruption_description == "Buses replace trains."
+    assert summary.disruptions[0]["severity"] == "Informative"
+    assert summary.disruptions[0]["leg"] is None
+    assert summary.disruptions[0]["route"] is None
+
+
+def test_build_journey_summary_empty_skips_invalid_notice_ids() -> None:
+    """An empty plan does not expose notices without an ID."""
+    plan = JourneyPlanResult.model_validate(
+        {"notices": [{"id": notice_id} for notice_id in (None, "", " \t")]}
+    )
+
+    summary = build_journey_summary(plan)
+
+    assert summary.status == "no_service"
+    assert summary.disruptions_count == 0
+    assert summary.disruptions_description == "No active disruptions"
 
 
 def test_redact_sensitive() -> None:
@@ -809,7 +858,7 @@ def test_build_journey_summary_disruptions_enriched() -> None:
         ],
     }
     plan = JourneyPlanResult.model_validate(plan_data)
-    summary = build_journey_summary(plan)
+    summary = build_journey_summary(plan, now=datetime(2026, 10, 6, tzinfo=UTC))
 
     assert summary.disruptions_count == 2
     assert summary.disruptions_summary == "Trackwork; Delays Expected"
@@ -850,12 +899,108 @@ def test_build_journey_summary_top_level_notices_fallback() -> None:
         ],
     }
     plan = JourneyPlanResult.model_validate(plan_data)
-    summary = build_journey_summary(plan)
+    summary = build_journey_summary(plan, now=datetime(2026, 10, 6, tzinfo=UTC))
 
     assert summary.disruptions_count == 1
     assert summary.disruptions[0]["title"] == "General Alert"
     assert summary.disruptions_summary == "General Alert"
     assert summary.latest_disruption_title == "General Alert"
+
+
+@pytest.mark.parametrize("leg_referenced", [False, True])
+def test_build_journey_summary_filters_expired_winning_notice(
+    leg_referenced: bool,
+) -> None:
+    """Use first fallback detail or last referenced detail before testing expiry."""
+    expired = {
+        "id": "101",
+        "title": "Trackwork",
+        "endsUtc": "2026-10-06T09:59:59+10:00",
+    }
+    active = {"id": 101, "title": "Duplicate notice", "endsUtc": "2026-10-06T12:00:00Z"}
+    unrelated = {"id": 102, "title": "Unreferenced notice"}
+    plan = JourneyPlanResult.model_validate(
+        {
+            "itineraries": [{"legs": [{"notices": [{"id": 101}]}]}]
+            if leg_referenced
+            else [],
+            "notices": [active, expired, unrelated]
+            if leg_referenced
+            else [expired, active, unrelated],
+        }
+    )
+
+    summary = build_journey_summary(plan, now=datetime(2026, 10, 6, tzinfo=UTC))
+
+    assert [notice["id"] for notice in summary.disruptions] == (
+        [] if leg_referenced else [102]
+    )
+
+
+@pytest.mark.parametrize(
+    ("starts_utc", "ends_utc"),
+    [
+        ("2026-10-07T00:00:00Z", "2026-10-08T00:00:00Z"),
+        (None, "2026-10-06T00:00:00Z"),
+        (None, "not a date"),
+        (None, "2026-10-05T23:59:59"),
+        (None, None),
+    ],
+    ids=["future", "inclusive-end", "malformed-end", "naive-end", "missing-end"],
+)
+def test_build_journey_summary_preserves_current_or_unknown_notice_dates(
+    starts_utc: str | None, ends_utc: str | None
+) -> None:
+    """Keep future notices and notices that cannot be confirmed as expired."""
+    plan = JourneyPlanResult.model_validate(
+        {"notices": [{"id": 101, "startsUtc": starts_utc, "endsUtc": ends_utc}]}
+    )
+
+    summary = build_journey_summary(plan, now=datetime(2026, 10, 6, tzinfo=UTC))
+
+    assert summary.disruptions_count == 1
+    assert summary.disruptions[0]["starts_utc"] == starts_utc
+    assert summary.disruptions[0]["ends_utc"] == ends_utc
+
+
+def test_build_journey_summary_scopes_notices_to_usable_leg_references() -> None:
+    """Match equivalent IDs, deduplicate references and keep missing details."""
+    plan = JourneyPlanResult.model_validate(
+        {
+            "itineraries": [
+                {
+                    "legs": [
+                        {
+                            "travelMode": "Train",
+                            "notices": [
+                                {"id": 101, "severity": "Major"},
+                                {"id": " \t"},
+                            ],
+                        },
+                        {
+                            "travelMode": "Bus",
+                            "notices": [{"id": "101"}, {"id": 102}],
+                        },
+                    ]
+                }
+            ],
+            "notices": [
+                {"id": "101", "title": "Earlier detail"},
+                {"id": "101", "title": "Line closure"},
+                {"id": 103, "title": "Unreferenced notice"},
+            ],
+        }
+    )
+
+    summary = build_journey_summary(plan)
+
+    assert [notice["id"] for notice in summary.disruptions] == [101, 102]
+    referenced, missing_detail = summary.disruptions
+    assert referenced["title"] == "Line closure"
+    assert referenced["severity"] == "Major"
+    assert referenced["leg"] == "Train"
+    assert missing_detail["title"] is None
+    assert missing_detail["leg"] == "Bus"
 
 
 @pytest.mark.asyncio

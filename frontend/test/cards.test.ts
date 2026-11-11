@@ -15,6 +15,28 @@ async function journey(
   await card.updateComplete;
   return card;
 }
+const journeyDisruptions = "sensor.renamed_journey_disruptions";
+function emptyJourney(
+  status = "no_service",
+  disruptionCount = "1",
+  disruptionTitle: string | null = "Line closure",
+): HomeAssistant {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  const itinerary = "sensor.renamed_journey_itinerary";
+  const statusEntity = "sensor.renamed_journey_status";
+  hass.states[itinerary] = {
+    ...hass.states[itinerary]!,
+    attributes: { ...hass.states[itinerary]!.attributes, legs: [] },
+  };
+  hass.states[statusEntity] = { ...hass.states[statusEntity]!, state: status };
+  hass.states[journeyDisruptions] = {
+    ...hass.states[journeyDisruptions]!,
+    state: disruptionCount,
+    attributes:
+      disruptionTitle === null ? {} : { latest_title: disruptionTitle },
+  };
+  return hass;
+}
 describe("card states and interactions", () => {
   it("registers exactly three cards with native editor schemas", () => {
     expect(window.customCards).toHaveLength(3);
@@ -54,11 +76,46 @@ describe("card states and interactions", () => {
     expect((await journey(unavailable)).shadowRoot!.textContent).toContain(
       "unavailable",
     );
-    const empty = structuredClone(fixture);
-    empty.states["sensor.renamed_journey_status"].state = "no_service";
-    expect((await journey(empty)).shadowRoot!.textContent).toContain(
+    const root = (await journey(emptyJourney())).shadowRoot!;
+    expect(root.querySelector('[role="status"]')?.textContent).toBe(
       "No services found",
     );
+    expect(root.querySelector(".alert-strip")?.textContent).toMatch(
+      /1 service alert ·\s+Line closure/,
+    );
+  });
+  it("honors the disruption display option when no services are found", async () => {
+    const card = await journey(emptyJourney());
+    card.setConfig({
+      type: "custom:translink-journey-card",
+      entity: "sensor.renamed_journey_itinerary",
+      show_disruptions: false,
+    });
+    await card.updateComplete;
+    expect(card.shadowRoot!.textContent).toContain("No services found");
+    expect(card.shadowRoot!.querySelector(".alert-strip")).toBeNull();
+  });
+  it.each(["unavailable", "0"])(
+    "hides the no-service disruption strip for a count of %s",
+    async (count) => {
+      const card = await journey(emptyJourney("no_service", count));
+      expect(card.shadowRoot!.textContent).toContain("No services found");
+      expect(card.shadowRoot!.querySelector(".alert-strip")).toBeNull();
+    },
+  );
+  it("shows disruption information for empty legs even with a scheduled status", async () => {
+    const card = await journey(emptyJourney("scheduled", "1", null));
+    expect(card.shadowRoot!.textContent).toContain("No services found");
+    expect(
+      card.shadowRoot!.querySelector(".alert-strip")?.textContent,
+    ).toContain("Check service information");
+  });
+  it("escapes upstream notice titles in the no-service disruption strip", async () => {
+    const title = "<img src=x onerror=alert(1)>";
+    const card = await journey(emptyJourney("no_service", "1", title));
+    const strip = card.shadowRoot!.querySelector(".alert-strip")!;
+    expect(strip.textContent).toContain(title);
+    expect(strip.querySelector("img")).toBeNull();
   });
   it("escapes upstream descriptions and validates configuration", async () => {
     const card = document.createElement("translink-alerts-card") as AlertsCard;
