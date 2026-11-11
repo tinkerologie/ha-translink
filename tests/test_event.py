@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from custom_components.translink.client import JourneySummary, StopSummary
 from custom_components.translink.const import (
@@ -107,7 +108,13 @@ async def test_async_setup_entry_journey(
     event_entity = added_entities[0]
     assert isinstance(event_entity, TranslinkDisruptionEvent)
     assert event_entity.unique_id == "test_entry_id_disruption"
-    assert event_entity.device_info["model"] == "Public Transport Journey"
+    assert event_entity.device_info == DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.data[CONF_NAME],
+        manufacturer="Translink Queensland",
+        model="Public Transport Journey",
+        entry_type=DeviceEntryType.SERVICE,
+    )
     assert event_entity.event_types == [EVENT_TYPE_DISRUPTION, EVENT_TYPE_CLEARED]
 
 
@@ -128,7 +135,13 @@ async def test_async_setup_entry_fallback_domain_data() -> None:
 
     assert len(added_entities) == 1
     event_entity = added_entities[0]
-    assert event_entity.device_info["model"] == "Station Departure Board"
+    assert event_entity.device_info == DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.data[CONF_NAME],
+        manufacturer="Translink Queensland",
+        model="Station Departure Board",
+        entry_type=DeviceEntryType.SERVICE,
+    )
 
 
 async def test_event_lifecycle_and_triggers(
@@ -236,10 +249,12 @@ async def test_event_fallback_title_and_description() -> None:
 
 
 @pytest.mark.parametrize("parent_has_hook", [True, False])
-def test_entity_id_changed_delegates_when_available(
-    parent_has_hook: bool, monkeypatch: pytest.MonkeyPatch
+async def test_entity_id_changed_delegates_when_available(
+    parent_has_hook: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    sample_journey_summary_with_disruptions: JourneySummary,
 ) -> None:
-    """The entity opts in to in-place entity ID changes on every release."""
+    """An in-place rename delegates without replaying active disruptions."""
     from homeassistant.helpers.entity import Entity
 
     calls: list[str] = []
@@ -252,8 +267,19 @@ def test_entity_id_changed_delegates_when_available(
         )
     else:
         monkeypatch.delattr(Entity, "async_entity_id_changed", raising=False)
-    event_entity = TranslinkDisruptionEvent(FakeCoordinator(), FakeEntry())  # pyright: ignore[reportArgumentType]
+    coordinator = FakeCoordinator(data=sample_journey_summary_with_disruptions)
+    event_entity = TranslinkDisruptionEvent(coordinator, FakeEntry())  # pyright: ignore[reportArgumentType]
+    trigger = MagicMock()
+    monkeypatch.setattr(event_entity, "_trigger_event", trigger)
+    await event_entity.async_added_to_hass()
+    trigger.assert_called_once()
+    disruption_ids = event_entity._last_disruption_ids.copy()
+    process = MagicMock(wraps=event_entity._process_disruptions)
+    monkeypatch.setattr(event_entity, "_process_disruptions", process)
 
     event_entity.async_entity_id_changed("event.old_id")
 
     assert calls == (["event.old_id"] if parent_has_hook else [])
+    assert event_entity._last_disruption_ids == disruption_ids
+    trigger.assert_called_once()
+    process.assert_not_called()

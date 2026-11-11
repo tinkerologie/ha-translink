@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.components.device_tracker import SourceType
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from custom_components.translink.client import JourneySummary
 from custom_components.translink.const import (
@@ -132,7 +133,13 @@ def test_tracker_unavailable_without_coordinates() -> None:
     entry = FakeEntry()
     tracker = TranslinkVehicleTracker(coordinator, entry)  # type: ignore[arg-type]
     assert tracker.available is False
-    assert tracker.device_info["name"] == "My Journey"
+    assert tracker.device_info == DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="My Journey",
+        manufacturer="Translink Queensland",
+        model="Public Transport Journey",
+        entry_type=DeviceEntryType.SERVICE,
+    )
 
 
 def test_tracker_non_journey_data() -> None:

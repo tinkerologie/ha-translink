@@ -26,12 +26,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# Overridable so the HA Next workflow can run the same launcher against a newer
-# Home Assistant and its matching pytest-homeassistant-custom-component.
+# Pin the official plugin to the same release as Home Assistant.
 TEST_PYTHON_VERSION="${TEST_PYTHON_VERSION:-3.14.2}"
-TEST_HOME_ASSISTANT_VERSION="${TEST_HOME_ASSISTANT_VERSION:-2026.10.4}"
-TEST_PLUGIN_VERSION="${TEST_PLUGIN_VERSION:-0.13.375}"
-TEST_PYTHON_MINOR="$(cut -d. -f1,2 <<<"$TEST_PYTHON_VERSION")"
+TEST_HOME_ASSISTANT_VERSION="${TEST_HOME_ASSISTANT_VERSION:-2026.11.1}"
+if [[ -n "${TEST_PLUGIN_VERSION:-}" ]]; then
+    echo "TEST_PLUGIN_VERSION is obsolete: set TEST_HOME_ASSISTANT_VERSION for both packages." >&2
+    exit 2
+fi
+if [[ ! "$TEST_PYTHON_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "TEST_PYTHON_VERSION must specify an exact Python version (major.minor.patch)." >&2
+    exit 2
+fi
 
 # shellcheck source=script/.lib/output.sh
 source "$SCRIPT_DIR/.lib/output.sh"
@@ -55,18 +60,18 @@ uv python install "$TEST_PYTHON_VERSION"
 
 CURRENT_TEST_PYTHON=""
 if [[ -x "$TEST_VENV_PATH/bin/python3" ]]; then
-    CURRENT_TEST_PYTHON=$("$TEST_VENV_PATH/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || true)
+    CURRENT_TEST_PYTHON=$("$TEST_VENV_PATH/bin/python3" -c "import platform; print(platform.python_version())" 2>/dev/null || true)
 fi
 
 if [[ ! -d "$TEST_VENV_PATH" ]]; then
     log_info "Creating test virtual environment at $TEST_VENV_PATH"
     uv venv --seed --python "$TEST_PYTHON_VERSION" "$TEST_VENV_PATH"
-elif [[ ! -x "$TEST_VENV_PATH/bin/python3" || "$CURRENT_TEST_PYTHON" != "$TEST_PYTHON_MINOR" ]]; then
+elif [[ "$CURRENT_TEST_PYTHON" != "$TEST_PYTHON_VERSION" ]]; then
     if [[ ! -f "$TEST_VENV_PATH/pyvenv.cfg" ]]; then
         log_error "$TEST_VENV_PATH exists but is not a virtual environment; refusing to delete it"
         exit 1
     fi
-    log_warning "Existing test venv uses Python ${CURRENT_TEST_PYTHON:-unknown} - recreating for Python $TEST_PYTHON_MINOR"
+    log_info "Existing test venv uses Python ${CURRENT_TEST_PYTHON:-unknown} - recreating for Python $TEST_PYTHON_VERSION"
     rm -rf "$TEST_VENV_PATH"
     log_info "Creating test virtual environment at $TEST_VENV_PATH"
     uv venv --seed --python "$TEST_PYTHON_VERSION" "$TEST_VENV_PATH"
@@ -77,11 +82,15 @@ fi
 # shellcheck source=/dev/null
 source "$TEST_VENV_PATH/bin/activate"
 
+if uv pip show pytest-homeassistant-custom-component >/dev/null 2>&1; then
+    uv pip uninstall pytest-homeassistant-custom-component
+fi
+
 log_info "Installing Home Assistant test dependencies"
 uv pip install \
     . \
     "homeassistant==${TEST_HOME_ASSISTANT_VERSION}" \
-    "pytest-homeassistant-custom-component==${TEST_PLUGIN_VERSION}" \
+    "pytest-homeassistant==${TEST_HOME_ASSISTANT_VERSION}" \
     "PyTurboJPEG>=2.2.0" \
     "av>=16.1.0" \
     "ha-ffmpeg>=3.2.2" \
@@ -90,6 +99,19 @@ uv pip install \
     "pytest-asyncio>=0.23.0" \
     "pytest-cov>=4.0.0" \
     "pytest-timeout>=2.0.0"
+
+python - <<'PY'
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    version("pytest-homeassistant-custom-component")
+except PackageNotFoundError:
+    pass
+else:
+    raise SystemExit("Remove pytest-homeassistant-custom-component before running tests.")
+if version("pytest-homeassistant") != version("homeassistant"):
+    raise SystemExit("pytest-homeassistant must match the Home Assistant version.")
+PY
 
 # Parse coverage flags
 COVERAGE_ARGS=()

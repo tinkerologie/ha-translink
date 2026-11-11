@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.translink.client import (
     JourneyPlanResult,
@@ -140,6 +140,7 @@ async def test_step_journey_location_not_found(hass: HomeAssistant) -> None:
         )
 
     assert result3["type"] is FlowResultType.FORM
+    assert result3["step_id"] == "journey"
     assert result3["errors"][CONF_START_NAME] == "location_not_found"
     assert result3["errors"][CONF_END_NAME] == "location_not_found"
 
@@ -171,6 +172,7 @@ async def test_step_journey_cannot_connect(hass: HomeAssistant) -> None:
         )
 
     assert result3["type"] is FlowResultType.FORM
+    assert result3["step_id"] == "journey"
     assert result3["errors"]["base"] == "cannot_connect"
 
 
@@ -348,6 +350,7 @@ async def test_step_journey_unknown_error(hass: HomeAssistant) -> None:
         )
 
     assert result3["type"] is FlowResultType.FORM
+    assert result3["step_id"] == "journey"
     assert result3["errors"]["base"] == "unknown"
 
 
@@ -377,6 +380,7 @@ async def test_step_stop_location_not_found(hass: HomeAssistant) -> None:
         )
 
     assert result3["type"] is FlowResultType.FORM
+    assert result3["step_id"] == "stop"
     assert result3["errors"][CONF_STOP_NAME] == "location_not_found"
 
 
@@ -406,6 +410,7 @@ async def test_step_stop_unknown_error(hass: HomeAssistant) -> None:
         )
 
     assert result3["type"] is FlowResultType.FORM
+    assert result3["step_id"] == "stop"
     assert result3["errors"]["base"] == "unknown"
 
 
@@ -440,6 +445,7 @@ async def test_step_reconfigure_journey_cannot_connect(hass: HomeAssistant) -> N
         )
 
     assert result2["type"] is FlowResultType.FORM
+    assert result2["step_id"] == "reconfigure"
     assert result2["errors"]["base"] == "cannot_connect"
 
 
@@ -472,6 +478,7 @@ async def test_step_reconfigure_stop_cannot_connect(hass: HomeAssistant) -> None
         )
 
     assert result2["type"] is FlowResultType.FORM
+    assert result2["step_id"] == "reconfigure"
     assert result2["errors"]["base"] == "cannot_connect"
 
 
@@ -496,6 +503,7 @@ async def test_step_stop_api_error(hass: HomeAssistant) -> None:
             {CONF_NAME: "Stop", CONF_STOP_NAME: "Station"},
         )
     assert result3["type"] is FlowResultType.FORM
+    assert result3["step_id"] == "stop"
     assert result3["errors"]["base"] == "cannot_connect"
 
 
@@ -537,6 +545,7 @@ async def test_step_reconfigure_journey_location_not_found(
             {CONF_START_NAME: "Bad Start", CONF_END_NAME: "Bad End"},
         )
     assert result2["type"] is FlowResultType.FORM
+    assert result2["step_id"] == "reconfigure"
     assert result2["errors"][CONF_START_NAME] == "location_not_found"
     assert result2["errors"][CONF_END_NAME] == "location_not_found"
 
@@ -568,6 +577,7 @@ async def test_step_reconfigure_stop_location_not_found(
             {CONF_STOP_NAME: "Bad Stop"},
         )
     assert result2["type"] is FlowResultType.FORM
+    assert result2["step_id"] == "reconfigure"
     assert result2["errors"][CONF_STOP_NAME] == "location_not_found"
 
 
@@ -599,6 +609,7 @@ async def test_step_reconfigure_journey_unexpected_error(
             {CONF_START_NAME: "Central", CONF_END_NAME: "Springfield"},
         )
     assert result2["type"] is FlowResultType.FORM
+    assert result2["step_id"] == "reconfigure"
     assert result2["errors"]["base"] == "unknown"
 
 
@@ -629,6 +640,7 @@ async def test_step_reconfigure_stop_unexpected_error(
             {CONF_STOP_NAME: "Roma Street"},
         )
     assert result2["type"] is FlowResultType.FORM
+    assert result2["step_id"] == "reconfigure"
     assert result2["errors"]["base"] == "unknown"
 
 

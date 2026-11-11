@@ -6,8 +6,18 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+## [2026.11.0] - 2026-11-11
+
+### Changed
+
+- Config flow tests verify that error forms retain their step IDs ahead of Home Assistant 2027.5's enforcement. The integration already supplies explicit step IDs. [#36](https://github.com/tinkerologie/ha-translink/issues/36)
+- Device metadata tests support the `DeviceInfo` dataclass introduced in Home Assistant 2026.11. The integration already supports both device metadata APIs. [#37](https://github.com/tinkerologie/ha-translink/issues/37)
+- Tests use Home Assistant 2026.11.1 and its official `pytest-homeassistant` plugin. HA Next runs the full suite on supported releases and Core development commits, and reports when the plugin is unavailable. [#39](https://github.com/tinkerologie/ha-translink/issues/39)
+
 ### Fixed
 
+- CI retains the coverage report when the test gate fails. [#43](https://github.com/tinkerologie/ha-translink/issues/43)
+- Location search, nearby-stop search and journey planning report only the operation and HTTP status when the server returns an error. This keeps upstream content out of Home Assistant logs and avoids downloading and decoding error bodies. [#44](https://github.com/tinkerologie/ha-translink/issues/44)
 - The release workflow retries `gh release verify` for about a minute, because GitHub writes the release attestation shortly after publishing. The 2026.10.6 run published correctly but failed this check. [#32](https://github.com/tinkerologie/ha-translink/issues/32)
 
 ## [2026.10.6] - 2026-10-29

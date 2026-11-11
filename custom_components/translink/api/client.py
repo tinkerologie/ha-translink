@@ -202,9 +202,8 @@ class TranslinkClient:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 if response.status != 200:
-                    text = await response.text()
                     raise TranslinkResponseError(
-                        f"Location search failed with status {response.status}: {text}"
+                        f"Location search failed with status {response.status}"
                     )
                 payload = await response.json()
                 if not isinstance(payload, list):
@@ -246,9 +245,8 @@ class TranslinkClient:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 if response.status != 200:
-                    text = await response.text()
                     raise TranslinkResponseError(
-                        f"Geolocation stop search failed with status {response.status}: {text}"
+                        f"Geolocation stop search failed with status {response.status}"
                     )
                 data = await response.json()
                 return data if isinstance(data, list) else []
@@ -322,9 +320,8 @@ class TranslinkClient:
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 if response.status != 200:
-                    text = await response.text()
                     raise TranslinkResponseError(
-                        f"Journey planner failed with status {response.status}: {text}"
+                        f"Journey planner failed with status {response.status}"
                     )
                 payload = await response.json()
                 try:

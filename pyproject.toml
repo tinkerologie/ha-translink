@@ -1,6 +1,6 @@
 [project]
 name = "ha-translink"
-version = "2026.10.6"
+version = "2026.11.0"
 description = "Translink Queensland Home Assistant custom integration"
 readme = "README.md"
 dependencies = [
@@ -34,6 +34,7 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = [
+	"-p", "no:respx",
 	"--cov=custom_components.translink",
 	"--cov-branch",
 	"--cov-report=term-missing",

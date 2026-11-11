@@ -78,16 +78,20 @@ Before a pull request can be merged, it must satisfy all automated quality gates
 
 ### Prerequisites and Setup
 
-- Python 3.12 or later
-- Virtual environment with dependencies installed (`script/setup/bootstrap` or `pip install -e ".[test,dev]"`)
+- Python 3.14.2 and `uv` for the test environment
+- `script/setup/bootstrap` for development tools and the latest Home Assistant
 - Pre-commit (`pre-commit install`)
 
 ### Validation Commands
 
+`script/test` installs Home Assistant and the official `pytest-homeassistant`
+plugin at the same pinned release in an isolated virtual environment. Set
+`TEST_HOME_ASSISTANT_VERSION` to test another release with a matching plugin
+on PyPI. Set `TEST_VENV_PATH` to choose a different test environment.
+
 ```bash
-# Run tests with pytest and coverage
-pytest
-pytest --cov=custom_components --cov-report=term-missing
+# Run pytest with the CI coverage threshold
+bash script/test --cov-fail-under=100
 
 # Linting and formatting with ruff
 ruff check .
@@ -179,6 +183,7 @@ validation. Python resource tests use Home Assistant's real HTTP/resource APIs.
 Research and version-specific resource API assumptions are recorded in
 [the frontend research note](docs/frontend-research.md).
 
-CI enforces the existing 100% Python line and branch coverage baseline. It retains
-`coverage.xml` as an artifact and publishes the report to Codecov through a
-separate job using OIDC on trusted branches; that job executes no project code.
+CI enforces 100% Python line and branch coverage. The Test job retains
+`coverage.xml` whenever pytest produces it, including when the gate fails.
+The separate Coverage job uploads passing reports without executing project
+code and uses OIDC on trusted runs.

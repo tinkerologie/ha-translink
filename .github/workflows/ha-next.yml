@@ -77,6 +77,7 @@ jobs:
             echo "Home Assistant dev at $revision"
             {
               echo "ha_version=dev@${revision:0:12}"
+              echo "revision=$revision"
               echo "requirement=homeassistant @ https://github.com/home-assistant/core/archive/$revision.tar.gz"
               echo "hassfest_ref=$revision"
             } >> "$GITHUB_OUTPUT"
@@ -103,11 +104,18 @@ jobs:
           ))
           ')
           fi
+          revision=$(git ls-remote https://github.com/home-assistant/core.git \
+            "refs/tags/$ha_version" "refs/tags/$ha_version^{}" | tail -n 1 | cut -f1)
+          if [[ ! "$revision" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::Could not resolve the Core tag for Home Assistant $ha_version"
+            exit 1
+          fi
           echo "Home Assistant $ha_version"
           {
             echo "ha_version=$ha_version"
+            echo "revision=$revision"
             echo "requirement=homeassistant==$ha_version"
-            echo "hassfest_ref=$ha_version"
+            echo "hassfest_ref=$revision"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install Home Assistant and the test harness
@@ -115,20 +123,45 @@ jobs:
         env:
           CHANNEL: ${{ matrix.channel }}
           HA_VERSION: ${{ steps.resolve.outputs.ha_version }}
+          CORE_REVISION: ${{ steps.resolve.outputs.revision }}
           REQUIREMENT: ${{ steps.resolve.outputs.requirement }}
         run: |
-          # pytest-homeassistant-custom-component pins one Home Assistant version
-          # and often lags a beta by days; it never matches Core dev. Without a
-          # match, run only the import smoke test.
-          # The harness pins Home Assistant exactly, so it resolves only when a
-          # release for this version exists. The extras match script/test.
-          if [[ "$CHANNEL" == release ]] && uv pip install . "$REQUIREMENT" \
-            pytest-homeassistant-custom-component "PyTurboJPEG>=2.2.0" "av>=16.1.0" \
-            "ha-ffmpeg>=3.2.2" "segno==1.6.6" "pytest-timeout>=2.0.0"; then
-            echo "harness=true" >> "$GITHUB_OUTPUT"
+          probe() {
+            curl -sS --retry 3 --max-time 30 -o /dev/null -w '%{http_code}' "$1"
+          }
+
+          plugin=""
+          if [[ "$CHANNEL" == release ]]; then
+            status=$(probe "https://pypi.org/pypi/pytest-homeassistant/$HA_VERSION/json")
+            case "$status" in
+              200) plugin="pytest-homeassistant==$HA_VERSION" ;;
+              404) ;; # Early 2026.11 betas only have the package in Core.
+              *) echo "::error::PyPI plugin probe returned HTTP $status"; exit 1 ;;
+            esac
+          fi
+          if [[ -z "$plugin" ]]; then
+            for directory in pytest-homeassistant pytest-home-assistant; do
+              path="packages/$directory"
+              status=$(probe "https://raw.githubusercontent.com/home-assistant/core/$CORE_REVISION/$path/pyproject.toml")
+              case "$status" in
+                200)
+                  plugin="$directory @ https://github.com/home-assistant/core/archive/$CORE_REVISION.tar.gz#subdirectory=$path"
+                  break
+                  ;;
+                404) ;;
+                *) echo "::error::Core plugin probe returned HTTP $status"; exit 1 ;;
+              esac
+            done
+          fi
+
+          if [[ -n "$plugin" ]]; then
+            echo "harness=supported" >> "$GITHUB_OUTPUT"
+            uv pip install . "$REQUIREMENT" "$plugin" \
+              "PyTurboJPEG>=2.2.0" "av>=16.1.0" "ha-ffmpeg>=3.2.2" \
+              "segno==1.6.6" "pytest-cov>=4.0.0" "pytest-timeout>=2.0.0"
           else
-            echo "::notice::No pytest-homeassistant-custom-component release installs with Home Assistant $HA_VERSION; running the import smoke test only"
-            echo "harness=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No official pytest-homeassistant plugin is available for Core $CORE_REVISION"
+            echo "harness=unsupported" >> "$GITHUB_OUTPUT"
             uv pip install . "$REQUIREMENT"
           fi
           python -c "from homeassistant.const import __version__; print('Installed Home Assistant', __version__)"
@@ -140,7 +173,7 @@ jobs:
 
       - name: Run tests with deprecation checks
         id: tests
-        if: steps.install.outputs.harness == 'true'
+        if: steps.install.outputs.harness == 'supported'
         continue-on-error: true
         run: pytest --no-cov -q
 
@@ -176,13 +209,12 @@ jobs:
               status=failure
             fi
           done
-          if [[ "$HARNESS" == true && "$TESTS" != success ]]; then
+          if [[ "$HARNESS" != unsupported && "$TESTS" != success ]]; then
             status=failure
           fi
-          if [[ "$HARNESS" == true ]]; then
-            tests="$TESTS"
-          else
-            tests="skipped: no pytest-homeassistant-custom-component for this version"
+          tests="$TESTS"
+          if [[ "$HARNESS" == unsupported ]]; then
+            tests="skipped: official pytest-homeassistant plugin is absent at this Core revision"
           fi
           {
             echo "## Home Assistant ${HA_VERSION:-unresolved}"
@@ -195,10 +227,11 @@ jobs:
             echo "| Hassfest | ${HASSFEST:-not run} |"
           } >> "$GITHUB_STEP_SUMMARY"
           mkdir -p ha-next-result
-          jq -n --arg channel "$CHANNEL" --arg version "${HA_VERSION:-unresolved}" --arg status "$status" \
-            '{channel: $channel, version: $version, status: $status}' > "ha-next-result/$CHANNEL.json"
+          jq -n --arg channel "$CHANNEL" --arg version "${HA_VERSION:-unresolved}" \
+            --arg status "$status" --arg install "${INSTALL:-not run}" \
+            '{channel: $channel, version: $version, status: $status, install: $install}' > "ha-next-result/$CHANNEL.json"
           if [[ "$status" == failure ]]; then
-            echo "::error::Home Assistant ${HA_VERSION:-unresolved} breaks or deprecates something the integration uses"
+            echo "::error::HA Next checks failed for Home Assistant ${HA_VERSION:-unresolved}. See the run summary."
             exit 1
           fi
 
@@ -242,8 +275,8 @@ jobs:
               { name: "bug", color: "d73a4a", description: "Something isn't working" },
             ];
             const channels = {
-              release: "Upcoming Home Assistant release breaks or deprecates something we use",
-              dev: "Home Assistant Core dev breaks or deprecates something we use",
+              release: "HA Next checks failed for the upcoming Home Assistant release",
+              dev: "HA Next checks failed for Home Assistant Core dev",
             };
 
             const { data: open } = await github.rest.issues.listForRepo({
@@ -283,15 +316,16 @@ jobs:
                 continue;
               }
 
+              const failure = result.install === "success"
+                ? "Inspect the import smoke, pytest and Hassfest results in the run summary."
+                : "Check version resolution, the plugin probe and dependency installation in the run log.";
               const body = [
                 marker,
                 `The HA Next workflow failed on the ${channel} channel against Home Assistant ${result.version}.`,
                 "",
                 `Run log: ${runUrl}`,
                 "",
-                "See the run summary for which check failed (install, import smoke, tests or Hassfest).",
-                "Fix the deprecated use in `custom_components/translink/`; the blocking pytest checks",
-                "(`filterwarnings` in `pyproject.toml` and `tests/deprecations.py`) catch the same reports.",
+                failure,
               ].join("\n");
 
               if (issue) {

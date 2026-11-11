@@ -3,7 +3,7 @@
 # script/setup/bootstrap: Install/update all dependencies required to run the project
 #
 # Bootstraps the development environment by setting up the virtual environment
-# and installing all Python dependencies via uv sync.
+# and installing the development dependencies with uv.
 #
 # Usage:
 #   ./script/setup/bootstrap
@@ -133,9 +133,11 @@ log_info "Using pyproject.toml extras: dev"
 # the custom_components namespace package. A setuptools editable install adds a
 # __editable__ path hook that breaks discovery, so install a regular local wheel.
 #
-# --upgrade resolves the dev extras together with the newest Home Assistant
-# release (and matching pytest-homeassistant-custom-component), so the dev
-# environment always tracks the latest version instead of falling behind.
+# The dev environment tracks the latest Home Assistant release. script/test
+# provisions a separate environment with matching Home Assistant and pytest pins.
+if uv pip show pytest-homeassistant-custom-component >/dev/null 2>&1; then
+    uv pip uninstall pytest-homeassistant-custom-component
+fi
 uv pip install --upgrade ".[dev]" homeassistant
 
 # Only install pre-commit hooks in local development, not in CI
