@@ -48,8 +48,12 @@ describe("entity and departure contracts", () => {
   });
   it("distinguishes missing and explicit values without fake live status", () => {
     expect(statusLabel("on_time", 0)).toBe("No delay reported");
-    expect(statusLabel("departed")).toBe("Departed (scheduled)");
+    expect(statusLabel("departed")).toBe("Departed");
     expect(statusLabel("delayed", 3)).toBe("Reported delay +3 min");
+    expect(statusLabel("early", -2)).toBe("Reported early −2 min");
+    expect(statusLabel("scheduled")).toBe("Scheduled · No real-time data used");
+    expect(statusLabel("cancelled", 3)).toBe("Cancelled");
+    expect(statusLabel("boarding_skipped", 3)).toBe("Boarding stop skipped");
     expect(statusLabel("no_service")).toBe("No services found");
     expect(
       available({ entity_id: "sensor.x", state: "unknown", attributes: {} }),

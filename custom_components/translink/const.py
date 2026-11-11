@@ -62,6 +62,8 @@ ENDPOINT_STOP_BY_GEOLOCATION: Final = "/api/stop/bygeolocation"
 GTFS_FEED_VEHICLE_POSITIONS: Final = "/api/realtime/SEQ/VehiclePositions"
 GTFS_FEED_TRIP_UPDATES: Final = "/api/realtime/SEQ/TripUpdates"
 GTFS_FEED_ALERTS: Final = "/api/realtime/SEQ/Alerts"
+REALTIME_MAX_AGE_SECONDS: Final = 300
+REALTIME_MAX_FUTURE_SKEW_SECONDS: Final = 60
 
 TIMEZONE_BRISBANE: Final = "Australia/Brisbane"
 BRISBANE_TZ: Final = TIMEZONE_BRISBANE

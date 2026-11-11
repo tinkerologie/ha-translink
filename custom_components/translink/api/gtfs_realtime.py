@@ -6,6 +6,11 @@ import struct
 from dataclasses import dataclass
 from typing import Any
 
+TRIP_CANCELED = 3
+TRIP_DELETED = 7
+STOP_SKIPPED = 1
+STOP_NO_DATA = 2
+
 
 @dataclass(slots=True)
 class VehiclePositionRecord:
@@ -45,7 +50,10 @@ class StopTimeUpdateRecord:
 
 @dataclass(slots=True)
 class TripUpdateRecord:
-    """Realtime trip update with delay and stop updates."""
+    """Realtime trip update with explicit trip delay and individual stop updates.
+
+    The aggregate delay_seconds and last stop_id are legacy fields.
+    """
 
     entity_id: str
     trip_id: str | None
@@ -57,6 +65,8 @@ class TripUpdateRecord:
     start_time: str | None = None
     trip_schedule_relationship: int | None = None
     stop_time_updates: tuple[StopTimeUpdateRecord, ...] = ()
+    trip_delay_seconds: int | None = None
+    feed_timestamp: int | None = None
 
 
 @dataclass(slots=True)
@@ -289,6 +299,12 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
     """Parse GTFS-RT TripUpdates binary payload into a lookup dict."""
     result: dict[str, TripUpdateRecord] = {}
     top_fields = _parse_fields(raw_bytes)
+    feed_timestamp: int | None = None
+    for field_num, _, header in top_fields:
+        if field_num == 1 and isinstance(header, bytes):
+            for header_field, wire, value in _parse_fields(header):
+                if header_field == 3 and wire == 0:
+                    feed_timestamp = value
     for field_num, _, ent_bytes in top_fields:
         if field_num != 2 or not isinstance(ent_bytes, bytes):
             continue
@@ -310,6 +326,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
         trip_id: str | None = None
         route_id: str | None = None
         delay_sec = 0
+        trip_delay: int | None = None
         last_stop_id: str | None = None
         timestamp: int | None = None
         start_date: str | None = None
@@ -347,7 +364,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
             elif tuf_num == 4 and isinstance(tuf_val, int):
                 timestamp = tuf_val
             elif tuf_num == 5 and isinstance(tuf_val, int):
-                delay_sec = _to_int32(tuf_val)
+                trip_delay = delay_sec = _to_int32(tuf_val)
 
         record = TripUpdateRecord(
             entity_id=entity_id,
@@ -360,6 +377,8 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
             start_time=start_time,
             trip_schedule_relationship=relationship,
             stop_time_updates=tuple(stop_updates),
+            trip_delay_seconds=trip_delay,
+            feed_timestamp=feed_timestamp,
         )
         if trip_id:
             result[trip_id] = record

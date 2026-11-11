@@ -117,15 +117,15 @@ Choose **Reconfigure** from the Translink entry's menu to change locations or tr
 
 | Entity | Type | Details |
 | --- | --- | --- |
-| **Next Departure** | `sensor` (`timestamp`) | UTC departure timestamp. Attributes: `origin`, `platform`, `readable_time` (e.g. `09:43 AM`). |
-| **Arrival Time** | `sensor` (`timestamp`) | UTC destination arrival timestamp. Attributes: `destination`, `platform`, `readable_time`. |
+| **Next Departure** | `sensor` (`timestamp`) | Scheduled departure in UTC, with `predicted_time` and `predicted_readable_time` when available. Other attributes include `origin`, `platform`, and `readable_time`. |
+| **Arrival Time** | `sensor` (`timestamp`) | Scheduled arrival in UTC, with `predicted_time` and `predicted_readable_time` when available. Other attributes include `destination`, `platform`, and `readable_time`. |
 | **Journey Duration** | `sensor` (`duration`, `min`) | Total journey travel time in minutes. |
-| **Journey Status** | `sensor` (`enum`) | `scheduled`, `on_time`, `delayed`, `departed`, `arrived`, or `no_service`. |
+| **Journey Status** | `sensor` (`enum`) | `scheduled`, `on_time`, `early`, `delayed`, `cancelled`, `boarding_skipped`, `departed`, `arrived`, or `no_service`. |
 | **Next Service** | `sensor` | Line name and vehicle type (e.g. `T2 Springfield Central (Train)`). Attributes: `headsign`, `route_code`, `route_color`, `operator`, `trip_id`. |
 | **Platform** | `sensor` | Starting platform or stand (e.g. `Platform 5`). |
 | **Transfers** | `sensor` (`measurement`) | Number of transit vehicle changes required (e.g. `0`). |
 | **Fare** | `sensor` (`monetary`, `AUD`) | Go Card transit fare (e.g. `$0.50` under Queensland 50c fares). Attributes: `fares_breakdown`. |
-| **Delay** | `sensor` (`duration`, `min`) | Real-time vehicle delay in minutes compared to schedule. |
+| **Delay** | `sensor` (`duration`, `min`) | Signed boarding delay in minutes. `unknown` when an applicable prediction is missing. |
 | **Walking Distance** | `sensor` (`distance`, `m`) | Total walking distance in meters across journey legs. |
 | **Disruptions** | `sensor` (`diagnostic`) | Active disruption notices count. Attributes: `disruptions` details. |
 | **Itinerary** | `sensor` (`diagnostic`) | Journey legs, available timed calling stops with explicit schedule/prediction provenance, and route polyline. |
@@ -135,12 +135,40 @@ Choose **Reconfigure** from the Translink entry's menu to change locations or tr
 
 | Entity | Type | Details |
 | --- | --- | --- |
-| **Next Departure** | `sensor` (`timestamp`) | Next scheduled or real-time departure from this stop. |
+| **Next Departure** | `sensor` (`timestamp`) | Next scheduled departure, with `predicted_time` and `predicted_readable_time` when available. |
 | **Next Service** | `sensor` | Next service line code and vehicle type. |
 | **Platform** | `sensor` | Platform or bay for the next service. |
-| **Delay** | `sensor` (`duration`, `min`) | Line delay in minutes. |
+| **Delay** | `sensor` (`duration`, `min`) | Signed delay for the next service, or `unknown`. |
 | **Disruptions** | `sensor` (`diagnostic`) | Disruption notices affecting this stop. |
 | **Departures Board** | `sensor` (`diagnostic`) | Full upcoming departures list with routes, times, and destinations. |
+
+### Real-time status and delay automations
+
+Before departure, Journey Status is `scheduled` when there is no applicable
+boarding prediction. A live boarding offset of −1 rounded minute or less is
+`early`. An offset of 3 rounded minutes or more is `delayed`. Other live offsets
+are `on_time`. A cancelled transit leg sets `cancelled`, and a skipped first
+boarding stop sets `boarding_skipped`. The status attributes include
+`boarding_relationship` and `alighting_skipped`. When available, predicted
+departure and arrival times determine the `departed` and `arrived` transitions.
+Timestamp-triggered automations continue to use the scheduled sensor states.
+
+When calculating the summary status and delay, the integration ignores updates
+more than 300 seconds old or more than 60 seconds ahead of the current time. It
+checks the trip update timestamp first and uses the feed timestamp when the trip
+timestamp is absent. Predictions with no timestamp can still apply if they match
+the selected visit.
+
+Delay attributes include `delay_seconds`, `arrival_delay_seconds`,
+`realtime_status`, `delay_source` and `realtime_updated_at`. Delay is negative
+for an early boarding prediction, zero for a measured zero, and `unknown` without
+an applicable boarding offset. Use this Home Assistant template when an
+automation needs the previous nonnegative value:
+
+```jinja
+{% set value = states('sensor.daily_commute_delay') | int(0) %}
+{{ [0, value] | max }}
+```
 
 ---
 

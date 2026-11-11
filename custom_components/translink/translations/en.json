@@ -129,7 +129,10 @@
         "state": {
           "scheduled": "Scheduled",
           "on_time": "On Time",
+          "early": "Early",
           "delayed": "Delayed",
+          "cancelled": "Cancelled",
+          "boarding_skipped": "Boarding stop skipped",
           "departed": "Departed",
           "arrived": "Arrived",
           "no_service": "No Service"

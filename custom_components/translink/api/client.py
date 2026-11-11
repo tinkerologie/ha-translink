@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
@@ -24,11 +25,17 @@ from ..const import (
     GTFS_FEED_VEHICLE_POSITIONS,
     GTFSRT_API_BASE_URL,
     JP_API_BASE_URL,
+    REALTIME_MAX_AGE_SECONDS,
+    REALTIME_MAX_FUTURE_SKEW_SECONDS,
     TRIP_PAGE_CONCURRENCY,
     TRIP_PAGE_MAX_BYTES,
     TRIP_PAGE_TIMEOUT,
 )
 from .gtfs_realtime import (
+    STOP_NO_DATA,
+    STOP_SKIPPED,
+    TRIP_CANCELED,
+    TRIP_DELETED,
     AlertRecord,
     StopTimeUpdateRecord,
     TripUpdateRecord,
@@ -41,6 +48,7 @@ from .gtfs_realtime import (
 from .models import (
     CallingStop,
     CallingStopRealtime,
+    DelaySource,
     JourneyItinerary,
     JourneyLeg,
     JourneyPlanResult,
@@ -48,12 +56,16 @@ from .models import (
     JourneySummary,
     LocationSearchResult,
     PlanNotice,
+    RealtimeStatus,
+    StopRelationship,
     TripTimetable,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 USER_AGENT = "HomeAssistant-Translink/2026.10.0"
+DELAYED_THRESHOLD_MINUTES = 3
+EARLY_THRESHOLD_MINUTES = -1
 
 
 class TranslinkApiError(Exception):
@@ -455,14 +467,16 @@ def _prediction_time(value: int | None) -> str | None:
 
 
 def _realtime_stop(update: StopTimeUpdateRecord) -> CallingStopRealtime:
-    relations: dict[
-        int | None, Literal["scheduled", "skipped", "no_data", "unknown"]
-    ] = {0: "scheduled", 1: "skipped", 2: "no_data"}
+    relations: dict[int | None, StopRelationship] = {
+        0: "scheduled",
+        STOP_SKIPPED: "skipped",
+        STOP_NO_DATA: "no_data",
+    }
     relation = relations.get(update.schedule_relationship, "unknown")
     result = CallingStopRealtime(
         sequence=update.stop_sequence, scheduleRelationship=relation
     )
-    if update.schedule_relationship == 2:
+    if update.schedule_relationship == STOP_NO_DATA:
         return result
     for kind in ("arrival", "departure"):
         event = getattr(update, kind)
@@ -540,7 +554,7 @@ def build_calling_stops(
             and (
                 _baseline_matches(item, baseline, arrival=alighting)
                 or (
-                    item.schedule_relationship in (1, 2)
+                    item.schedule_relationship in (STOP_SKIPPED, STOP_NO_DATA)
                     and item.stop_sequence == stop.order
                 )
             )
@@ -741,6 +755,153 @@ def _build_disruption_fields(
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _EndpointPrediction:
+    status: RealtimeStatus = "unavailable"
+    delay_seconds: int | None = None
+    source: DelaySource | None = None
+    relationship: StopRelationship | None = None
+    updated_at: datetime | None = None
+
+
+def _realtime_freshness(
+    record: TripUpdateRecord, now: datetime
+) -> tuple[datetime | None, Literal["fresh", "stale", "unknown"]]:
+    """Use the trip's timestamp before the less specific feed timestamp."""
+    timestamp = record.timestamp or record.feed_timestamp
+    if not timestamp:
+        return None, "unknown"
+    updated_at = parse_iso_datetime(_prediction_time(timestamp))
+    age = now.timestamp() - timestamp
+    if not -REALTIME_MAX_FUTURE_SKEW_SECONDS <= age <= REALTIME_MAX_AGE_SECONDS:
+        return updated_at, "stale"
+    return updated_at, "fresh"
+
+
+def _trip_delay_applies(record: TripUpdateRecord) -> bool:
+    """Allow trip-level timing only if the feed has no more specific timing."""
+    return record.trip_delay_seconds is not None and not any(
+        update.schedule_relationship == STOP_NO_DATA
+        or any(
+            event is not None and (event.time is not None or event.delay is not None)
+            for event in (update.arrival, update.departure)
+        )
+        for update in record.stop_time_updates
+    )
+
+
+def _previous_timetable_update(
+    updates: tuple[StopTimeUpdateRecord, ...], timetable: TripTimetable, order: int
+) -> StopTimeUpdateRecord | None:
+    """Find the closest earlier update whose occurrence is proven by the timetable."""
+    orders_by_stop: dict[str, list[int]] = {}
+    for stop in timetable.departures:
+        orders_by_stop.setdefault(_stop_key(stop.stopId), []).append(stop.order)
+    for visit in reversed(updates):
+        orders = orders_by_stop.get(_stop_key(visit.stop_id), [])
+        if len(orders) == 1:
+            visit_order = orders[0]
+        elif visit.stop_sequence in orders:
+            visit_order = visit.stop_sequence
+        else:
+            continue
+        if visit_order <= order:
+            return visit if visit_order < order else None
+    return None
+
+
+def _endpoint_prediction(
+    leg: JourneyLeg,
+    record: TripUpdateRecord | None,
+    timetable: TripTimetable | None,
+    scheduled_calls: list[CallingStop],
+    updated_at: datetime | None,
+    freshness: Literal["fresh", "stale", "unknown"],
+    *,
+    arrival: bool,
+) -> _EndpointPrediction:
+    """Find the prediction for one particular stop visit."""
+    if record is None:
+        return _EndpointPrediction()
+    if freshness == "stale":
+        return _EndpointPrediction("stale", updated_at=updated_at)
+    if record.trip_schedule_relationship in (TRIP_CANCELED, TRIP_DELETED):
+        return _EndpointPrediction("no_prediction", updated_at=updated_at)
+    stop = leg.destination if arrival else leg.origin
+    key = _stop_key(stop.id if stop is not None else None)
+    scheduled = parse_iso_datetime(
+        leg.arrivalTimeUtc if arrival else leg.departureTimeUtc
+    )
+    candidates = [
+        update
+        for update in record.stop_time_updates
+        if key and _stop_key(update.stop_id) == key
+    ]
+    event: CallingStopRealtime | None = None
+    if scheduled_calls and timetable is not None:
+        call = scheduled_calls[-1 if arrival else 0]
+        event = call.realtime
+        if event is None:
+            assert call.order is not None  # A scheduled call has a timetable order.
+            preceding = _previous_timetable_update(
+                record.stop_time_updates, timetable, call.order
+            )
+            if (
+                preceding is not None
+                and preceding.schedule_relationship == STOP_NO_DATA
+            ):
+                return _EndpointPrediction(
+                    "no_data", relationship="no_data", updated_at=updated_at
+                )
+    elif len(candidates) == 1:
+        candidate = candidates[0]
+        if candidate.schedule_relationship in (STOP_SKIPPED, STOP_NO_DATA) or (
+            _baseline_matches(candidate, scheduled, arrival=arrival)
+        ):
+            event = _realtime_stop(candidate)
+
+    relationship = event.scheduleRelationship if event is not None else None
+    if relationship == "no_data":
+        return _EndpointPrediction(
+            "no_data", relationship=relationship, updated_at=updated_at
+        )
+    if relationship == "skipped":
+        return _EndpointPrediction(
+            "no_prediction", relationship=relationship, updated_at=updated_at
+        )
+    if event is not None:
+        event_delay = (
+            event.arrivalDelaySeconds if arrival else event.departureDelaySeconds
+        )
+        event_time = parse_iso_datetime(
+            event.arrivalTimeUtc if arrival else event.departureTimeUtc
+        )
+        if (
+            event_delay is not None
+            and event_time is not None
+            and scheduled is not None
+            and event_time.timestamp() - event_delay == scheduled.timestamp()
+        ):
+            return _EndpointPrediction(
+                "live", event_delay, "stop_event", relationship, updated_at
+            )
+    if scheduled is not None and len(candidates) <= 1 and _trip_delay_applies(record):
+        return _EndpointPrediction(
+            "live", record.trip_delay_seconds, "trip", updated_at=updated_at
+        )
+    return _EndpointPrediction(
+        "no_prediction", relationship=relationship, updated_at=updated_at
+    )
+
+
+def _predicted_boundary(
+    scheduled: datetime | None, endpoint: _EndpointPrediction
+) -> datetime | None:
+    if scheduled is None or endpoint.delay_seconds is None:
+        return None
+    return scheduled + timedelta(seconds=endpoint.delay_seconds)
+
+
 def build_journey_summary(
     plan: JourneyPlanResult,
     vehicle_positions: dict[str, VehiclePositionRecord] | None = None,
@@ -850,26 +1011,6 @@ def build_journey_summary(
         fare_price = itinerary.fares[0].price
         fare_type_chosen = itinerary.fares[0].name
 
-    # Check delays via TripUpdates
-    delay_mins = 0
-    tu = _match_trip_record(
-        trip_id, trip_updates, expected_route_id=next_service_route_code
-    )
-    if tu is not None:
-        delay_mins = max(0, round(tu.delay_seconds / 60))
-
-    # Determine status
-    status: JourneyStatus = "scheduled"
-    if departure_time and arrival_time:
-        if now > arrival_time:
-            status = "arrived"
-        elif departure_time <= now <= arrival_time:
-            status = "departed"
-        elif delay_mins >= 3:
-            status = "delayed"
-        else:
-            status = "on_time"
-
     # Correlate live vehicle tracking via VehiclePositions
     veh_id: str | None = None
     veh_label: str | None = None
@@ -897,13 +1038,49 @@ def build_journey_summary(
 
     # Detailed legs representation
     legs_summary: list[dict[str, Any]] = []
+    boarding = alighting = _EndpointPrediction()
+    cancelled = False
     for leg in itinerary.legs:
         matched_update = _match_trip_record(
             leg.tripId, trip_updates, leg.legRoute.code if leg.legRoute else None
         )
-        calls, source, updated = build_calling_stops(
-            leg, (trip_timetables or {}).get(leg.tripId or ""), matched_update
-        )
+        timetable = (trip_timetables or {}).get(leg.tripId or "")
+        calls, source, updated = build_calling_stops(leg, timetable, matched_update)
+        schedule_relationship = None
+        is_transit = leg.travelMode.lower() != "walk"
+        if is_transit:
+            updated_at, freshness = (
+                _realtime_freshness(matched_update, now)
+                if matched_update is not None
+                else (None, "unknown")
+            )
+            if matched_update is not None and freshness != "stale":
+                schedule_relationship = matched_update.trip_schedule_relationship
+            scheduled_calls = (
+                calls if source in ("scheduled_with_realtime", "scheduled") else []
+            )
+            if leg is transit_legs[0]:
+                boarding = _endpoint_prediction(
+                    leg,
+                    matched_update,
+                    timetable,
+                    scheduled_calls,
+                    updated_at,
+                    freshness,
+                    arrival=False,
+                )
+            if leg is transit_legs[-1]:
+                alighting = _endpoint_prediction(
+                    leg,
+                    matched_update,
+                    timetable,
+                    scheduled_calls,
+                    updated_at,
+                    freshness,
+                    arrival=True,
+                )
+        leg_cancelled = schedule_relationship in (TRIP_CANCELED, TRIP_DELETED)
+        cancelled |= leg_cancelled
         legs_summary.append(
             {
                 "travelMode": leg.travelMode,
@@ -926,8 +1103,56 @@ def build_journey_summary(
                 "callingStops": [stop.model_dump() for stop in calls],
                 "callingStopsSource": source,
                 "callingStopsRealtimeUpdatedAt": updated,
+                **(
+                    {
+                        "tripCancelled": leg_cancelled,
+                        "tripScheduleRelationship": schedule_relationship,
+                    }
+                    if is_transit
+                    else {}
+                ),
             }
         )
+
+    delay_mins = (
+        round(boarding.delay_seconds / 60)
+        if boarding.delay_seconds is not None
+        else None
+    )
+    status: JourneyStatus = "scheduled"
+    predicted_departure = _predicted_boundary(departure_time, boarding)
+    predicted_arrival = _predicted_boundary(arrival_time, alighting)
+    effective_departure = predicted_departure or departure_time
+    effective_arrival = predicted_arrival or arrival_time
+    if cancelled:
+        status = "cancelled"
+    elif boarding.relationship == "skipped":
+        status = "boarding_skipped"
+    elif effective_departure and effective_arrival:
+        effective_arrival = max(effective_departure, effective_arrival)
+        if now > effective_arrival:
+            status = "arrived"
+        elif effective_departure <= now:
+            status = "departed"
+        elif delay_mins is not None:
+            if delay_mins >= DELAYED_THRESHOLD_MINUTES:
+                status = "delayed"
+            elif delay_mins <= EARLY_THRESHOLD_MINUTES:
+                status = "early"
+            else:
+                status = "on_time"
+
+    evidence = boarding
+    if boarding.status != "stale" and (
+        alighting.status == "stale"
+        or boarding.status == "unavailable"
+        or (
+            boarding.status == "no_prediction"
+            and boarding.relationship is None
+            and alighting.status in ("live", "no_data")
+        )
+    ):
+        evidence = alighting
 
     return JourneySummary(
         status=status,
@@ -951,6 +1176,15 @@ def build_journey_summary(
         fares_breakdown=fares_breakdown,
         walking_distance_m=walking_distance,
         delay_mins=delay_mins,
+        departure_delay_seconds=boarding.delay_seconds,
+        arrival_delay_seconds=alighting.delay_seconds,
+        realtime_status=evidence.status,
+        realtime_updated_at=evidence.updated_at,
+        delay_source=boarding.source,
+        predicted_departure_time=predicted_departure,
+        predicted_arrival_time=predicted_arrival,
+        boarding_relationship=boarding.relationship,
+        alighting_skipped=alighting.relationship == "skipped",
         trip_id=trip_id,
         vehicle_id=veh_id,
         vehicle_label=veh_label,

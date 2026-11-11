@@ -6,6 +6,10 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+### Changed
+
+- **Behaviour change:** Delay now reports signed boarding offsets and shows `unknown` when no applicable prediction is available. Journey Status distinguishes scheduled, early, cancelled, and skipped boarding services. Departure and arrival sensors keep their scheduled states and expose predicted times as attributes. [#48](https://github.com/tinkerologie/ha-translink/issues/48)
+
 ### Fixed
 
 - Journey and stop disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notices with a confirmed end time drop out once that time has passed. [#49](https://github.com/tinkerologie/ha-translink/issues/49)

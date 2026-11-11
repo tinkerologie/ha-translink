@@ -20,6 +20,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .api.models import JourneySummary, StopSummary
 from .const import BRISBANE_TZ, CONF_NAME, DOMAIN, MODE_JOURNEY, get_vehicle_icon
 from .coordinator import TranslinkCoordinator
 
@@ -34,6 +35,26 @@ def _format_brisbane_time(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.astimezone(ZoneInfo(BRISBANE_TZ)).strftime("%I:%M %p")
+
+
+def _predicted_time_attributes(dt: datetime | None) -> dict[str, str | None]:
+    """Use ISO timestamps for cards and templates."""
+    return {
+        "predicted_time": dt.isoformat() if dt is not None else None,
+        "predicted_readable_time": _format_brisbane_time(dt),
+    }
+
+
+def _delay_attributes(data: JourneySummary | StopSummary) -> dict[str, Any]:
+    return {
+        "delay_seconds": data.departure_delay_seconds,
+        "arrival_delay_seconds": data.arrival_delay_seconds,
+        "realtime_status": data.realtime_status,
+        "delay_source": data.delay_source,
+        "realtime_updated_at": data.realtime_updated_at.isoformat()
+        if data.realtime_updated_at is not None
+        else None,
+    }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -55,6 +76,7 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
             "origin": data.origin_name,
             "platform": data.origin_platform,
             "readable_time": _format_brisbane_time(data.departure_time),
+            **_predicted_time_attributes(data.predicted_departure_time),
         },
     ),
     TranslinkSensorEntityDescription(
@@ -66,6 +88,7 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
             "destination": data.destination_name,
             "platform": data.destination_platform,
             "readable_time": _format_brisbane_time(data.arrival_time),
+            **_predicted_time_attributes(data.predicted_arrival_time),
         },
     ),
     TranslinkSensorEntityDescription(
@@ -83,12 +106,19 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         options=[
             "scheduled",
             "on_time",
+            "early",
             "delayed",
+            "cancelled",
+            "boarding_skipped",
             "departed",
             "arrived",
             "no_service",
         ],
         value_fn=lambda data: data.status,
+        attributes_fn=lambda data: {
+            "boarding_relationship": data.boarding_relationship,
+            "alighting_skipped": data.alighting_skipped,
+        },
     ),
     TranslinkSensorEntityDescription(
         key="next_service",
@@ -140,6 +170,7 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         native_unit_of_measurement="min",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.delay_mins,
+        attributes_fn=_delay_attributes,
     ),
     TranslinkSensorEntityDescription(
         key="walking_distance",
@@ -197,6 +228,7 @@ STOP_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         attributes_fn=lambda data: {
             "platform": data.next_platform,
             "readable_time": _format_brisbane_time(data.next_departure_time),
+            **_predicted_time_attributes(data.predicted_departure_time),
         },
     ),
     TranslinkSensorEntityDescription(
@@ -229,6 +261,7 @@ STOP_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         native_unit_of_measurement="min",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.delay_mins,
+        attributes_fn=_delay_attributes,
     ),
     TranslinkSensorEntityDescription(
         key="disruptions",

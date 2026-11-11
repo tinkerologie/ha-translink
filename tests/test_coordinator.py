@@ -16,6 +16,7 @@ from custom_components.translink.client import (
     JourneySummary,
     StopSummary,
     TranslinkConnectionError,
+    TripUpdateRecord,
 )
 from custom_components.translink.const import (
     CONF_END_LOCATION_ID,
@@ -131,24 +132,48 @@ async def test_coordinator_update_journey_success(
     assert summary.duration_mins == 41
 
 
+@pytest.mark.parametrize("delay_seconds", [None, -120])
 async def test_coordinator_update_stop_success(
     hass: HomeAssistant,
     stop_entry: MockConfigEntry,
     plan_response_data: dict[str, Any],
+    delay_seconds: int | None,
 ) -> None:
-    """Test coordinator _async_update_stop."""
+    """Keep signed or missing next-service delay in stop mode."""
     plan_result = JourneyPlanResult.model_validate(plan_response_data)
 
     with patch("custom_components.translink.coordinator.async_get_clientsession"):
         coordinator = TranslinkCoordinator(hass, stop_entry)
 
     coordinator.client.plan_journey = AsyncMock(return_value=plan_result)
-    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+    trip_id = plan_result.itineraries[0].legs[0].tripId
+    assert trip_id is not None
+    updates = {}
+    if delay_seconds is not None:
+        updates[trip_id] = TripUpdateRecord(
+            entity_id="test-trip",
+            trip_id=trip_id,
+            route_id=None,
+            trip_delay_seconds=delay_seconds,
+        )
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value=updates)
 
     summary = await coordinator._async_update_data()
     assert isinstance(summary, StopSummary)
     assert summary.stop_id == "ST:place_romsta"
     assert summary.stop_name == "Roma Street station"
+    assert summary.departure_delay_seconds == delay_seconds
+    assert (
+        summary.departures[0]["departure_time"]
+        == plan_result.itineraries[0].legs[0].departureTimeUtc
+    )
+    if delay_seconds is None:
+        assert summary.delay_mins is None
+        assert summary.realtime_status == "unavailable"
+    else:
+        assert summary.delay_mins == -2
+        assert summary.realtime_status == "live"
+        assert summary.delay_source == "trip"
 
 
 async def test_coordinator_update_failure_raises(
