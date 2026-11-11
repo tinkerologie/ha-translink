@@ -28,6 +28,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 - Departure boards use the selected station or platform timetable across routes and directions, with scheduled and expected times shown separately. Stop notices remain visible when there are no departures. [#47](https://github.com/tinkerologie/ha-translink/issues/47)
 - Journey disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notice details report `leg` or `request` scope, and notices expire when they reach a confirmed end time. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
 - Setup and reconfiguration ask you to confirm ambiguous location matches. Departure boards accept only stations and stops, and reconfiguration keeps unchanged locations. [#50](https://github.com/tinkerologie/ha-translink/issues/50)
+- The Service Notices transport mode picker uses Home Assistant-compatible translation keys for Bus, Ferry, Train, and Tram. [#60](https://github.com/tinkerologie/ha-translink/issues/60)
 
 ## [2026.11.0] - 2026-11-11
 

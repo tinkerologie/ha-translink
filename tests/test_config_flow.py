@@ -1730,6 +1730,9 @@ async def _notice_flow(hass: HomeAssistant) -> str:
     )
     assert form["type"] is FlowResultType.FORM
     assert form["step_id"] == "notices"
+    mode_selector = form["data_schema"].schema["notice_route_mode"]
+    assert mode_selector.config["options"] == ["bus", "ferry", "train", "tram"]
+    assert mode_selector.config["translation_key"] == "notice_route_mode"
     return form["flow_id"]
 
 
@@ -1759,7 +1762,7 @@ async def test_notice_config_entry_is_unique_to_network_and_scope(
                 "notice_network": "CNS",
                 "notice_scope": scope,
                 "notice_route_id": "  RPSP  ",
-                "notice_route_mode": "Train",
+                "notice_route_mode": "train",
             },
         )
     fetch.assert_awaited_once_with("CNS")
@@ -1807,7 +1810,7 @@ async def test_notice_config_validation_and_feed_failure(hass: HomeAssistant) ->
         assert result["errors"] == {"notice_route_mode": "notice_mode_required"}
         fetch.assert_not_awaited()
         result = await hass.config_entries.flow.async_configure(
-            flow_id, {"notice_scope": "mode", "notice_route_mode": "Tram"}
+            flow_id, {"notice_scope": "mode", "notice_route_mode": "tram"}
         )
         assert result["errors"] == {"base": "cannot_connect"}
         fetch.assert_awaited_once_with("SEQ")
@@ -1831,7 +1834,7 @@ async def test_notice_reconfigure_changes_id_and_preserves_scan_interval(
     entry.add_to_hass(hass)
     for scope, extra, wanted_id in [
         ("route", {"notice_route_id": "RPSP"}, "notices_SEQ_route_RPSP"),
-        ("mode", {"notice_route_mode": "Bus"}, "notices_SEQ_mode_Bus"),
+        ("mode", {"notice_route_mode": "bus"}, "notices_SEQ_mode_Bus"),
     ]:
         form = await entry.start_reconfigure_flow(hass)
         assert form["step_id"] == "notices_reconfigure"
@@ -1851,6 +1854,13 @@ async def test_notice_reconfigure_changes_id_and_preserves_scan_interval(
         fetch.assert_awaited_once_with("SEQ")
         reload.assert_called_once_with(entry.entry_id)
     assert "notice_route_id" not in entry.data
+    assert entry.data["notice_route_mode"] == "Bus"
+
+    form = await entry.start_reconfigure_flow(hass)
+    mode_field = next(
+        field for field in form["data_schema"].schema if field == "notice_route_mode"
+    )
+    assert mode_field.description["suggested_value"] == "bus"
 
     options = await hass.config_entries.options.async_init(entry.entry_id)
     assert options["step_id"] == "notices"

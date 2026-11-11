@@ -350,10 +350,10 @@
     },
     "notice_route_mode": {
       "options": {
-        "Bus": "Bus",
-        "Ferry": "Ferry",
-        "Train": "Train",
-        "Tram": "Tram"
+        "bus": "Bus",
+        "ferry": "Ferry",
+        "train": "Train",
+        "tram": "Tram"
       }
     }
   }

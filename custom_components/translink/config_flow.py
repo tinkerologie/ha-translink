@@ -93,6 +93,8 @@ _LOCATION_LABELS = {
     "place": "Place or address",
     "unknown": "Location",
 }
+# Selector translation keys are lowercase. Entry data uses the canonical mode name.
+_NOTICE_ROUTE_MODE_OPTIONS = {mode.lower(): mode for mode in NOTICE_ROUTE_TYPES}
 
 
 def _realtime_region_selector() -> selector.SelectSelector:
@@ -484,8 +486,10 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                     data[CONF_NOTICE_ROUTE_ID] = route_id
                     unique_id += f"_{route_id}"
             elif scope == "mode":
-                route_mode = user_input.get(CONF_NOTICE_ROUTE_MODE)
-                if route_mode not in NOTICE_ROUTE_TYPES:
+                route_mode = _NOTICE_ROUTE_MODE_OPTIONS.get(
+                    user_input.get(CONF_NOTICE_ROUTE_MODE, "")
+                )
+                if route_mode is None:
                     errors[CONF_NOTICE_ROUTE_MODE] = "notice_mode_required"
                 else:
                     data[CONF_NOTICE_ROUTE_MODE] = route_mode
@@ -517,6 +521,7 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                     )
 
         values = {**current, **(user_input or {})}
+        mode_suggestion = values.get(CONF_NOTICE_ROUTE_MODE)
         schema = vol.Schema(
             {
                 vol.Required(
@@ -546,10 +551,14 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 ): selector.TextSelector(),
                 vol.Optional(
                     CONF_NOTICE_ROUTE_MODE,
-                    description={"suggested_value": values.get(CONF_NOTICE_ROUTE_MODE)},
+                    description={
+                        "suggested_value": mode_suggestion.lower()
+                        if mode_suggestion
+                        else None
+                    },
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=list(NOTICE_ROUTE_TYPES),
+                        options=list(_NOTICE_ROUTE_MODE_OPTIONS),
                         translation_key="notice_route_mode",
                     )
                 ),
