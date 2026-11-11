@@ -13,6 +13,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 ### Changed
 
 - **Behaviour change:** Delay now reports signed boarding offsets and shows `unknown` when no applicable prediction is available. Journey Status distinguishes scheduled, early, cancelled, and skipped boarding services. Departure and arrival sensors keep their scheduled states and expose predicted times as attributes. [#48](https://github.com/tinkerologie/ha-translink/issues/48)
+- Documented the limits of via stops, transfer preferences, and accessibility routing. Added exact planner request tests and an opt-in developer capture. Home Assistant routing behaviour is unchanged. [#54](https://github.com/tinkerologie/ha-translink/issues/54)
 
 ### Fixed
 

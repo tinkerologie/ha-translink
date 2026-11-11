@@ -93,6 +93,16 @@ def calculate_plan_hash(query_string: str) -> int:
     return h
 
 
+@dataclass(frozen=True)
+class JourneyPlanRequest:
+    """Encoded request sent to the public journey planner."""
+
+    url: str
+    body: str
+    request_id: int
+    headers: dict[str, str]
+
+
 def parse_iso_datetime(value: str | None) -> datetime | None:
     """Safely parse an ISO-8601 UTC timestamp string."""
     if not value:
@@ -276,7 +286,7 @@ class TranslinkClient:
                 f"Error connecting to Translink geolocation stop search: {err}"
             ) from err
 
-    async def plan_journey(
+    def build_plan_request(
         self,
         start_location_id: str,
         start_name: str,
@@ -287,10 +297,8 @@ class TranslinkClient:
         max_walking_distance: int = 4000,
         walking_speed: str = "Normal",
         target_datetime: datetime | None = None,
-    ) -> JourneyPlanResult:
-        """Plan journey between starting point and destination."""
-        session = await self._get_session()
-
+    ) -> JourneyPlanRequest:
+        """Build the request used by the integration and raw CLI capture."""
         tz = ZoneInfo(BRISBANE_TZ)
         now_brisbane = (target_datetime or datetime.now(tz)).astimezone(tz)
         search_date = now_brisbane.strftime("%Y-%m-%d")
@@ -328,12 +336,38 @@ class TranslinkClient:
             "Origin": self._jp_base_url,
             "Referer": f"{self._jp_base_url}/plan-your-journey/journey-planner",
         }
+        return JourneyPlanRequest(url, body_string, plan_id, headers)
 
+    async def plan_journey(
+        self,
+        start_location_id: str,
+        start_name: str,
+        end_location_id: str,
+        end_name: str = "",
+        transport_modes: list[str] | None = None,
+        time_search_mode: str = "LeaveAfter",
+        max_walking_distance: int = 4000,
+        walking_speed: str = "Normal",
+        target_datetime: datetime | None = None,
+    ) -> JourneyPlanResult:
+        """Plan journey between starting point and destination."""
+        session = await self._get_session()
+        request = self.build_plan_request(
+            start_location_id,
+            start_name,
+            end_location_id,
+            end_name,
+            transport_modes,
+            time_search_mode,
+            max_walking_distance,
+            walking_speed,
+            target_datetime,
+        )
         try:
             async with session.post(
-                url,
-                data=body_string,
-                headers=headers,
+                request.url,
+                data=request.body,
+                headers=request.headers,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 if response.status != 200:
