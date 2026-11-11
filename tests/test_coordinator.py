@@ -686,3 +686,126 @@ async def test_coordinator_journey_dispatches_only_its_configured_region(
             expected, preserve_stale=True
         )
         coordinator.client.fetch_vehicle_positions.assert_awaited_once_with(expected)
+
+
+async def test_progress_follows_departed_plan_across_replan_and_failure(
+    hass: HomeAssistant,
+    journey_entry: MockConfigEntry,
+    plan_response_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transfer remains in progress after the first itinerary changes."""
+    import custom_components.translink.coordinator as module
+
+    now = datetime(2026, 10, 5, 23, 27, tzinfo=UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    plan = JourneyPlanResult.model_validate(plan_response_data)
+    transfer = plan.itineraries[1]
+    next_service = JourneyPlanResult(itineraries=[plan.itineraries[0]])
+    coordinator = TranslinkCoordinator(hass, journey_entry)
+    coordinator.client.plan_journey = AsyncMock(
+        side_effect=[
+            JourneyPlanResult(itineraries=[transfer]),
+            next_service,
+            TranslinkConnectionError("planner offline"),
+            next_service,
+            JourneyPlanResult(),
+        ]
+    )
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
+    await coordinator.async_refresh()
+    assert coordinator.data.progress.state == "not_started"
+    journey_id = coordinator.data.progress.journey_id
+    planned_at = coordinator.data.progress.planned_at
+
+    now += timedelta(minutes=5)
+    await coordinator.async_refresh()
+    assert coordinator.data.trip_id == next_service.itineraries[0].legs[0].tripId
+    assert coordinator.data.progress.journey_id == journey_id
+    assert coordinator.data.progress.tracking_basis == "pinned_itinerary"
+    assert coordinator.data.progress.planned_at == planned_at
+    assert coordinator.data.progress.next_action.type == "transfer"
+
+    await coordinator.async_refresh()
+    assert not coordinator.last_update_success
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success
+    assert coordinator.data.progress.journey_id == journey_id
+
+    now += timedelta(hours=2)
+    await coordinator.async_refresh()
+    assert coordinator.data.progress.state == "no_service"
+    assert coordinator.data.progress.tracking_basis == "planner_first_itinerary"
+
+
+async def test_pinned_timetables_have_priority_within_refresh_budget(
+    hass: HomeAssistant,
+    journey_entry: MockConfigEntry,
+    plan_response_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leading walk pins the journey and its transit timetable comes first."""
+    from types import SimpleNamespace
+
+    import custom_components.translink.coordinator as module
+    from custom_components.translink.api.models import JourneyLeg
+
+    now = datetime(2026, 10, 5, 23, 26, tzinfo=UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    monotonic = 0.0
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: monotonic))
+    plan = JourneyPlanResult.model_validate(plan_response_data)
+    first = plan.itineraries[1]
+    first.legs.insert(
+        0,
+        JourneyLeg(
+            departureTimeUtc="2026-10-05T23:27:00Z",
+            arrivalTimeUtc=first.legs[0].departureTimeUtc,
+        ),
+    )
+    later = plan.itineraries[0]
+    original = later.legs[0]
+    later.legs = [
+        original.model_copy(update={"tripId": f"new-trip-{index}"})
+        for index in range(5)
+    ]
+    coordinator = TranslinkCoordinator(hass, journey_entry)
+    coordinator.client.plan_journey = AsyncMock(
+        side_effect=[
+            JourneyPlanResult(itineraries=[first]),
+            JourneyPlanResult(itineraries=[later]),
+        ]
+    )
+    coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
+    coordinator.client.async_get_trip_timetable = AsyncMock(return_value=None)
+    await coordinator.async_refresh()
+    coordinator.client.async_get_trip_timetable.reset_mock()
+    monotonic += module.TRIP_PAGE_NEGATIVE_TTL + 1
+
+    now += timedelta(seconds=90)
+    await coordinator.async_refresh()
+    assert coordinator.data.progress.tracking_basis == "pinned_itinerary"
+    assert coordinator.data.progress.active_leg_index == 0
+    assert [
+        call.args[0]
+        for call in coordinator.client.async_get_trip_timetable.await_args_list
+    ] == [
+        first.legs[1].tripId,
+        first.legs[2].tripId,
+        "new-trip-0",
+        "new-trip-1",
+    ]

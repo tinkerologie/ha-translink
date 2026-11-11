@@ -187,6 +187,16 @@
           "no_service": "No Service"
         }
       },
+      "journey_progress": {
+        "name": "Journey Progress",
+        "state": {
+          "no_service": "No Service",
+          "not_started": "Not Started",
+          "in_progress": "In Progress",
+          "finished": "Finished",
+          "cancelled": "Cancelled"
+        }
+      },
       "next_service": {
         "name": "Next Service"
       },
@@ -224,6 +234,17 @@
       }
     },
     "event": {
+      "journey_transition": {
+        "name": "Journey Transition",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "transfer_stop_reached": "Vehicle reached transfer stop",
+              "alighting_stop_reached": "Vehicle reached alighting stop"
+            }
+          }
+        }
+      },
       "disruption": {
         "name": "Disruption",
         "state_attributes": {

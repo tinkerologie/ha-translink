@@ -49,6 +49,7 @@ from .gtfs_realtime import (
     AlertRecord,
     StopTimeUpdateRecord,
     TripUpdateRecord,
+    TripUpdateRecords,
     VehiclePositionRecord,
     extract_base_trip_id,
     parse_alerts,
@@ -578,15 +579,22 @@ class TranslinkClient:
         if not header_fresh and not preserve_stale:
             return {}
 
-        updates: dict[str, TripUpdateRecord] = {}
-        for alias, record in records.items():
+        retained: dict[int, TripUpdateRecord] = {}
+        for record in records.records:
             observed_at = record.timestamp or timestamp
             if header_fresh and _realtime_timestamp_is_fresh(observed_at, now):
-                updates[alias] = record
+                retained[id(record)] = record
             elif preserve_stale:
                 record.stale_timestamp = observed_at if header_fresh else timestamp
-                updates[alias] = record
-        return updates
+                retained[id(record)] = record
+        return TripUpdateRecords(
+            {
+                alias: record
+                for alias, record in records.items()
+                if id(record) in retained
+            },
+            tuple(retained.values()),
+        )
 
     async def fetch_alerts(
         self, region: str = DEFAULT_REALTIME_REGION
@@ -721,6 +729,51 @@ def _match_journey_update(
     return record
 
 
+def _service_date(trip_id: str) -> str | None:
+    parts = trip_id.split("_")
+    date = parts[-2] if len(parts) > 2 else ""
+    return date if len(date) == 8 and date.isascii() and date.isdigit() else None
+
+
+def _route_prefix(route: str | None, *, cairns: bool = False) -> str:
+    prefix = (route or "").split("-", 1)[0]
+    return prefix.removeprefix("C") if cairns else prefix
+
+
+def match_progress_update(
+    leg: JourneyLeg, updates: dict[str, TripUpdateRecord], *, strict_identity: bool
+) -> tuple[TripUpdateRecord | None, bool]:
+    """Match one complete feed trip ID and flag ambiguous or mismatched candidates."""
+    trip_id = leg.tripId
+    base_id = extract_base_trip_id(trip_id)
+    if not trip_id or not base_id:
+        return None, False
+    records = (
+        updates.records
+        if isinstance(updates, TripUpdateRecords)
+        else {id(record): record for record in updates.values()}.values()
+    )
+    candidates = [
+        record
+        for record in records
+        if record.trip_id == trip_id or extract_base_trip_id(record.trip_id) == base_id
+    ]
+    if len(candidates) != 1:
+        return None, bool(candidates)
+    record = candidates[0]
+    if strict_identity:
+        matched = _match_journey_update(leg, {trip_id: record}, True)
+        return matched, matched is None
+    route = _route_prefix(leg.legRoute.code if leg.legRoute else None)
+    feed_route = _route_prefix(record.route_id)
+    service_date = _service_date(trip_id)
+    if (route and feed_route and route != feed_route) or (
+        service_date and record.start_date and service_date != record.start_date
+    ):
+        return None, True
+    return record, False
+
+
 def vehicle_position_is_fresh(timestamp: float, now: datetime) -> bool:
     """Check the vehicle fix against the wall clock."""
     age = now.timestamp() - timestamp
@@ -736,6 +789,8 @@ def _match_vehicle_position(
     positions: Mapping[str, VehiclePositionRecord] | Sequence[VehiclePositionRecord],
     now: datetime,
     validated_update: TripUpdateRecord | None = None,
+    *,
+    require_route: bool = False,
 ) -> tuple[VehiclePositionRecord | None, VehiclePositionStatus]:
     """Accept a fresh fix only when one vehicle matches the active service."""
     trip_id = leg.tripId
@@ -743,16 +798,26 @@ def _match_vehicle_position(
         return None, "no_position"
     base_id = extract_base_trip_id(trip_id)
     expected_route = leg.legRoute.code if leg.legRoute else None
-    expected_prefix = expected_route.split("-", 1)[0] if expected_route else None
-    parts = trip_id.split("_")
-    service_date = parts[-2] if len(parts) > 2 else ""
-    if len(service_date) != 8 or not service_date.isdigit():
-        service_date = ""
+    expected_prefix = _route_prefix(expected_route)
+    service_date = _service_date(trip_id)
 
     records = positions.values() if isinstance(positions, Mapping) else positions
     saw_match = False
     fresh: dict[tuple[str, str | int], tuple[int, VehiclePositionRecord]] = {}
     for record in records:
+        if require_route:
+            cairns = validated_update is not None
+            route = _route_prefix(expected_route, cairns=cairns)
+            if (
+                not route
+                or _route_prefix(record.route_id, cairns=cairns) != route
+                or (
+                    service_date
+                    and record.start_date
+                    and service_date != record.start_date
+                )
+            ):
+                continue
         if validated_update is not None:
             if record.trip_id != validated_update.trip_id or (
                 record.vehicle_id
@@ -768,7 +833,7 @@ def _match_vehicle_position(
             if (
                 expected_prefix
                 and record.route_id
-                and expected_prefix != record.route_id.split("-", 1)[0]
+                and expected_prefix != _route_prefix(record.route_id)
             ):
                 continue
             if service_date and record.start_date and service_date != record.start_date:
@@ -1361,7 +1426,7 @@ def _endpoint_prediction(
     leg: JourneyLeg,
     record: TripUpdateRecord | None,
     timetable: TripTimetable | None,
-    scheduled_calls: list[CallingStop],
+    calling_stops: list[CallingStop],
     updated_at: datetime | None,
     freshness: Literal["fresh", "stale", "unknown"],
     *,
@@ -1386,11 +1451,10 @@ def _endpoint_prediction(
         if key and _stop_key(update.stop_id) == key
     ]
     event: CallingStopRealtime | None = None
-    if scheduled_calls and timetable is not None:
-        call = scheduled_calls[-1 if arrival else 0]
+    if calling_stops:
+        call = calling_stops[-1 if arrival else 0]
         event = call.realtime
-        if event is None:
-            assert call.order is not None  # A scheduled call has a timetable order.
+        if event is None and timetable is not None and call.order is not None:
             preceding = _previous_timetable_update(
                 record.stop_time_updates, timetable, call.order
             )

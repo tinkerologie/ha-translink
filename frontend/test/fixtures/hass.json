@@ -1,5 +1,53 @@
 {
   "states": {
+    "sensor.renamed_journey_progress": {
+      "entity_id": "sensor.renamed_journey_progress",
+      "state": "in_progress",
+      "attributes": {
+        "journey_id": "fixture-progress",
+        "active_leg_index": 0,
+        "active_leg_source": "vehicle",
+        "progress_legs": [
+          {
+            "index": 0,
+            "mode": "Train",
+            "route": "CAIP",
+            "color": "#376ebb",
+            "origin": {
+              "name": "Central station"
+            },
+            "destination": {
+              "name": "Darra station"
+            }
+          },
+          {
+            "index": 1,
+            "mode": "Train",
+            "route": "RPSP",
+            "color": "#69469b",
+            "origin": {
+              "name": "Darra station"
+            },
+            "destination": {
+              "name": "Springfield Central station"
+            }
+          }
+        ],
+        "next_action": {
+          "type": "transfer",
+          "stop_name": "Darra station",
+          "time_source": "realtime",
+          "predicted_time": "2026-10-26T08:15:00Z",
+          "next_leg_route": "RPSP",
+          "next_leg_platform": "1"
+        },
+        "vehicle_observation": {
+          "fresh": true,
+          "status": "IN_TRANSIT_TO",
+          "stop_name": "Darra station"
+        }
+      }
+    },
     "device_tracker.renamed_train": {
       "entity_id": "device_tracker.renamed_train",
       "state": "not_home",
@@ -574,6 +622,12 @@
     }
   },
   "entities": {
+    "sensor.renamed_journey_progress": {
+      "entity_id": "sensor.renamed_journey_progress",
+      "device_id": "journey",
+      "platform": "translink",
+      "translation_key": "journey_progress"
+    },
     "device_tracker.renamed_train": {
       "entity_id": "device_tracker.renamed_train",
       "device_id": "journey",

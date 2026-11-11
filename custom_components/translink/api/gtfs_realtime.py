@@ -10,6 +10,7 @@ TRIP_CANCELED = 3
 TRIP_DELETED = 7
 STOP_SKIPPED = 1
 STOP_NO_DATA = 2
+VEHICLE_STOP_STATUSES = {0: "INCOMING_AT", 1: "STOPPED_AT", 2: "IN_TRANSIT_TO"}
 
 
 @dataclass(slots=True)
@@ -28,6 +29,9 @@ class VehiclePositionRecord:
     timestamp: int | None = None
     start_date: str | None = None
     start_time: str | None = None
+    current_stop_sequence: int | None = None
+    current_status: str | None = None
+    stop_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -71,6 +75,18 @@ class TripUpdateRecord:
     feed_timestamp: int | None = None
     vehicle_id: str | None = None
     stale_timestamp: int | None = None
+
+
+class TripUpdateRecords(dict[str, TripUpdateRecord]):
+    """Keep feed-order records beside the legacy aliases."""
+
+    def __init__(
+        self,
+        aliases: dict[str, TripUpdateRecord],
+        records: tuple[TripUpdateRecord, ...],
+    ) -> None:
+        super().__init__(aliases)
+        self.records = records
 
 
 @dataclass(slots=True)
@@ -218,6 +234,9 @@ def parse_vehicle_position_records(
         bearing: float | None = None
         speed: float | None = None
         timestamp: int | None = None
+        stop_sequence: int | None = None
+        status: str | None = None
+        stop_id: str | None = None
 
         for vf_num, _, vf_val in v_fields:
             if vf_num == 1 and isinstance(vf_val, bytes):  # TripDescriptor
@@ -242,8 +261,14 @@ def parse_vehicle_position_records(
                         bearing = float(pf_val)
                     elif pf_num == 5 and isinstance(pf_val, (float, int)):
                         speed = float(pf_val)
+            elif vf_num == 3 and isinstance(vf_val, int):
+                stop_sequence = vf_val
+            elif vf_num == 4 and isinstance(vf_val, int):
+                status = VEHICLE_STOP_STATUSES.get(vf_val)
             elif vf_num == 5 and isinstance(vf_val, int):
                 timestamp = vf_val
+            elif vf_num == 7 and isinstance(vf_val, bytes):
+                stop_id = _decode_string(vf_val)
             elif vf_num == 8 and isinstance(vf_val, bytes):  # VehicleDescriptor
                 vd_fields = _parse_fields(vf_val)
                 for vdf_num, _, vdf_val in vd_fields:
@@ -267,6 +292,9 @@ def parse_vehicle_position_records(
                     timestamp=timestamp,
                     start_date=start_date,
                     start_time=start_time,
+                    current_stop_sequence=stop_sequence,
+                    current_status=status,
+                    stop_id=stop_id,
                 )
             )
 
@@ -337,9 +365,10 @@ def parse_feed_timestamp(raw_bytes: bytes) -> int | None:
     return _feed_header_timestamp(_parse_fields(raw_bytes))
 
 
-def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
+def parse_trip_updates(raw_bytes: bytes) -> TripUpdateRecords:
     """Parse GTFS-RT TripUpdates binary payload into a lookup dict."""
     result: dict[str, TripUpdateRecord] = {}
+    records: list[TripUpdateRecord] = []
     top_fields = _parse_fields(raw_bytes)
     feed_timestamp = _feed_header_timestamp(top_fields)
     for field_num, _, ent_bytes in top_fields:
@@ -423,6 +452,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
             feed_timestamp=feed_timestamp,
             vehicle_id=vehicle_id,
         )
+        records.append(record)
         if trip_id:
             result[trip_id] = record
             base_id = extract_base_trip_id(trip_id)
@@ -430,7 +460,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
                 result[base_id] = record
         result[entity_id] = record
 
-    return result
+    return TripUpdateRecords(result, tuple(records))
 
 
 def parse_alerts(raw_bytes: bytes) -> list[AlertRecord]:

@@ -215,15 +215,17 @@ automation needs the previous nonnegative value:
 
 ## Dashboard cards
 
-The integration bundles three cards; no separate HACS frontend download is needed.
+The integration bundles four cards and includes them in the HACS download.
 After restarting Home Assistant, edit your dashboard and choose **Add card** →
-**Translink Journey**, **Translink Departures**, or **Translink Service Alerts**.
+**Translink Journey**, **Translink Departures**, **Translink Service Alerts** or
+**Translink Journey Progress**.
 Use each card's visual editor to choose the appropriate Translink sensor:
 
 | Card | Entity to select | Options |
 | --- | --- | --- |
 | `custom:translink-journey-card` | Journey **Itinerary** sensor | `title`, `show_fare`, `legs_expanded`, `show_disruptions`, `show_planner` (default false), `alternatives_limit` (1–10, default 5), `show_actions` (default true), `calendar_entity` (optional) |
 | `custom:translink-departures-card` | Stop **Departures board** sensor | `title`, `max_departures` (1–20, default 5), `show_platform`, `show_arrivals` (default false), `show_filters` (default false) |
+| `custom:translink-progress-card` | Journey **Journey Progress** sensor | `title` |
 | `custom:translink-alerts-card` | Journey or stop **Disruptions** count sensor | `title`, `max_alerts` (1–20, default 5) |
 
 Cards find related sensors through Home Assistant's entity registry and device
@@ -389,6 +391,35 @@ preview labels times in the dashboard's selected time zone.
 Journey details show a **Trip timetable** link only after Translink's timetable
 matches that leg. The links are date-specific. Set `show_actions: false` to
 hide sharing, export and timetable controls.
+
+## Journey progress
+
+Add the **Translink Journey Progress** card and select the **Journey Progress**
+sensor. The card shows the itinerary as a line of walking and transit legs and
+highlights the active leg. Its next action shows where to board, transfer, or
+alight, with scheduled or predicted timing when available.
+
+Before departure, progress follows the first itinerary returned by the planner
+(`tracking_basis: planner_first_itinerary`). At departure it retains the last
+followed itinerary in memory (`pinned_itinerary`), even when the planner returns
+a later service. This applies to a leading walk as well. The pin expires five
+minutes after the later of the scheduled and matched predicted final arrival,
+or when a cancellation is confirmed. A restart clears the pin.
+
+The sensor reports whether the active leg comes from a vehicle observation
+(`vehicle`), matched real-time timings (`realtime_schedule`), the timetable
+(`schedule`), or insufficient evidence (`unknown`). This integration assumes
+you follow the itinerary. It uses schedule and vehicle data without reading
+rider location. The Home Assistant native map continues to show the vehicle
+tracker, and the progress card uses a schematic without a route overlay.
+
+With vehicle tracking enabled, the **Journey Transition** event entity reports
+`transfer_stop_reached` and `alighting_stop_reached`. Two fresh observations
+must show the same vehicle on the same trip, first before the target stop
+sequence and then explicitly stopped at the confirmed stop and sequence.
+These events describe the vehicle's arrival. If a polling interval misses the
+stop, the feed is stale or ambiguous, or the visit is skipped or cancelled,
+no event fires. Restored events are never fired again.
 
 ## Dashboard Examples
 

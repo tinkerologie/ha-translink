@@ -66,8 +66,8 @@ function emptyJourney(
   return hass;
 }
 describe("card states and interactions", () => {
-  it("registers exactly three cards with native editor schemas", () => {
-    expect(window.customCards).toHaveLength(3);
+  it("registers four cards with native editor schemas", () => {
+    expect(window.customCards).toHaveLength(4);
     expect(JourneyCard.getConfigForm().schema[0]?.selector).toMatchObject({
       entity: { filter: { integration: "translink" } },
     });

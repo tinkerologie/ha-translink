@@ -57,6 +57,14 @@ def _delay_attributes(data: JourneySummary | StopSummary) -> dict[str, Any]:
     }
 
 
+def _progress_attributes(data: JourneySummary) -> dict[str, Any]:
+    if data.progress is None:
+        return {}
+    attributes = data.progress.model_dump(mode="json", exclude={"state", "transitions"})
+    attributes["progress_legs"] = attributes.pop("legs")
+    return attributes
+
+
 @dataclass(frozen=True, kw_only=True)
 class TranslinkSensorEntityDescription(SensorEntityDescription):
     """Describes a Translink sensor entity."""
@@ -119,6 +127,16 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
             "boarding_relationship": data.boarding_relationship,
             "alighting_skipped": data.alighting_skipped,
         },
+    ),
+    TranslinkSensorEntityDescription(
+        key="journey_progress",
+        translation_key="journey_progress",
+        device_class=SensorDeviceClass.ENUM,
+        options=["no_service", "not_started", "in_progress", "finished", "cancelled"],
+        value_fn=lambda data: (
+            data.progress.state if data.progress is not None else None
+        ),
+        attributes_fn=_progress_attributes,
     ),
     TranslinkSensorEntityDescription(
         key="next_service",
@@ -333,7 +351,16 @@ class TranslinkSensor(
 
     entity_description: TranslinkSensorEntityDescription
     _attr_has_entity_name = True
-    _unrecorded_attributes = frozenset({"legs", "departures", "arrivals"})
+    _unrecorded_attributes = frozenset(
+        {
+            "legs",
+            "departures",
+            "arrivals",
+            "next_action",
+            "vehicle_observation",
+            "progress_legs",
+        }
+    )
 
     def __init__(
         self,

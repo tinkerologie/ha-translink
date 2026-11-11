@@ -344,6 +344,95 @@ VehiclePositionStatus = Literal[
 ]
 
 
+type ProgressState = Literal[
+    "no_service", "not_started", "in_progress", "finished", "cancelled"
+]
+type ProgressSource = Literal["vehicle", "realtime_schedule", "schedule", "unknown"]
+type TrackingBasis = Literal["planner_first_itinerary", "pinned_itinerary"]
+type TransitionType = Literal["transfer_stop_reached", "alighting_stop_reached"]
+
+
+class ProgressStop(TranslinkApiModel):
+    """Public stop details safe to retain and expose in progress."""
+
+    id: str | None = None
+    name: str | None = None
+    platform: str | None = None
+
+
+class ProgressLeg(TranslinkApiModel):
+    """Scheduled leg details for the schematic progress view."""
+
+    index: int
+    mode: str
+    route: str | None = None
+    color: str | None = None
+    trip_id: str | None = None
+    origin: ProgressStop | None = None
+    destination: ProgressStop | None = None
+    scheduled_departure: datetime | None = None
+    scheduled_arrival: datetime | None = None
+    same_vehicle_continuation: bool = False
+
+
+class ProgressAction(TranslinkApiModel):
+    """Next transit action with its timing provenance."""
+
+    type: Literal["board", "transfer", "alight"]
+    leg_index: int
+    stop_id: str | None = None
+    stop_name: str | None = None
+    scheduled_time: datetime | None = None
+    predicted_time: datetime | None = None
+    time_source: Literal["scheduled", "realtime", "unknown"] = "unknown"
+    realtime_updated_at: datetime | None = None
+    skipped: bool = False
+    next_leg_route: str | None = None
+    next_leg_platform: str | None = None
+
+
+class VehicleStopObservation(TranslinkApiModel):
+    """Vehicle stop evidence with no geographic position."""
+
+    status: str | None = None
+    sequence: int
+    stop_id: str | None = None
+    stop_name: str | None = None
+    observed_at: datetime
+    fresh: bool
+    vehicle_id: str | None = None
+
+
+class ProgressTransition(TranslinkApiModel):
+    """Confirmed arrival of a vehicle at a leg's alighting occurrence."""
+
+    type: TransitionType
+    dedup_key: str
+    leg_index: int
+    stop_id: str
+    stop_name: str | None = None
+    observed_at: datetime
+    next_leg_route: str | None = None
+    next_leg_platform: str | None = None
+    next_leg_scheduled_departure: datetime | None = None
+    next_leg_predicted_departure: datetime | None = None
+
+
+class JourneyProgress(TranslinkApiModel):
+    """Journey progress based on an assumed itinerary."""
+
+    journey_id: str | None = None
+    state: ProgressState | None = None
+    active_leg_index: int | None = None
+    active_leg_source: ProgressSource = "unknown"
+    next_action: ProgressAction | None = None
+    vehicle_observation: VehicleStopObservation | None = None
+    legs: list[ProgressLeg] = Field(default_factory=list)
+    transitions: list[ProgressTransition] = Field(default_factory=list)
+    tracking_basis: TrackingBasis = "planner_first_itinerary"
+    planned_at: datetime | None = None
+
+
 class JourneySummary(TranslinkApiModel):
     """Normalized, typed presentation summary for Home Assistant entities."""
 
@@ -401,6 +490,7 @@ class JourneySummary(TranslinkApiModel):
     vehicle_tracked: bool = False
     polyline: str | None = None
     itinerary_legs: list[dict[str, Any]] = Field(default_factory=list)
+    progress: JourneyProgress | None = None
     last_updated: datetime | None = None
 
 

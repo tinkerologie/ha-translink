@@ -407,3 +407,25 @@ async def test_itinerary_calling_stops_contract(
     )
     assert "legs" not in recorded
     assert "polyline" in recorded
+
+
+def test_progress_sensor_preserves_attributes_when_unknown() -> None:
+    """An unresolved active leg uses HA's unknown state and keeps the itinerary."""
+    from custom_components.translink.api.models import JourneyProgress
+
+    entry = FakeEntry(mode=MODE_JOURNEY)
+    coordinator = FakeCoordinator(mode=MODE_JOURNEY, data=JourneySummary())
+    description = next(
+        item for item in JOURNEY_SENSORS if item.key == "journey_progress"
+    )
+    sensor = TranslinkSensor(coordinator, description, entry)
+
+    assert sensor.unique_id == f"{entry.entry_id}_journey_progress"
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes == {}
+    coordinator.data.progress = JourneyProgress(journey_id="itinerary")
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes["journey_id"] == "itinerary"
+    assert sensor.extra_state_attributes["active_leg_source"] == "unknown"
+    coordinator.data.progress.state = "in_progress"
+    assert sensor.native_value == "in_progress"

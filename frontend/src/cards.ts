@@ -70,7 +70,7 @@ const labels: Record<string, string> = {
   show_actions: "Show journey actions",
   calendar_entity: "Calendar for journey events",
 };
-function form(role: string, fields: string[]) {
+export function form(role: string, fields: string[]) {
   return {
     schema: [
       {
@@ -101,7 +101,7 @@ function form(role: string, fields: string[]) {
         : undefined,
   };
 }
-function chip(label: unknown, vehicle: unknown, color?: unknown) {
+export function chip(label: unknown, vehicle: unknown, color?: unknown) {
   const colors = routeColors(color);
   return html`<span
     class="chip"
@@ -210,6 +210,9 @@ export abstract class TranslinkCard extends LitElement {
       );
   }
   protected abstract renderContent(state: EntityState): TemplateResult;
+  protected stateIsAvailable(state: EntityState): boolean {
+    return available(state);
+  }
   protected override render() {
     const state = this.hass?.states[this.config.entity ?? ""];
     const entry = this.hass?.entities?.[this.config.entity ?? ""];
@@ -220,7 +223,7 @@ export abstract class TranslinkCard extends LitElement {
     if (!this.config.entity) message = strings.choose;
     else if (!this.hass?.states) message = strings.loading;
     else if (!state) message = strings.missing;
-    else if (!available(state)) message = strings.unavailable;
+    else if (!this.stateIsAvailable(state)) message = strings.unavailable;
     else if (!this.hass.entities) message = strings.loading;
     else if (
       entry?.platform !== "translink" ||
