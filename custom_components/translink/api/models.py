@@ -207,6 +207,11 @@ class JourneyPlanResult(TranslinkApiModel):
     notices: list[PlanNotice] = Field(default_factory=list)
 
 
+VehiclePositionStatus = Literal[
+    "live", "stale", "ambiguous", "no_position", "no_active_leg", "disabled"
+]
+
+
 class JourneySummary(TranslinkApiModel):
     """Normalized, typed presentation summary for Home Assistant entities."""
 
@@ -247,6 +252,14 @@ class JourneySummary(TranslinkApiModel):
     latest_disruption_title: str | None = None
     latest_disruption_description: str | None = None
     trip_id: str | None = None
+    active_leg_index: int | None = None
+    active_trip_id: str | None = None
+    active_route_name: str | None = None
+    active_route_code: str | None = None
+    active_route_color: str | None = None
+    active_vehicle_type: str | None = None
+    vehicle_position_status: VehiclePositionStatus = "no_active_leg"
+    vehicle_position_timestamp: str | None = None
     vehicle_id: str | None = None
     vehicle_label: str | None = None
     vehicle_latitude: float | None = None

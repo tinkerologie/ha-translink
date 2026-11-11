@@ -159,6 +159,16 @@ export const cardStyles = css`
     margin: var(--ha-space-3, 12px) 0;
     font-size: var(--ha-font-size-m, 14px);
   }
+  .active-vehicle {
+    padding-block: var(--ha-space-2, 8px);
+    border-top: 1px solid var(--divider-color);
+    border-bottom: 1px solid var(--divider-color);
+    font-size: var(--ha-font-size-m, 14px);
+    overflow-wrap: anywhere;
+  }
+  .leg-marker {
+    margin-inline-start: var(--ha-space-2, 8px);
+  }
   .metrics {
     display: flex;
     flex-wrap: wrap;

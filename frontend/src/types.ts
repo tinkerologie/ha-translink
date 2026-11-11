@@ -4,6 +4,21 @@ export interface EntityState {
   attributes: Record<string, unknown>;
   last_updated?: string;
 }
+export interface VehicleTrackerAttributes {
+  active_leg_index?: number | null;
+  route_name?: string | null;
+  route_code?: string | null;
+  vehicle_type?: string | null;
+  vehicle_label?: string | null;
+  position_status?:
+    | "live"
+    | "stale"
+    | "ambiguous"
+    | "no_position"
+    | "no_active_leg"
+    | "disabled";
+  position_timestamp?: string | null;
+}
 export interface RegistryEntry {
   entity_id: string;
   platform?: string;

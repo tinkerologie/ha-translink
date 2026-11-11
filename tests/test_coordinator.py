@@ -123,7 +123,7 @@ async def test_coordinator_update_journey_success(
         coordinator = TranslinkCoordinator(hass, journey_entry)
 
     coordinator.client.plan_journey = AsyncMock(return_value=plan_result)
-    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     summary = await coordinator._async_update_data()
@@ -186,7 +186,7 @@ async def test_coordinator_update_failure_raises(
     coordinator.client.plan_journey = AsyncMock(
         side_effect=TranslinkConnectionError("Network timeout")
     )
-    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     with pytest.raises(
@@ -229,10 +229,15 @@ async def test_coordinator_update_journey_without_vehicle_tracking(
         coordinator = TranslinkCoordinator(hass, entry)
 
     coordinator.client.plan_journey = AsyncMock(return_value=plan_result)
+    coordinator.client.fetch_vehicle_positions = AsyncMock()
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     summary = await coordinator._async_update_data()
     assert isinstance(summary, JourneySummary)
+    assert summary.vehicle_position_status == "disabled"
+    assert summary.vehicle_latitude is None
+    assert summary.vehicle_longitude is None
+    coordinator.client.fetch_vehicle_positions.assert_not_called()
 
 
 async def test_coordinator_update_unexpected_exception(
@@ -246,7 +251,7 @@ async def test_coordinator_update_unexpected_exception(
     coordinator.client.plan_journey = AsyncMock(
         side_effect=RuntimeError("System crash")
     )
-    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     with pytest.raises(
@@ -265,7 +270,7 @@ async def test_coordinator_unexpected_exception_without_message(
         coordinator = TranslinkCoordinator(hass, journey_entry)
 
     coordinator.client.plan_journey = AsyncMock(side_effect=KeyError())
-    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     with pytest.raises(
@@ -284,7 +289,7 @@ async def test_coordinator_api_error_without_message(
         coordinator = TranslinkCoordinator(hass, journey_entry)
 
     coordinator.client.plan_journey = AsyncMock(side_effect=TranslinkConnectionError())
-    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     with pytest.raises(
@@ -309,7 +314,7 @@ async def test_coordinator_planner_timeout_is_quiet_and_recovers(
     session.closed = False
     session.post.side_effect = TimeoutError()
     coordinator.client._session = session
-    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     with pytest.raises(
@@ -335,7 +340,7 @@ async def test_coordinator_update_journey_plan_fallback(
         coordinator = TranslinkCoordinator(hass, journey_entry)
 
     coordinator.client.plan_journey = AsyncMock(return_value=None)
-    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value={})
+    coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
     summary = await coordinator._async_update_data()

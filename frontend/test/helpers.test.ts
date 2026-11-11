@@ -21,6 +21,9 @@ describe("entity and departure contracts", () => {
     expect(result.next_departure?.entity_id).toBe(
       "sensor.renamed_journey_next_departure",
     );
+    expect(result.vehicle_tracker?.entity_id).toBe(
+      "device_tracker.renamed_train",
+    );
     expect(result.departures_board).toBeUndefined();
     expect(siblings(hass, "sensor.missing")).toEqual({});
     expect(stub(hass, "departures_board")).toEqual({
@@ -128,3 +131,17 @@ it("collapses duplicate planner departures but preserves different trip identiti
   ).toHaveLength(2);
   expect(normalizeDepartures([row, { ...row, platform: "1" }])).toHaveLength(2);
 });
+
+it.each(["unknown", "unavailable", "missing"])(
+  "resolves the renamed tracker with %s state for the card to handle",
+  (state) => {
+    const variant = structuredClone(hass);
+    const id = "device_tracker.renamed_train";
+    if (state === "missing") delete variant.states[id];
+    else variant.states[id]!.state = state;
+    const result = siblings(variant, "sensor.renamed_journey_itinerary");
+    expect(result.vehicle_tracker?.state).toBe(
+      state === "missing" ? undefined : state,
+    );
+  },
+);

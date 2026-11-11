@@ -28,10 +28,21 @@ for (const width of [320, 768, 1440]) {
       await expect(
         page.getByRole("heading", { name: "Service alerts" }),
       ).toBeVisible();
+      const tracker = page.locator("translink-journey-card .active-vehicle");
+      await expect(tracker.getByRole("status")).toHaveText(/Live position ·/);
+      await expect(tracker).toContainText("Train 103");
+      expect(
+        await tracker.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth,
+        ),
+      ).toBe(true);
       const toggle = page.getByRole("button", { name: /Journey details/ });
       await toggle.focus();
       await page.keyboard.press("Enter");
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect(page.locator(".leg[aria-current=step]")).toContainText(
+        "Active leg",
+      );
       await page
         .locator("translink-journey-card .stop-details summary")
         .click();
@@ -87,7 +98,7 @@ for (const width of [320, 768, 1440]) {
           },
         };
       }, title);
-      await expect(journey.getByRole("status")).toHaveText("No services found");
+      await expect(journey.locator(".state")).toHaveText("No services found");
       const strip = journey.locator(".alert-strip");
       await expect(strip).toBeVisible();
       await expect(strip).toHaveText(`1 service alert · ${title}`);

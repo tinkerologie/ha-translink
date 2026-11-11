@@ -839,7 +839,7 @@ async def test_fetch_vehicle_positions(sample_vehicle_positions_bytes: bytes) ->
     client = TranslinkClient(session=mock_session)
     vp = await client.fetch_vehicle_positions()
     assert len(vp) > 0
-    first_rec = next(iter(vp.values()))
+    first_rec = vp[0]
     assert first_rec.timestamp is not None
 
 
@@ -911,6 +911,7 @@ def test_build_journey_summary_with_delay_and_vehicle(
             longitude=153.028,
             bearing=180.0,
             speed=15.0,
+            timestamp=int(datetime(2026, 10, 5, 23, 0, 0, tzinfo=UTC).timestamp()),
         )
     }
 
@@ -1021,6 +1022,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
             trip_delay_seconds=180,
         )
     }
+    now = datetime(2026, 10, 5, 23, tzinfo=UTC)
     vehicle_positions = {
         "39040630": VehiclePositionRecord(
             entity_id="vp_base",
@@ -1032,6 +1034,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
             longitude=153.0228,
             speed=18.5,
             bearing=90.0,
+            timestamp=int(now.timestamp()),
         )
     }
 
@@ -1039,7 +1042,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
         plan,
         trip_updates=trip_updates,
         vehicle_positions=vehicle_positions,
-        now=BEFORE_DEPARTURE,
+        now=now,
     )
     assert summary.delay_mins == 3
     assert summary.vehicle_id == "DY37"
@@ -1054,7 +1057,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
         plan,
         trip_updates=trip_updates,
         vehicle_positions=vehicle_positions,
-        now=BEFORE_DEPARTURE,
+        now=now,
     )
     assert summary_mismatch.delay_mins is None
     assert summary_mismatch.vehicle_tracked is False
@@ -1174,12 +1177,12 @@ async def test_gtfs_fetch_errors_and_non_200() -> None:
     mock_session.closed = False
     c = TranslinkClient(session=mock_session)
 
-    assert await c.fetch_vehicle_positions() == {}
+    assert await c.fetch_vehicle_positions() == ()
     assert await c.fetch_trip_updates() == {}
     assert await c.fetch_alerts() == []
 
     mock_session.get.side_effect = aiohttp.ClientError("Network drop")
-    assert await c.fetch_vehicle_positions() == {}
+    assert await c.fetch_vehicle_positions() == ()
     assert await c.fetch_trip_updates() == {}
     assert await c.fetch_alerts() == []
 
@@ -1226,8 +1229,9 @@ def test_build_journey_summary_edge_cases(plan_response_data: dict[str, Any]) ->
     )
     assert walk_summary.next_service_name == "Walk"
     assert walk_summary.fare_price == 4.50
-    assert walk_summary.vehicle_latitude == -27.46
-    assert walk_summary.vehicle_longitude == 153.02
+    assert walk_summary.vehicle_latitude is None
+    assert walk_summary.vehicle_longitude is None
+    assert walk_summary.vehicle_position_status == "no_active_leg"
 
     # Concession fare
     concession_summary = build_journey_summary(
@@ -1559,6 +1563,6 @@ async def test_gtfs_feeds_degrade_on_timeout(where: str) -> None:
         mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
     c = TranslinkClient(session=mock_session)
 
-    assert await c.fetch_vehicle_positions() == {}
+    assert await c.fetch_vehicle_positions() == ()
     assert await c.fetch_trip_updates() == {}
     assert await c.fetch_alerts() == []

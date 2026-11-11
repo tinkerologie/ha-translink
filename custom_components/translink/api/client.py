@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, TypedDict
+from typing import Any, Final, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -43,7 +44,7 @@ from .gtfs_realtime import (
     extract_base_trip_id,
     parse_alerts,
     parse_trip_updates,
-    parse_vehicle_positions,
+    parse_vehicle_position_records,
 )
 from .models import (
     CallingStop,
@@ -59,6 +60,7 @@ from .models import (
     RealtimeStatus,
     StopRelationship,
     TripTimetable,
+    VehiclePositionStatus,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,6 +68,8 @@ _LOGGER = logging.getLogger(__name__)
 USER_AGENT = "HomeAssistant-Translink/2026.10.0"
 DELAYED_THRESHOLD_MINUTES = 3
 EARLY_THRESHOLD_MINUTES = -1
+VEHICLE_POSITION_MAX_AGE_SECONDS: Final = 90
+VEHICLE_POSITION_MAX_FUTURE_SKEW_SECONDS: Final = 30
 
 
 class TranslinkApiError(Exception):
@@ -109,6 +113,8 @@ SENSITIVE_KEYS: frozenset[str] = frozenset(
         "origin_longitude",
         "destination_latitude",
         "destination_longitude",
+        "vehicle_latitude",
+        "vehicle_longitude",
         "lat",
         "lng",
         "api_key",
@@ -353,7 +359,7 @@ class TranslinkClient:
                 f"Error connecting to Translink journey planner: {err}"
             ) from err
 
-    async def fetch_vehicle_positions(self) -> dict[str, VehiclePositionRecord]:
+    async def fetch_vehicle_positions(self) -> tuple[VehiclePositionRecord, ...]:
         """Fetch and parse live vehicle positions from Translink GTFS-RT feed."""
         session = await self._get_session()
         url = f"{self._gtfsrt_base_url}{GTFS_FEED_VEHICLE_POSITIONS}"
@@ -368,12 +374,12 @@ class TranslinkClient:
                     _LOGGER.warning(
                         "VehiclePositions feed returned status %s", response.status
                     )
-                    return {}
+                    return ()
                 data = await response.read()
-                return parse_vehicle_positions(data)
+                return parse_vehicle_position_records(data)
         except (TimeoutError, aiohttp.ClientError) as err:
             _LOGGER.debug("Failed to fetch live vehicle positions feed: %r", err)
-            return {}
+            return ()
 
     async def fetch_trip_updates(self) -> dict[str, TripUpdateRecord]:
         """Fetch and parse live trip delays from Translink GTFS-RT feed."""
@@ -450,6 +456,70 @@ def _match_trip_record(
             return None
         return record
     return None
+
+
+def vehicle_position_is_fresh(timestamp: float, now: datetime) -> bool:
+    """Check the vehicle fix against the wall clock."""
+    age = now.timestamp() - timestamp
+    return (
+        -VEHICLE_POSITION_MAX_FUTURE_SKEW_SECONDS
+        <= age
+        <= VEHICLE_POSITION_MAX_AGE_SECONDS
+    )
+
+
+def _match_vehicle_position(
+    leg: JourneyLeg,
+    positions: Mapping[str, VehiclePositionRecord] | Sequence[VehiclePositionRecord],
+    now: datetime,
+) -> tuple[VehiclePositionRecord | None, VehiclePositionStatus]:
+    """Accept a fresh fix only when one vehicle matches the active service."""
+    trip_id = leg.tripId
+    if not trip_id:
+        return None, "no_position"
+    base_id = extract_base_trip_id(trip_id)
+    expected_route = leg.legRoute.code if leg.legRoute else None
+    expected_prefix = expected_route.split("-", 1)[0] if expected_route else None
+    parts = trip_id.split("_")
+    service_date = parts[-2] if len(parts) > 2 else ""
+    if len(service_date) != 8 or not service_date.isdigit():
+        service_date = ""
+
+    records = positions.values() if isinstance(positions, Mapping) else positions
+    saw_match = False
+    fresh: dict[tuple[str, str | int], tuple[int, VehiclePositionRecord]] = {}
+    for record in records:
+        if record.trip_id != trip_id and (
+            not base_id or extract_base_trip_id(record.trip_id) != base_id
+        ):
+            continue
+        if (
+            expected_prefix
+            and record.route_id
+            and expected_prefix != record.route_id.split("-", 1)[0]
+        ):
+            continue
+        if service_date and record.start_date and service_date != record.start_date:
+            continue
+        saw_match = True
+        timestamp = record.timestamp
+        if timestamp is None or not vehicle_position_is_fresh(timestamp, now):
+            continue
+        if record.vehicle_id:
+            identity: tuple[str, str | int] = ("vehicle", record.vehicle_id)
+        elif record.entity_id:
+            identity = ("entity", record.entity_id)
+        else:
+            identity = ("record", id(record))
+        previous = fresh.get(identity)
+        if previous is None or timestamp > previous[0]:
+            fresh[identity] = (timestamp, record)
+
+    if len(fresh) > 1:
+        return None, "ambiguous"
+    if fresh:
+        return next(iter(fresh.values()))[1], "live"
+    return None, "stale" if saw_match else "no_position"
 
 
 def _stop_key(value: str | None) -> str:
@@ -902,9 +972,34 @@ def _predicted_boundary(
     return scheduled + timedelta(seconds=endpoint.delay_seconds)
 
 
+def _active_transit_leg(
+    legs: list[JourneyLeg],
+    alighting_predictions: dict[int, _EndpointPrediction],
+    now: datetime,
+) -> tuple[int | None, JourneyLeg | None]:
+    """Select the first transit leg whose effective arrival has not passed."""
+    for index, leg in enumerate(legs):
+        if leg.travelMode.lower() == "walk":
+            continue
+        scheduled = parse_iso_datetime(leg.arrivalTimeUtc)
+        if scheduled is None:
+            return index, leg
+        prediction = alighting_predictions[index]
+        predicted = (
+            _predicted_boundary(scheduled, prediction)
+            if prediction.source == "stop_event"
+            else None
+        )
+        if now <= max(scheduled, predicted or scheduled):
+            return index, leg
+    return None, None
+
+
 def build_journey_summary(
     plan: JourneyPlanResult,
-    vehicle_positions: dict[str, VehiclePositionRecord] | None = None,
+    vehicle_positions: Mapping[str, VehiclePositionRecord]
+    | Sequence[VehiclePositionRecord]
+    | None = None,
     trip_updates: dict[str, TripUpdateRecord] | None = None,
     fare_preference: str = "Adult",
     origin_name_fallback: str = "",
@@ -912,6 +1007,7 @@ def build_journey_summary(
     now: datetime | None = None,
     *,
     trip_timetables: dict[str, TripTimetable] | None = None,
+    track_vehicle: bool = True,
 ) -> JourneySummary:
     """Build a unified presentation summary for Home Assistant sensors."""
     if now is None:
@@ -922,6 +1018,7 @@ def build_journey_summary(
     if itinerary is None:
         return JourneySummary(
             status="no_service",
+            vehicle_position_status="no_active_leg" if track_vehicle else "disabled",
             origin_name=origin_name_fallback,
             destination_name=destination_name_fallback,
             last_updated=now,
@@ -1011,36 +1108,12 @@ def build_journey_summary(
         fare_price = itinerary.fares[0].price
         fare_type_chosen = itinerary.fares[0].name
 
-    # Correlate live vehicle tracking via VehiclePositions
-    veh_id: str | None = None
-    veh_label: str | None = None
-    veh_lat: float | None = None
-    veh_lng: float | None = None
-    veh_bearing: float | None = None
-    veh_speed: float | None = None
-    veh_tracked = False
-
-    vp = _match_trip_record(
-        trip_id, vehicle_positions, expected_route_id=next_service_route_code
-    )
-    if vp is not None:
-        veh_id = vp.vehicle_id or vp.entity_id
-        veh_label = vp.vehicle_label
-        veh_lat = vp.latitude
-        veh_lng = vp.longitude
-        veh_bearing = vp.bearing
-        veh_speed = vp.speed
-        veh_tracked = True
-    elif primary_leg and primary_leg.origin and primary_leg.origin.position:
-        # Fallback to origin platform/station coordinates
-        veh_lat = primary_leg.origin.position.lat
-        veh_lng = primary_leg.origin.position.lng
-
     # Detailed legs representation
     legs_summary: list[dict[str, Any]] = []
     boarding = alighting = _EndpointPrediction()
+    alighting_predictions: dict[int, _EndpointPrediction] = {}
     cancelled = False
-    for leg in itinerary.legs:
+    for index, leg in enumerate(itinerary.legs):
         matched_update = _match_trip_record(
             leg.tripId, trip_updates, leg.legRoute.code if leg.legRoute else None
         )
@@ -1069,16 +1142,18 @@ def build_journey_summary(
                     freshness,
                     arrival=False,
                 )
+            leg_alighting = _endpoint_prediction(
+                leg,
+                matched_update,
+                timetable,
+                scheduled_calls,
+                updated_at,
+                freshness,
+                arrival=True,
+            )
+            alighting_predictions[index] = leg_alighting
             if leg is transit_legs[-1]:
-                alighting = _endpoint_prediction(
-                    leg,
-                    matched_update,
-                    timetable,
-                    scheduled_calls,
-                    updated_at,
-                    freshness,
-                    arrival=True,
-                )
+                alighting = leg_alighting
         leg_cancelled = schedule_relationship in (TRIP_CANCELED, TRIP_DELETED)
         cancelled |= leg_cancelled
         legs_summary.append(
@@ -1154,6 +1229,20 @@ def build_journey_summary(
     ):
         evidence = alighting
 
+    active_index, active_leg = _active_transit_leg(
+        itinerary.legs, alighting_predictions, now
+    )
+    active_route = active_leg.legRoute if active_leg is not None else None
+    active_mode = active_leg.travelMode if active_leg is not None else None
+    vehicle = None
+    position_status: VehiclePositionStatus = "no_active_leg"
+    if not track_vehicle:
+        position_status = "disabled"
+    elif active_leg is not None:
+        vehicle, position_status = _match_vehicle_position(
+            active_leg, vehicle_positions or (), now
+        )
+
     return JourneySummary(
         status=status,
         departure_time=departure_time,
@@ -1186,13 +1275,29 @@ def build_journey_summary(
         boarding_relationship=boarding.relationship,
         alighting_skipped=alighting.relationship == "skipped",
         trip_id=trip_id,
-        vehicle_id=veh_id,
-        vehicle_label=veh_label,
-        vehicle_latitude=veh_lat,
-        vehicle_longitude=veh_lng,
-        vehicle_bearing=veh_bearing,
-        vehicle_speed=veh_speed,
-        vehicle_tracked=veh_tracked,
+        active_leg_index=active_index,
+        active_trip_id=active_leg.tripId if active_leg is not None else None,
+        active_route_name=active_route.name
+        if active_route is not None
+        else active_mode,
+        active_route_code=active_route.code if active_route is not None else None,
+        active_route_color=active_route.hexColorCode
+        if active_route is not None
+        else None,
+        active_vehicle_type=active_route.vehicle
+        if active_route is not None
+        else active_mode,
+        vehicle_position_status=position_status,
+        vehicle_position_timestamp=_prediction_time(vehicle.timestamp)
+        if vehicle
+        else None,
+        vehicle_id=(vehicle.vehicle_id or vehicle.entity_id) if vehicle else None,
+        vehicle_label=vehicle.vehicle_label if vehicle else None,
+        vehicle_latitude=vehicle.latitude if vehicle else None,
+        vehicle_longitude=vehicle.longitude if vehicle else None,
+        vehicle_bearing=vehicle.bearing if vehicle else None,
+        vehicle_speed=vehicle.speed if vehicle else None,
+        vehicle_tracked=position_status == "live",
         polyline=polyline,
         itinerary_legs=legs_summary,
         last_updated=now,

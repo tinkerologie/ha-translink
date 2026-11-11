@@ -486,3 +486,47 @@ def test_stop_predictions_preserve_absence_and_repeated_visits() -> None:
         is None
     )
     assert _parse_stop_update(_encode_field(99, 0, 1)).stop_id is None
+
+
+def test_vehicle_feed_preserves_colliding_trips_and_service_context() -> None:
+    """Keep all candidates, including multiple vehicles on one full trip ID."""
+    from custom_components.translink.client import parse_vehicle_position_records
+
+    def entity(index: int, trip: str, timestamp: int | None = None) -> bytes:
+        descriptor = (
+            _encode_field(1, 2, trip)
+            + _encode_field(2, 2, "05:00:00")
+            + _encode_field(3, 2, "20261006")
+        )
+        position = _encode_field(1, 5, -27.47) + _encode_field(2, 5, 153.02)
+        vehicle = (
+            _encode_field(1, 2, descriptor)
+            + _encode_field(2, 2, position)
+            + _encode_field(8, 2, _encode_field(1, 2, f"BUS{index}"))
+        )
+        if timestamp is not None:
+            vehicle += _encode_field(5, 0, timestamp)
+        return _encode_field(
+            2, 2, _encode_field(1, 2, f"E{index}") + _encode_field(4, 2, vehicle)
+        )
+
+    feed = (
+        entity(1, "123-one", 1791262800) + entity(2, "123-one") + entity(3, "123-two")
+    )
+    first, second, third, unknown = parse_vehicle_position_records(
+        feed + entity(4, " ")
+    )
+    assert [record.vehicle_id for record in (first, second, third)] == [
+        "BUS1",
+        "BUS2",
+        "BUS3",
+    ]
+    assert first.start_date == "20261006"
+    assert first.start_time == "05:00:00"
+    assert first.timestamp == 1791262800
+    assert second.timestamp is None
+    aliases = parse_vehicle_positions(feed)
+    assert aliases["123"] == first
+    assert aliases["123-one"] == second
+    assert aliases["123-two"] == third
+    assert parse_vehicle_positions(entity(4, " "))[" "] == unknown

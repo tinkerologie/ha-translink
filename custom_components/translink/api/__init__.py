@@ -16,6 +16,7 @@ from .gtfs_realtime import (
     VehiclePositionRecord,
     parse_alerts,
     parse_trip_updates,
+    parse_vehicle_position_records,
     parse_vehicle_positions,
 )
 from .models import (
@@ -46,6 +47,7 @@ __all__ = [
     "parse_alerts",
     "parse_iso_datetime",
     "parse_trip_updates",
+    "parse_vehicle_position_records",
     "parse_vehicle_positions",
     "redact_sensitive",
 ]

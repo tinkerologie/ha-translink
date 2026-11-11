@@ -224,7 +224,7 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         vehicle_task = (
             self.client.fetch_vehicle_positions()
             if self.track_vehicle
-            else asyncio.sleep(0, result={})
+            else asyncio.sleep(0, result=())
         )
         trip_task = self.client.fetch_trip_updates()
 
@@ -239,7 +239,8 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         summary = build_journey_summary(
             plan=plan_res,
             trip_timetables=timetables,
-            vehicle_positions=vp_res if isinstance(vp_res, dict) else {},
+            vehicle_positions=vp_res,
+            track_vehicle=self.track_vehicle,
             trip_updates=tu_res if isinstance(tu_res, dict) else {},
             fare_preference=self.fare_preference,
             origin_name_fallback=self.start_name,

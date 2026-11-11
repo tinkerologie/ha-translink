@@ -22,7 +22,13 @@ import {
 } from "./helpers";
 import { strings } from "./strings";
 import { cardStyles } from "./styles";
-import type { CardConfig, EntityState, HomeAssistant, Row } from "./types";
+import type {
+  CardConfig,
+  EntityState,
+  HomeAssistant,
+  Row,
+  VehicleTrackerAttributes,
+} from "./types";
 
 const labels: Record<string, string> = {
   entity: "Translink entity",
@@ -241,10 +247,18 @@ export class JourneyCard extends TranslinkCard {
   protected icon = "mdi:routes";
   protected renderContent(state: EntityState) {
     const related = this.related;
+    const tracker = related.vehicle_tracker;
+    // GPS trackers retain provenance attributes in the unknown state.
+    const vehicle =
+      tracker?.state === "unavailable"
+        ? undefined
+        : (tracker?.attributes as VehicleTrackerAttributes | undefined);
+    const activeLeg = number(vehicle?.active_leg_index);
     const legs = rows(state.attributes.legs);
     if (value(related.status) === "no_service" || !legs.length)
       return html`
         <div class="state" role="status">${strings.noServices}</div>
+        ${this.renderActiveVehicle(vehicle)}
         ${this.renderDisruptionStrip(related.disruptions)}
       `;
     const first = legs[0]!;
@@ -313,6 +327,7 @@ export class JourneyCard extends TranslinkCard {
         <ha-icon icon="mdi:clock-outline" aria-hidden="true"></ha-icon
         >${statusLabel(value(related.status), number(value(related.delay)))}
       </div>
+      ${this.renderActiveVehicle(vehicle)}
       <div class="metrics">
         ${duration !== undefined
           ? html`<span class="metric"
@@ -361,10 +376,40 @@ export class JourneyCard extends TranslinkCard {
       </button>
       ${this.expanded
         ? html`<ol class="legs" id="journey-legs">
-            ${legs.map((leg) => this.renderLeg(leg))}
+            ${legs.map((leg, index) =>
+              this.renderLeg(leg, index === activeLeg),
+            )}
           </ol>`
         : html`<div id="journey-legs" hidden></div>`}
     `;
+  }
+  private renderActiveVehicle(vehicle?: VehicleTrackerAttributes) {
+    if (!vehicle) return nothing;
+    const status = vehicle.position_status;
+    const labels = strings.vehiclePosition;
+    const provenance =
+      status && Object.hasOwn(labels, status)
+        ? labels[status]
+        : labels.no_position;
+    const route =
+      text(vehicle.route_name) ??
+      text(vehicle.route_code) ??
+      text(vehicle.vehicle_type);
+    const label = status === "live" ? text(vehicle.vehicle_label) : undefined;
+    const timestamp =
+      status === "live" ? validTime(vehicle.position_timestamp) : undefined;
+    return html`<div class="active-vehicle">
+      <div>
+        <strong>${strings.activeVehicle}</strong>
+        ${route ? html`<span> · ${route}</span>` : nothing}
+        ${label ? html`<span> · ${label}</span>` : nothing}
+      </div>
+      <span class="secondary" role="status"
+        >${provenance}${timestamp
+          ? ` · ${this.formatTime(timestamp)}`
+          : ""}</span
+      >
+    </div>`;
   }
   private renderDisruptionStrip(state?: EntityState) {
     const alerts = number(value(state));
@@ -381,7 +426,7 @@ export class JourneyCard extends TranslinkCard {
         </div>`
       : nothing;
   }
-  private renderLeg(leg: Row) {
+  private renderLeg(leg: Row, active: boolean) {
     const calls = rows(leg.callingStops);
     const source = text(leg.callingStopsSource);
     const showCalls =
@@ -389,8 +434,11 @@ export class JourneyCard extends TranslinkCard {
       ["scheduled", "scheduled_with_realtime", "realtime_partial"].includes(
         source ?? "",
       );
-    return html`<li class="leg">
+    return html`<li class="leg" aria-current=${active ? "step" : nothing}>
       ${chip(leg.route ?? leg.travelMode, leg.travelMode, leg.routeColor)}
+      ${active
+        ? html`<span class="secondary leg-marker">${strings.activeLeg}</span>`
+        : nothing}
       <div class="endpoint">
         <div>
           <div class="label">${stopName(leg.origin) ?? "Origin"}</div>

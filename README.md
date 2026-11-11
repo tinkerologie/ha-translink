@@ -239,9 +239,8 @@ Increment `v` after updating the integration to refresh a manually registered
 resource. If a card is missing, check **Settings → Dashboards → Resources**, verify
 that the bundled file was copied with the integration, and refresh the browser.
 The cards show entity information only; they never contact Translink directly.
-Use Home Assistant's native map card below for vehicle positions. The tracker may
-fall back to the origin station when live GPS is unavailable; a map position alone
-is not evidence of live tracking.
+The Journey card shows the active leg and the provenance of its vehicle position.
+Use Home Assistant's native map card below to see the live position.
 
 Expand **Journey details** → **Calling stops** to see the supplied timetable.
 Scheduled calling times remain separate from predicted times and reported delay.
@@ -292,7 +291,29 @@ cards:
 
 ### 2. Live Vehicle Map Card
 
-Display the active train, bus, or ferry in real time as it moves toward your destination:
+The tracker selects the first transit leg whose scheduled arrival has yet to pass.
+An applicable real-time alighting prediction can extend that leg. Before boarding
+it tracks the first service, during a transfer it tracks the next service, and
+after the final transit leg it clears the active vehicle. A missing arrival time
+keeps that leg active.
+
+The vehicle must match the active trip and agree with the route and service date
+when both feeds supply them. A live fix needs a vehicle timestamp that is at most
+90 seconds old and no more than 30 seconds ahead of the current time. Positions
+expire between updates. If multiple fresh vehicles match, the tracker clears the
+position.
+
+The `position_status` attribute is `live`, `stale`, `ambiguous`, `no_position`,
+`no_active_leg`, or `disabled`. A missing timestamp is treated as stale. The
+tracker publishes coordinates only while live and shows `unknown` without a live
+fix. Turning off tracking removes the tracker entity.
+
+Home Assistant's recorder excludes vehicle coordinates, accuracy, motion,
+vehicle labels and IDs, position timestamps, and the list of matching zones.
+Home Assistant can still record the tracker state, including the active zone name.
+Diagnostics redact vehicle coordinates.
+
+Display the live position on a native map card:
 
 ```yaml
 type: map
@@ -300,7 +321,6 @@ title: Live Transit Vehicle Tracker
 entities:
   - entity: device_tracker.daily_commute_live_vehicle
     name: Active Vehicle
-hours_to_show: 1
 default_zoom: 13
 ```
 
