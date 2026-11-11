@@ -3,12 +3,12 @@
     "step": {
       "user": {
         "title": "Translink Queensland",
-        "description": "Choose whether to track a Journey between an origin and destination, or a Station/Stop departure board.",
+        "description": "Track a journey or create a departure board. Find a stop by name, stop number, or location.",
         "data": {
           "mode": "Mode"
         },
         "data_description": {
-          "mode": "Select Journey to track commute between two places, or Stop to track upcoming departures from a station."
+          "mode": "Choose Journey to track a trip, Stop / Station to search by name or number, or Nearby stop to search around a location."
         }
       },
       "journey": {
@@ -67,6 +67,37 @@
           "stop_location_id": "Select the stop or station for this departure board."
         }
       },
+      "nearby": {
+        "title": "Find nearby stops",
+        "description": "Choose a Home Assistant zone or a map point. Home Assistant sends the selected coordinates to Translink once per lookup and discards them after the lookup.",
+        "menu_options": {
+          "nearby_zone": "Choose a Home Assistant zone",
+          "nearby_point": "Choose a point on the map"
+        }
+      },
+      "nearby_zone": {
+        "title": "Choose a zone",
+        "description": "Find stops near the centre of the selected zone.",
+        "data": {
+          "zone": "Home Assistant zone"
+        }
+      },
+      "nearby_point": {
+        "title": "Choose a map point",
+        "description": "Move the marker to the location you want to search.",
+        "data": {
+          "location": "Map point"
+        }
+      },
+      "nearby_select": {
+        "title": "Choose a nearby stop",
+        "description": "Confirm the exact stop ID for this departure board.",
+        "data": {
+          "stop_location_id": "Nearby stop",
+          "name": "Board Name",
+          "transport_modes": "Transport Modes"
+        }
+      },
       "reconfigure": {
         "title": "Reconfigure Translink",
         "description": "Update location and transport settings for this Translink entry.",
@@ -88,6 +119,8 @@
       "no_board_location": "No stop or station matched. Enter a stop or station name, or a stop number.",
       "invalid_location_selection": "Choose a location from the search results.",
       "region_mismatch": "Choose a live feed region that serves this journey, or choose schedule only.",
+      "location_unavailable": "Choose a zone or map point with valid coordinates.",
+      "no_nearby_stops": "Translink found no nearby stops for this location.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {

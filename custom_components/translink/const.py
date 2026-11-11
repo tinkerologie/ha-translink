@@ -14,6 +14,7 @@ CARD_URL: Final = f"/translink_cards/{CARD_FILENAME}"
 CONF_MODE: Final = "mode"
 MODE_JOURNEY: Final = "journey"
 MODE_STOP: Final = "stop"
+SETUP_NEARBY_STOP: Final = "nearby_stop"
 
 CONF_NAME: Final = "name"
 CONF_START_LOCATION_ID: Final = "start_location_id"
@@ -68,6 +69,7 @@ LOCATION_PLACE_PREFIX: Final = "PL:"
 ENDPOINT_LOCATION_SEARCH: Final = "/api/location/search"
 ENDPOINT_PLAN: Final = "/api/plan"
 ENDPOINT_STOP_BY_GEOLOCATION: Final = "/api/stop/bygeolocation"
+NEARBY_RESULT_LIMIT: Final = 10
 ENDPOINT_STOP_TIMETABLE: Final = "/api/stop/timetable/"
 STOP_TIMETABLE_MAX_BYTES: Final = 1024 * 1024
 
@@ -157,6 +159,7 @@ def get_vehicle_icon(vehicle: str | None, default: str = "mdi:train-bus") -> str
 
 # Chosen request/cache bounds with headroom; these are not upstream service limits.
 ENDPOINT_TRIP_PAGE: Final = "/plan-your-journey/timetables/trip/"
+PUBLIC_TRIP_TIMETABLE_BASE_URL: Final = f"{JP_API_BASE_URL}{ENDPOINT_TRIP_PAGE}"
 TRIP_PAGE_TIMEOUT: Final = 10
 TRIP_PAGE_MAX_BYTES: Final = 1024 * 1024
 TRIP_PAGE_CONCURRENCY: Final = 2

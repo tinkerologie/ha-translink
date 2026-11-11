@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import traceback
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
+import aiohttp
 import pytest
 
 from custom_components.translink.api.client import (
@@ -652,6 +655,61 @@ def test_build_journey_summary_with_plan(
     assert summary_concession.fare_price == 0.5
 
 
+def test_journey_share_flags_require_public_transit_stop_provenance() -> None:
+    """Address and untyped endpoints never receive public-stop provenance."""
+    plan = JourneyPlanResult.model_validate(
+        {
+            "itineraries": [
+                {
+                    "legs": [
+                        {
+                            "travelMode": "Walk",
+                            "origin": {"id": "AD:example", "name": "14 Private Street"},
+                            "destination": {
+                                "id": "SI:1",
+                                "name": "Public station",
+                                "stopType": "Train",
+                            },
+                        },
+                        {
+                            "travelMode": "Train",
+                            "origin": {
+                                "id": "SI:1",
+                                "name": "Public station",
+                                "stopType": "Train",
+                            },
+                            "destination": {
+                                "name": "Unverified location",
+                                "stopType": "Train",
+                            },
+                        },
+                        {
+                            "travelMode": "Train",
+                            "origin": {"id": "SI:2", "name": "Untyped location"},
+                            "destination": {
+                                "id": "AD:example",
+                                "name": "14 Private Street",
+                                "stopType": "Address",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    legs = build_journey_summary(plan).itinerary_legs
+    assert [
+        (leg["originIsPublicStop"], leg["destinationIsPublicStop"]) for leg in legs
+    ] == [(False, False), (True, False), (False, False)]
+    assert all(leg["timetableUrl"] is None for leg in legs)
+    assert {
+        leg[endpoint]
+        for leg in legs
+        for endpoint in ("origin", "destination")
+        if leg[f"{endpoint}IsPublicStop"]
+    } == {"Public station"}
+
+
 def test_build_journey_summary_empty() -> None:
     """Test build_journey_summary when no itineraries are returned."""
     plan = JourneyPlanResult(itineraries=[])
@@ -860,6 +918,124 @@ async def test_get_stops_by_geolocation() -> None:
     stops = await client.get_stops_by_geolocation(-27.46, 153.02)
     assert len(stops) == 1
     assert stops[0]["id"] == "SI:123"
+
+
+async def test_find_nearby_stops_returns_bounded_coordinate_free_results() -> None:
+    """Order valid rows by distance and exact ID before applying the local cap."""
+    # Synthetic payload using public City Hall IDs from the issue plan. The plan's
+    # original observation used disabled TLS verification and was unauthenticated.
+    rows = json.loads(
+        (Path(__file__).parent / "fixtures" / "nearby_response.json").read_text()
+    )
+    mock_response = MagicMock(status=200, json=AsyncMock(return_value=rows))
+    mock_session = MagicMock(closed=False)
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+    client = TranslinkClient(session=mock_session)
+
+    stops = await client.find_nearby_stops(-26.345678, 152.456789, limit=4)
+
+    assert mock_session.get.call_args.kwargs["params"] == {
+        "lat": "-26.345678",
+        "lng": "152.456789",
+        "maxResults": "4",
+    }
+    assert [stop.id for stop in stops] == [
+        "SI:000014",
+        "SI:000138",
+        "SI:900001",
+        "SI:010783",
+    ]
+    assert stops[0].model_dump() == {
+        "id": "SI:000014",
+        "description": "King George Square platform 1",
+        "distanceM": 31,
+        "stopId": "000014",
+        "stopType": "Bus",
+        "station": {"id": "ST:place_kgbs", "name": "King George Square"},
+    }
+
+
+@pytest.mark.parametrize("payload", [[], {"unexpected": "object"}])
+async def test_find_nearby_stops_returns_no_results_for_empty_payload(payload) -> None:
+    """Treat an empty or non-list payload as an empty result set."""
+    mock_response = MagicMock(status=200, json=AsyncMock(return_value=payload))
+    mock_session = MagicMock(closed=False)
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    assert await TranslinkClient(session=mock_session).find_nearby_stops(0, 0) == []
+
+
+@pytest.mark.parametrize(
+    ("lat", "lng", "limit"),
+    [
+        (91, 10, 10),
+        (-91, 10, 10),
+        (30, 181, 10),
+        (30, -181, 10),
+        (float("inf"), 10, 10),
+        (30, float("nan"), 10),
+        (True, 10, 10),
+        (30, False, 10),
+        ("30", 10, 10),
+        (30, "10", 10),
+        (30, 10, 0),
+        (30, 10, -1),
+        (30, 10, 1.5),
+        (30, 10, True),
+    ],
+)
+async def test_find_nearby_stops_rejects_invalid_requests(lat, lng, limit) -> None:
+    """Keep invalid coordinates and limits off the network."""
+    mock_session = MagicMock(closed=False)
+    client = TranslinkClient(session=mock_session)
+    with pytest.raises(ValueError):
+        await client.find_nearby_stops(lat, lng, limit)
+    mock_session.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type"),
+    [
+        ("http_status", TranslinkResponseError),
+        ("invalid_json", TranslinkResponseError),
+        ("client_error", TranslinkConnectionError),
+        ("timeout", TranslinkConnectionError),
+    ],
+)
+async def test_find_nearby_stops_sanitises_failures(
+    failure: str, error_type: type[Exception], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Remove coordinate-bearing response and transport errors from the chain."""
+    lat, lng = -26.345678, 152.456789
+    echoed_location = f"lat={lat}&lng={lng}"
+    mock_response = MagicMock(
+        status=503 if failure == "http_status" else 200,
+        text=AsyncMock(return_value=echoed_location),
+        json=AsyncMock(side_effect=json.JSONDecodeError(echoed_location, "", 0)),
+    )
+    mock_session = MagicMock(closed=False)
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+    if failure == "client_error":
+        mock_session.get.side_effect = aiohttp.ClientError(echoed_location)
+    elif failure == "timeout":
+        mock_session.get.side_effect = TimeoutError(echoed_location)
+
+    with pytest.raises(
+        error_type, match="Unable to find nearby Translink stops"
+    ) as err:
+        await TranslinkClient(session=mock_session).find_nearby_stops(lat, lng)
+
+    assert err.value.__cause__ is None
+    assert err.value.__context__ is None
+    error_details = "".join(traceback.format_exception(err.value)) + caplog.text
+    assert str(lat) not in error_details
+    assert str(lng) not in error_details
+    mock_response.text.assert_not_awaited()
+    if failure == "http_status":
+        mock_response.json.assert_not_awaited()
 
 
 @pytest.mark.asyncio

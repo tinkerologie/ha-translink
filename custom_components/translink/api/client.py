@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -28,6 +30,8 @@ from ..const import (
     MAX_ALTERNATIVE_LEGS,
     MAX_ALTERNATIVE_NOTICES,
     MAX_ALTERNATIVES_LIMIT,
+    NEARBY_RESULT_LIMIT,
+    PUBLIC_TRIP_TIMETABLE_BASE_URL,
     REALTIME_FEED_REGIONS,
     REALTIME_MAX_AGE_SECONDS,
     REALTIME_MAX_FUTURE_SKEW_SECONDS,
@@ -62,8 +66,10 @@ from .models import (
     JourneyStatus,
     JourneySummary,
     LocationSearchResult,
+    NearbyStop,
     PlanNotice,
     RealtimeStatus,
+    StopInfo,
     StopRelationship,
     StopSummary,
     StopTimetable,
@@ -92,6 +98,20 @@ class TranslinkConnectionError(TranslinkApiError):
 
 class TranslinkResponseError(TranslinkApiError):
     """Raised when Translink returns an error status code."""
+
+
+def nearby_coordinates(lat: object, lng: object) -> tuple[float, float] | None:
+    """Accept numeric coordinates within the finite latitude and longitude ranges."""
+    if (
+        not isinstance(lat, (int, float))
+        or not isinstance(lng, (int, float))
+        or isinstance(lat, bool)
+        or isinstance(lng, bool)
+        or not -90 <= lat <= 90
+        or not -180 <= lng <= 180
+    ):
+        return None
+    return float(lat), float(lng)
 
 
 def calculate_plan_hash(query_string: str) -> int:
@@ -157,6 +177,21 @@ def redact_sensitive(data: Any) -> Any:
     if isinstance(data, list):
         return [redact_sensitive(item) for item in data]
     return data
+
+
+def public_trip_timetable_url(trip_id: str | None) -> str | None:
+    """Build a link using the public origin and a single safe trip ID."""
+    if trip_id is None or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", trip_id) is None:
+        return None
+    return f"{PUBLIC_TRIP_TIMETABLE_BASE_URL}{trip_id}"
+
+
+def _is_public_stop(stop: StopInfo | None) -> bool:
+    return bool(
+        stop is not None
+        and (stop.id or "").startswith("SI:")
+        and (stop.stopType or "").strip()
+    )
 
 
 class TranslinkClient:
@@ -335,6 +370,38 @@ class TranslinkClient:
             raise TranslinkConnectionError(
                 f"Error connecting to Translink geolocation stop search: {err}"
             ) from err
+
+    async def find_nearby_stops(
+        self, lat: float, lng: float, limit: int = NEARBY_RESULT_LIMIT
+    ) -> list[NearbyStop]:
+        """Return the nearest valid stops without retaining positions."""
+        if nearby_coordinates(lat, lng) is None:
+            del lat, lng
+            raise ValueError("Invalid nearby stop search coordinates")
+        if type(limit) is not int or limit < 1:
+            del lat, lng
+            raise ValueError("Nearby stop search requires a positive limit")
+
+        try:
+            rows = await self.get_stops_by_geolocation(lat, lng, max_results=limit)
+        except TranslinkApiError as err:
+            error_type = type(err)
+        except (json.JSONDecodeError, UnicodeError):
+            error_type = TranslinkResponseError
+        else:
+            stops: list[NearbyStop] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    stops.append(NearbyStop.model_validate(row))
+                except ValidationError:
+                    continue
+            return sorted(stops, key=lambda stop: (stop.distanceM, stop.id))[:limit]
+
+        # Leave the handler so the original request error is absent from __context__.
+        del lat, lng
+        raise error_type("Unable to find nearby Translink stops") from None
 
     def build_plan_request(
         self,
@@ -1608,6 +1675,12 @@ def build_journey_summary(
                 "skippedStops": [s.name for s in leg.skippedStops],
                 "callingStops": [stop.model_dump() for stop in calls],
                 "callingStopsSource": source,
+                "timetableUrl": public_trip_timetable_url(leg.tripId)
+                if source in ("scheduled", "scheduled_with_realtime")
+                else None,
+                "originIsPublicStop": is_transit and _is_public_stop(leg.origin),
+                "destinationIsPublicStop": is_transit
+                and _is_public_stop(leg.destination),
                 "callingStopsRealtimeUpdatedAt": updated,
                 **(
                     {

@@ -79,6 +79,12 @@ def test_authentic_schedule_and_leg_slice() -> None:
     summary = build_journey_summary(plan, trip_timetables={TRIP_ID: timetable})
     leg = summary.itinerary_legs[0]
     assert leg["callingStopsSource"] == "scheduled"
+    assert leg["timetableUrl"] == (
+        "https://jp.translink.com.au/plan-your-journey/timetables/trip/"
+        "s_T_RPSP_8_20261026_39766414"
+    )
+    assert leg["originIsPublicStop"] is True
+    assert leg["destinationIsPublicStop"] is True
     assert len(leg["callingStops"]) == 20
     assert leg["callingStops"][1]["name"].startswith("Rothwell")
     assert leg["callingStops"][1]["scheduledTimeUtc"] == "2026-10-26T07:50:00Z"
