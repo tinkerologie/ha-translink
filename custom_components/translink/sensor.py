@@ -32,6 +32,7 @@ from .const import (
     get_vehicle_icon,
 )
 from .coordinator import TranslinkCoordinator
+from .window_coordinator import WindowCoordinator, WindowData
 
 if TYPE_CHECKING:
     from . import TranslinkConfigEntry
@@ -361,9 +362,16 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Translink sensors from config entry."""
-    coordinator: TranslinkCoordinator = (
+    coordinator: TranslinkCoordinator | WindowCoordinator = (
         getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
     )
+
+    if isinstance(coordinator, WindowCoordinator):
+        async_add_entities(
+            TranslinkWindowSensor(coordinator, description)
+            for description in WINDOW_SENSORS
+        )
+        return
 
     if coordinator.mode == MODE_NOTICES:
         async_add_entities(
@@ -471,3 +479,63 @@ class TranslinkNoticeFreshnessSensor(TranslinkSensor):
             "feed_timestamp": data.feed_timestamp,
             "last_update_success": self.coordinator.last_update_success,
         }
+
+
+@dataclass(frozen=True, kw_only=True)
+class TranslinkWindowSensorDescription(SensorEntityDescription):
+    """Describe a state from the commute window coordinator."""
+
+    value_fn: Callable[[WindowData], Any]
+
+
+WINDOW_SENSORS = (
+    TranslinkWindowSensorDescription(
+        key="window_status",
+        translation_key="window_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=["idle", "active", "expired"],
+        value_fn=lambda data: data.status,
+    ),
+    TranslinkWindowSensorDescription(
+        key="window_next_start",
+        translation_key="window_next_start",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda data: data.next_start,
+    ),
+    TranslinkWindowSensorDescription(
+        key="window_tracked_trips",
+        translation_key="window_tracked_trips",
+        value_fn=lambda data: len(data.trips),
+    ),
+)
+
+
+class TranslinkWindowSensor(CoordinatorEntity[WindowCoordinator], SensorEntity):
+    """Expose a commute window's schedule and tracked service state."""
+
+    entity_description: TranslinkWindowSensorDescription
+    _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"trips"})
+
+    def __init__(
+        self,
+        coordinator: WindowCoordinator,
+        description: TranslinkWindowSensorDescription,
+    ) -> None:
+        """Initialize the entity on the commute window device."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_{description.key}"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> Any:
+        """Return the configured value from the window."""
+        return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Provide current observations for the tracked trips sensor."""
+        if self.entity_description.key == "window_tracked_trips":
+            return {"trips": [trip.as_state() for trip in self.coordinator.data.trips]}
+        return None

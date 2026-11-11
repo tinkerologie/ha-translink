@@ -283,3 +283,23 @@ async def test_entity_id_changed_delegates_when_available(
     assert event_entity._last_disruption_ids == disruption_ids
     trigger.assert_called_once()
     process.assert_not_called()
+
+
+@pytest.mark.parametrize("parent_has_hook", [True, False])
+def test_window_event_keeps_state_on_entity_id_change(
+    parent_has_hook: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing the entity ID delegates when the Home Assistant hook exists."""
+    from homeassistant.helpers.entity import Entity
+
+    from custom_components.translink.event import TranslinkWindowEvent
+
+    hook = MagicMock()
+    if parent_has_hook:
+        monkeypatch.setattr(Entity, "async_entity_id_changed", hook, raising=False)
+    else:
+        monkeypatch.delattr(Entity, "async_entity_id_changed", raising=False)
+    entity = TranslinkWindowEvent(MagicMock())
+    entity.async_entity_id_changed("event.old_window")
+    assert hook.call_count == int(parent_has_hook)

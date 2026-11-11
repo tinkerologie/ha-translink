@@ -120,7 +120,29 @@ def test_english_translations_match_config_flow_strings() -> None:
     import json
     from pathlib import Path
 
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            assert key not in result, f"Duplicate translation key: {key}"
+            result[key] = value
+        return result
+
     component = Path(__file__).parents[1] / "custom_components" / "translink"
-    assert json.loads((component / "strings.json").read_text()) == json.loads(
-        (component / "translations" / "en.json").read_text()
+    assert json.loads(
+        (component / "strings.json").read_text(), object_pairs_hook=unique_object
+    ) == json.loads(
+        (component / "translations" / "en.json").read_text(),
+        object_pairs_hook=unique_object,
     )
+
+
+async def test_removing_non_window_entry_leaves_window_store_untouched(
+    hass: HomeAssistant,
+) -> None:
+    """Journey and stop removal have no commute ledger side effect."""
+    from custom_components.translink import async_remove_entry
+
+    entry = MockConfigEntry(domain=DOMAIN)
+    with patch("custom_components.translink.window_store") as store:
+        await async_remove_entry(hass, entry)
+    store.assert_not_called()

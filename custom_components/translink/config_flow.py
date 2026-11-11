@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import voluptuous as vol
@@ -50,6 +51,11 @@ from .const import (
     CONF_TRACK_VEHICLE,
     CONF_TRANSPORT_MODES,
     CONF_WALKING_SPEED,
+    CONF_WINDOW_DATE,
+    CONF_WINDOW_END,
+    CONF_WINDOW_KIND,
+    CONF_WINDOW_START,
+    CONF_WINDOW_WEEKDAYS,
     DEFAULT_FARE_PREFERENCE,
     DEFAULT_MAX_WALKING_DISTANCE,
     DEFAULT_REALTIME_REGION,
@@ -64,20 +70,27 @@ from .const import (
     MODE_JOURNEY,
     MODE_NOTICES,
     MODE_STOP,
+    MODE_WINDOW,
     NOTICE_ROUTE_ID_LIMIT,
     NOTICE_ROUTE_TYPES,
-    REALTIME_FEED_REGIONS,
     REALTIME_REGION_NONE,
     SETUP_NEARBY_STOP,
+    WINDOW_ONCE,
+    WINDOW_OPTION_LIMITS,
+    WINDOW_RECURRING,
     resolve_realtime_region,
 )
+from .window_schedule import WindowSchedule
 
 _LOGGER = logging.getLogger(__name__)
 
 _LOCATION_FIELDS = {
-    MODE_JOURNEY: (
-        (CONF_START_LOCATION_ID, CONF_START_NAME, "start_query"),
-        (CONF_END_LOCATION_ID, CONF_END_NAME, "end_query"),
+    **dict.fromkeys(
+        (MODE_JOURNEY, MODE_WINDOW),
+        (
+            (CONF_START_LOCATION_ID, CONF_START_NAME, "start_query"),
+            (CONF_END_LOCATION_ID, CONF_END_NAME, "end_query"),
+        ),
     ),
     MODE_STOP: ((CONF_STOP_LOCATION_ID, CONF_STOP_NAME, "stop_query"),),
 }
@@ -88,6 +101,22 @@ _RECONFIGURED_OPTIONS = {
     CONF_END_NAME,
     CONF_TRANSPORT_MODES,
 }
+_WINDOW_SCHEDULE_FIELDS = (
+    CONF_WINDOW_KIND,
+    CONF_WINDOW_DATE,
+    CONF_WINDOW_WEEKDAYS,
+    CONF_WINDOW_START,
+    CONF_WINDOW_END,
+)
+_WEEKDAYS = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
 _LOCATION_LABELS = {
     "station": "Station",
     "place": "Place or address",
@@ -100,9 +129,14 @@ _NOTICE_ROUTE_MODE_OPTIONS = {mode.lower(): mode for mode in NOTICE_ROUTE_TYPES}
 def _realtime_region_selector() -> selector.SelectSelector:
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
-            options=[*REALTIME_FEED_REGIONS, REALTIME_REGION_NONE],
+            options=[
+                selector.SelectOptionDict(value=region, label=label)
+                for region, label in {
+                    **ALERT_NETWORK_NAMES,
+                    REALTIME_REGION_NONE: "Schedule only",
+                }.items()
+            ],
             mode=selector.SelectSelectorMode.DROPDOWN,
-            translation_key=CONF_REALTIME_REGION,
         )
     )
 
@@ -256,6 +290,8 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 return await self.async_step_journey()
             if mode == MODE_NOTICES:
                 return await self.async_step_notices()
+            if mode == MODE_WINDOW:
+                return await self.async_step_window()
             if mode == SETUP_NEARBY_STOP:
                 return await self.async_step_nearby()
             return await self.async_step_stop()
@@ -268,6 +304,10 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                             selector.SelectOptionDict(
                                 value=MODE_JOURNEY,
                                 label="Journey (Origin to Destination)",
+                            ),
+                            selector.SelectOptionDict(
+                                value=MODE_WINDOW,
+                                label="Commute window",
                             ),
                             selector.SelectOptionDict(
                                 value=MODE_STOP,
@@ -334,6 +374,106 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         return self.async_show_form(
             step_id="journey",
             data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            errors=errors,
+        )
+
+    async def async_step_window(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure a one-off or recurring commute window."""
+        return await self._async_window_form(user_input, reconfigure=False)
+
+    async def async_step_window_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the existing window schedule and endpoints."""
+        return await self._async_window_form(user_input, reconfigure=True)
+
+    async def _async_window_form(
+        self, user_input: dict[str, Any] | None, *, reconfigure: bool
+    ) -> ConfigFlowResult:
+        """Validate the schedule before resolving any endpoints."""
+        errors: dict[str, str] = {}
+        saved = self._reconfigure_entry.data if self._reconfigure_entry else {}
+        if user_input is not None:
+            try:
+                schedule = WindowSchedule.from_config(user_input)
+            except ValueError as err:
+                errors["base"] = str(err)
+            else:
+                if schedule.once is not None and schedule.on(
+                    schedule.once
+                ).end <= datetime.now(UTC):
+                    errors[CONF_WINDOW_DATE] = "window_date_expired"
+                elif result := await self._async_search_locations(
+                    MODE_WINDOW, user_input, errors
+                ):
+                    return result
+            saved = {**saved, **user_input}
+
+        fields: dict[vol.Marker, selector.Selector] = {
+            vol.Required(key, default=saved.get(key, "")): selector.TextSelector()
+            for key in (CONF_START_NAME, CONF_END_NAME)
+        }
+        if not reconfigure:
+            fields[
+                vol.Required(CONF_NAME, default=saved.get(CONF_NAME, "Commute window"))
+            ] = selector.TextSelector()
+        date_field = (
+            vol.Optional(CONF_WINDOW_DATE, default=saved[CONF_WINDOW_DATE])
+            if saved.get(CONF_WINDOW_DATE)
+            else vol.Optional(CONF_WINDOW_DATE)
+        )
+        fields.update(
+            {
+                vol.Required(
+                    CONF_TRANSPORT_MODES,
+                    default=saved.get(CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=AVAILABLE_TRANSPORT_MODES,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(
+                    CONF_WINDOW_KIND,
+                    default=saved.get(CONF_WINDOW_KIND, WINDOW_RECURRING),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value=WINDOW_ONCE, label="One-off"
+                            ),
+                            selector.SelectOptionDict(
+                                value=WINDOW_RECURRING, label="Recurring"
+                            ),
+                        ]
+                    )
+                ),
+                date_field: selector.DateSelector(),
+                vol.Optional(
+                    CONF_WINDOW_WEEKDAYS, default=saved.get(CONF_WINDOW_WEEKDAYS, [])
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=str(index), label=day)
+                            for index, day in enumerate(_WEEKDAYS)
+                        ],
+                        multiple=True,
+                    )
+                ),
+                vol.Required(
+                    CONF_WINDOW_START, default=saved.get(CONF_WINDOW_START, "07:30:00")
+                ): selector.TimeSelector(),
+                vol.Required(
+                    CONF_WINDOW_END, default=saved.get(CONF_WINDOW_END, "08:30:00")
+                ): selector.TimeSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="window_reconfigure" if reconfigure else "window",
+            data_schema=vol.Schema(fields),
             errors=errors,
         )
 
@@ -628,6 +768,12 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         """Confirm the ambiguous journey endpoints."""
         return await self._async_step_location_selection(MODE_JOURNEY, user_input)
 
+    async def async_step_window_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm the ambiguous commute window endpoints."""
+        return await self._async_step_location_selection(MODE_WINDOW, user_input)
+
     async def async_step_stop_select(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -738,6 +884,20 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             data[id_field] = locations[id_field].id
             data[name_field] = locations[id_field].name
 
+        if mode == MODE_WINDOW:
+            schedule = WindowSchedule.from_config(self._pending_input)
+            unique_id = f"{unique_id}_{schedule.identity}"
+            data.update(
+                {key: self._pending_input.get(key) for key in _WINDOW_SCHEDULE_FIELDS}
+            )
+            data[CONF_WINDOW_WEEKDAYS] = self._pending_input.get(
+                CONF_WINDOW_WEEKDAYS, []
+            )
+            if schedule.once is None:
+                data[CONF_WINDOW_DATE] = None
+            else:
+                data[CONF_WINDOW_WEEKDAYS] = []
+
         try:
             if self.source == config_entries.SOURCE_RECONFIGURE:
                 return await self._async_finish_reconfigure(unique_id, data)
@@ -769,7 +929,11 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
 
-        default_name = "Translink Journey" if mode == MODE_JOURNEY else "Translink Stop"
+        default_name = {
+            MODE_JOURNEY: "Translink Journey",
+            MODE_STOP: "Translink Stop",
+            MODE_WINDOW: "Commute window",
+        }[mode]
         name = str(self._pending_input.get(CONF_NAME, "")).strip() or default_name
         data.update(
             {
@@ -778,6 +942,9 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
             }
         )
+        if mode == MODE_WINDOW:
+            return self.async_create_entry(title=name, data=data)
+
         client = TranslinkClient(session=async_get_clientsession(self.hass))
         if mode == MODE_JOURNEY:
             plan = await client.plan_journey(
@@ -855,6 +1022,10 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         current_data = self._reconfigure_entry.data
         if current_data.get(CONF_MODE) == MODE_NOTICES:
             return await self.async_step_notices_reconfigure(user_input)
+
+        if current_data.get(CONF_MODE) == MODE_WINDOW:
+            return await self.async_step_window_reconfigure(user_input)
+
         mode = (
             MODE_JOURNEY
             if current_data.get(CONF_MODE, MODE_JOURNEY) == MODE_JOURNEY
@@ -908,10 +1079,12 @@ class TranslinkOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Manage Translink options."""
+        entry = self.config_entry
+        if entry.data.get(CONF_MODE) == MODE_WINDOW:
+            return await self.async_step_window_options(user_input)
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        entry = self.config_entry
         current_data = {**entry.data, **entry.options}
 
         scan_interval = {
@@ -996,3 +1169,42 @@ class TranslinkOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Manage the scan interval for a notice entry."""
         return await self.async_step_init(user_input)
+
+    async def async_step_window_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit polling and alert settings for the window."""
+        errors: dict[str, str] = {}
+        current = {**self.config_entry.data, **self.config_entry.options}
+        if user_input is not None:
+            errors = {
+                key: "window_whole_number_required"
+                for key, value in user_input.items()
+                if not float(value).is_integer()
+            }
+            if not errors:
+                return self.async_create_entry(
+                    title="",
+                    data={key: int(value) for key, value in user_input.items()},
+                )
+            current.update(user_input)
+
+        return self.async_show_form(
+            step_id="window_options",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        key, default=current.get(key, default)
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=minimum,
+                            max=maximum,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    )
+                    for key, (default, minimum, maximum) in WINDOW_OPTION_LIMITS.items()
+                }
+            ),
+            errors=errors,
+        )

@@ -3,12 +3,12 @@
     "step": {
       "user": {
         "title": "Translink Queensland",
-        "description": "Track a journey, create a departure board or monitor regional service notices.",
+        "description": "Track a journey, schedule a commute window, create a departure board, or follow service notices.",
         "data": {
           "mode": "Mode"
         },
         "data_description": {
-          "mode": "Choose Journey for a trip, Stop / Station to search by name or number, Nearby stop to search around a location, or Service Notices for GTFS-RT alerts."
+          "mode": "Choose a journey, commute window, departure board, or service notices."
         }
       },
       "journey": {
@@ -141,6 +141,55 @@
           "notice_route_id": "For route scope, enter a GTFS route ID such as RPSP. Passenger-facing route names and numbers may differ.",
           "notice_route_mode": "For transport mode scope, choose the mode to monitor."
         }
+      },
+      "window": {
+        "title": "Configure a commute window",
+        "description": "Choose the route and the Brisbane-local dates and times to monitor.",
+        "data": {
+          "name": "Window name",
+          "start_name": "Starting point",
+          "end_name": "Destination",
+          "transport_modes": "Transport modes",
+          "window_kind": "Schedule type",
+          "window_date": "One-off date",
+          "window_weekdays": "Recurring weekdays",
+          "window_start": "Start time",
+          "window_end": "End time"
+        },
+        "data_description": {
+          "window_date": "Select a Brisbane date for a one-off window.",
+          "window_weekdays": "Select at least one weekday for a recurring window.",
+          "window_start": "Enter a Brisbane local time to the minute.",
+          "window_end": "An end time earlier than the start falls on the following day."
+        }
+      },
+      "window_reconfigure": {
+        "title": "Reconfigure a commute window",
+        "description": "Update the route or the Brisbane-local schedule.",
+        "data": {
+          "start_name": "Starting point",
+          "end_name": "Destination",
+          "transport_modes": "Transport modes",
+          "window_kind": "Schedule type",
+          "window_date": "One-off date",
+          "window_weekdays": "Recurring weekdays",
+          "window_start": "Start time",
+          "window_end": "End time"
+        },
+        "data_description": {
+          "window_date": "Select a Brisbane date for a one-off window.",
+          "window_weekdays": "Select at least one weekday for a recurring window.",
+          "window_start": "Enter a Brisbane local time to the minute.",
+          "window_end": "An end time earlier than the start falls on the following day."
+        }
+      },
+      "window_select": {
+        "title": "Confirm commute window locations",
+        "description": "Choose the matches for {start_query} and {end_query}.",
+        "data": {
+          "start_location_id": "Starting point",
+          "end_location_id": "Destination"
+        }
       }
     },
     "error": {
@@ -153,21 +202,17 @@
       "no_nearby_stops": "Translink found no nearby stops for this location.",
       "unknown": "Unexpected error occurred",
       "invalid_route_id": "Enter a printable GTFS route ID of 1 to 128 characters.",
-      "notice_mode_required": "Select a transport mode."
+      "notice_mode_required": "Select a transport mode.",
+      "invalid_window_duration": "Enter a window longer than zero minutes and up to 12 hours.",
+      "window_date_required": "Select a date for the one-off window.",
+      "window_date_expired": "Select a one-off window that ends in the future.",
+      "window_weekdays_required": "Select at least one weekday.",
+      "window_minute_precision_required": "Enter times to the minute."
     },
     "abort": {
-      "already_configured": "This Translink journey, stop or notice scope is already configured",
+      "already_configured": "This Translink entry is already configured.",
       "reconfigure_successful": "Reconfiguration was successful",
       "reconfigure_failed": "Reconfiguration failed because the config entry could not be found"
-    }
-  },
-  "selector": {
-    "realtime_region": {
-      "options": {
-        "SEQ": "South East Queensland",
-        "CNS": "Cairns",
-        "none": "Schedule only"
-      }
     }
   },
   "options": {
@@ -200,7 +245,21 @@
         "data_description": {
           "scan_interval": "How frequently to refresh the regional Alerts feed."
         }
+      },
+      "window_options": {
+        "title": "Commute window options",
+        "description": "Choose when to poll and how to confirm changes for your automations.",
+        "data": {
+          "scan_interval": "Refresh interval (seconds)",
+          "window_lead_minutes": "Lead time (minutes)",
+          "window_delay_threshold_minutes": "Delay threshold (minutes)",
+          "window_delay_step_minutes": "Additional delay to alert again (minutes)",
+          "window_trip_limit": "Maximum tracked trips"
+        }
       }
+    },
+    "error": {
+      "window_whole_number_required": "Enter a whole number."
     }
   },
   "entity": {
@@ -260,6 +319,20 @@
       },
       "last_successful_fetch": {
         "name": "Last Successful Fetch"
+      },
+      "window_status": {
+        "name": "Window status",
+        "state": {
+          "idle": "Idle",
+          "active": "Active",
+          "expired": "Expired"
+        }
+      },
+      "window_next_start": {
+        "name": "Next window start"
+      },
+      "window_tracked_trips": {
+        "name": "Tracked trips"
       }
     },
     "device_tracker": {
@@ -275,6 +348,19 @@
             "state": {
               "disruption": "Disruption",
               "cleared": "Cleared"
+            }
+          }
+        }
+      },
+      "window_trip": {
+        "name": "Trip changes",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "trip_delayed": "Trip delayed",
+              "trip_cancelled": "Trip cancelled",
+              "trip_disruption": "Trip disruption",
+              "trip_recovered": "Trip recovered"
             }
           }
         }

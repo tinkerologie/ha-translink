@@ -8,6 +8,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Added
 
+- Added opt-in one-off and recurring commute windows with scheduled polling, tracked trips, and Home Assistant events for confirmed delays, recovery, cancellations, and disruptions. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
+
 - Journey entries can select the Cairns or South East Queensland live feed, or use scheduled times only. Cairns predictions and positions require verified service identity. Stop boards use the timetable for their selected stop. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
 
 - Service Notices entries show active and upcoming Translink GTFS-RT alerts for South East Queensland and Cairns, with optional route or mode filtering. The Alerts card shows affected entities, active periods and the last successful fetch. [#60](https://github.com/tinkerologie/ha-translink/issues/60)
@@ -28,6 +30,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 - Departure boards use the selected station or platform timetable across routes and directions, with scheduled and expected times shown separately. Stop notices remain visible when there are no departures. [#47](https://github.com/tinkerologie/ha-translink/issues/47)
 - Journey disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notice details report `leg` or `request` scope, and notices expire when they reach a confirmed end time. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
 - Setup and reconfiguration ask you to confirm ambiguous location matches. Departure boards accept only stations and stops, and reconfiguration keeps unchanged locations. [#50](https://github.com/tinkerologie/ha-translink/issues/50)
+- The journey feed picker displays readable names for South East Queensland, Cairns, and schedule-only mode. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
 - The Service Notices transport mode picker uses Home Assistant-compatible translation keys for Bus, Ferry, Train, and Tram. [#60](https://github.com/tinkerologie/ha-translink/issues/60)
 
 ## [2026.11.0] - 2026-11-11

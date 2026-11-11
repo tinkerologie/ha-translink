@@ -18,6 +18,7 @@ from .api.client import VEHICLE_POSITION_MAX_AGE_SECONDS, vehicle_position_is_fr
 from .client import JourneySummary, parse_iso_datetime
 from .const import CONF_NAME, DOMAIN, MODE_JOURNEY, get_vehicle_icon
 from .coordinator import TranslinkCoordinator
+from .window_coordinator import WindowCoordinator
 
 if TYPE_CHECKING:
     from . import TranslinkConfigEntry
@@ -31,11 +32,15 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Translink live vehicle device tracker from config entry."""
-    coordinator: TranslinkCoordinator = (
+    coordinator: TranslinkCoordinator | WindowCoordinator = (
         getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
     )
 
-    if coordinator.mode == MODE_JOURNEY and coordinator.track_vehicle:
+    if (
+        not isinstance(coordinator, WindowCoordinator)
+        and coordinator.mode == MODE_JOURNEY
+        and coordinator.track_vehicle
+    ):
         async_add_entities([TranslinkVehicleTracker(coordinator, entry)])
 
 
