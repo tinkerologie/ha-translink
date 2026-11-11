@@ -5,6 +5,8 @@ from __future__ import annotations
 import struct
 from typing import Any
 
+import pytest
+
 from custom_components.translink.api.gtfs_realtime import (
     _decode_string,
     _decode_translated_string,
@@ -61,13 +63,12 @@ def test_varint_multibyte() -> None:
 
 
 def test_parse_fields_all_wire_types() -> None:
-    """Test _parse_fields handles wire types 0, 1, 2, 5 and breaks on unsupported types."""
+    """Test protobuf wire types used by the realtime feeds."""
     payload = (
         _encode_field(1, 0, 42)  # Varint
         + _encode_field(2, 1, 1000000)  # 64-bit
         + _encode_field(3, 2, b"hello")  # Length-delimited
         + _encode_field(4, 5, 3.14)  # 32-bit float
-        + _encode_field(5, 7, 0)  # Unsupported wire type (should break)
     )
 
     fields = _parse_fields(payload, limit=len(payload))
@@ -173,7 +174,7 @@ def test_parse_trip_updates_negative_delay_and_fields() -> None:
     entity_valid = _encode_field(1, 2, "ENT_TU_1") + _encode_field(3, 2, tu_body)
     entity_empty = _encode_field(1, 2, "ENT_TU_EMPTY")
     feed = (
-        _encode_field(1, 2, b"header")
+        _encode_field(1, 2, _encode_field(1, 2, "2.0"))
         + _encode_field(2, 2, entity_valid)
         + _encode_field(2, 2, entity_empty)
     )
@@ -231,7 +232,7 @@ def test_parse_vehicle_positions_custom_fields() -> None:
     )
     entity_empty = _encode_field(1, 2, "ENT_EMPTY")
     feed = (
-        _encode_field(1, 2, b"header")
+        _encode_field(1, 2, _encode_field(1, 2, "2.0"))
         + _encode_field(2, 2, entity_valid)
         + _encode_field(2, 2, entity_no_pos)
         + _encode_field(2, 2, entity_empty)
@@ -251,28 +252,22 @@ def test_parse_vehicle_positions_custom_fields() -> None:
     assert rec.timestamp == 1728180000
 
 
-def test_gtfs_varint_truncated() -> None:
-    """Test varint loop terminates if bytes end before 0x80 bit is cleared."""
-    _, offset = _parse_varint(b"\x80\x80", 0)
-    assert offset == 2
-
-
-def test_gtfs_fields_truncated() -> None:
-    """Test _parse_fields terminates safely on truncated wire types 1, 2, 5."""
-    # Wire type 1 (64-bit) with only 4 bytes instead of 8
-    tag_wire1 = (1 << 3) | 1
-    data_wire1 = _encode_varint(tag_wire1) + b"\x00\x00\x00\x00"
-    assert _parse_fields(data_wire1) == []
-
-    # Wire type 2 (length-delimited) with length 10 but only 2 bytes remaining
-    tag_wire2 = (1 << 3) | 2
-    data_wire2 = _encode_varint(tag_wire2) + _encode_varint(10) + b"\x00\x00"
-    assert _parse_fields(data_wire2) == []
-
-    # Wire type 5 (32-bit fixed) with only 2 bytes instead of 4
-    tag_wire5 = (1 << 3) | 5
-    data_wire5 = _encode_varint(tag_wire5) + b"\x00\x00"
-    assert _parse_fields(data_wire5) == []
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (b"\x80\x80", "Truncated protobuf varint"),
+        (b"\xff" * 10, "Oversized protobuf varint"),
+        (b"\x00", "Invalid protobuf field number"),
+        (b"\x09" + b"\x00" * 4, "Truncated protobuf fixed64 field"),
+        (b"\x0a\x0a\x00\x00", "Truncated protobuf message field"),
+        (b"\x0d\x00\x00", "Truncated protobuf fixed32 field"),
+        (b"\x2f", "Unsupported protobuf wire type"),
+    ],
+)
+def test_gtfs_decoder_rejects_malformed_fields(payload: bytes, error: str) -> None:
+    """Never return partial records for a malformed realtime message."""
+    with pytest.raises(ValueError, match=error):
+        _parse_fields(payload)
 
 
 def test_gtfs_realtime_extra_and_unknown_fields() -> None:

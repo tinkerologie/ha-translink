@@ -22,6 +22,7 @@ from custom_components.translink.const import (
     CONF_END_NAME,
     CONF_MODE,
     CONF_NAME,
+    CONF_REALTIME_REGION,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
     CONF_START_NAME,
@@ -1278,3 +1279,111 @@ async def test_cancel_pending_reconfigure_keeps_entry(hass: HomeAssistant) -> No
     assert result["step_id"] == "stop_select"
     hass.config_entries.flow.async_abort(flow["flow_id"])
     assert (entry.data, entry.options, entry.unique_id) == original
+
+
+@pytest.mark.parametrize("multiple_matches", [False, True])
+async def test_journey_setup_allows_correcting_a_mismatched_region(
+    hass: HomeAssistant,
+    plan_response_data,
+    multiple_matches: bool,
+) -> None:
+    """Keep a journey with SEQ signals out of the Cairns feed."""
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    await hass.config_entries.flow.async_configure(
+        flow["flow_id"], {CONF_MODE: MODE_JOURNEY}
+    )
+    start = LocationSearchResult(
+        LocationId="ST:place_romsta", Description="Roma Street station"
+    )
+    end = LocationSearchResult(
+        LocationId="ST:place_censta", Description="Central station"
+    )
+    data = {
+        CONF_NAME: "Commute",
+        CONF_START_NAME: start.name,
+        CONF_END_NAME: end.name,
+        CONF_REALTIME_REGION: "CNS",
+    }
+    start_results = _ROMA_STREET_RESULTS if multiple_matches else [start]
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            side_effect=[start_results, [end], start_results, [end]],
+        ),
+        patch(
+            "custom_components.translink.client.TranslinkClient.plan_journey",
+            return_value=JourneyPlanResult.model_validate(plan_response_data),
+        ),
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(flow["flow_id"], data)
+        if multiple_matches:
+            assert result["step_id"] == "journey_select"
+            result = await hass.config_entries.flow.async_configure(
+                flow["flow_id"],
+                {CONF_START_LOCATION_ID: start.id},
+            )
+        assert result["step_id"] == "journey"
+        assert result["errors"] == {"base": "region_mismatch"}
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            {**data, CONF_REALTIME_REGION: "SEQ"},
+        )
+        if multiple_matches:
+            assert result["step_id"] == "journey_select"
+            result = await hass.config_entries.flow.async_configure(
+                flow["flow_id"],
+                {CONF_START_LOCATION_ID: start.id},
+            )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_REALTIME_REGION] == "SEQ"
+
+
+async def test_reconfigure_region_only_preserves_journey_identity_and_options(
+    hass: HomeAssistant,
+) -> None:
+    """Confirm a legacy entry's region without looking up unchanged locations."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="journey_ST:place_cnsstn_ST:place_jcucns",
+        data={
+            CONF_MODE: MODE_JOURNEY,
+            CONF_START_LOCATION_ID: "ST:place_cnsstn",
+            CONF_START_NAME: "Cairns City station",
+            CONF_END_LOCATION_ID: "ST:place_jcucns",
+            CONF_END_NAME: "James Cook University station",
+            CONF_TRANSPORT_MODES: ["Bus"],
+        },
+        options={CONF_SCAN_INTERVAL: 90, CONF_TRANSPORT_MODES: ["Bus"]},
+    )
+    entry.add_to_hass(hass)
+    flow = await entry.start_reconfigure_flow(hass)
+    marker = next(
+        field
+        for field in flow["data_schema"].schema
+        if field.schema == CONF_REALTIME_REGION
+    )
+    assert marker.default() == "SEQ"
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations"
+        ) as search,
+        patch.object(hass.config_entries, "async_schedule_reload") as reload,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            {
+                CONF_START_NAME: "Cairns City station",
+                CONF_END_NAME: "James Cook University station",
+                CONF_TRANSPORT_MODES: ["Bus"],
+                CONF_REALTIME_REGION: "CNS",
+            },
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.unique_id == "journey_ST:place_cnsstn_ST:place_jcucns"
+    assert entry.options == {CONF_SCAN_INTERVAL: 90, CONF_TRANSPORT_MODES: ["Bus"]}
+    assert entry.data[CONF_REALTIME_REGION] == "CNS"
+    search.assert_not_called()
+    reload.assert_called_once_with(entry.entry_id)

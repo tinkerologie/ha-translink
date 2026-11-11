@@ -13,6 +13,7 @@ from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api.client import plan_matches_realtime_region
 from .client import LocationSearchResult, TranslinkApiError, TranslinkClient
 from .const import (
     AVAILABLE_FARE_PREFERENCES,
@@ -25,6 +26,7 @@ from .const import (
     CONF_MAX_WALKING_DISTANCE,
     CONF_MODE,
     CONF_NAME,
+    CONF_REALTIME_REGION,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
     CONF_START_NAME,
@@ -36,6 +38,7 @@ from .const import (
     CONF_WALKING_SPEED,
     DEFAULT_FARE_PREFERENCE,
     DEFAULT_MAX_WALKING_DISTANCE,
+    DEFAULT_REALTIME_REGION,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_TIME_SEARCH_MODE,
     DEFAULT_TRACK_VEHICLE,
@@ -46,6 +49,9 @@ from .const import (
     MIN_SCAN_INTERVAL,
     MODE_JOURNEY,
     MODE_STOP,
+    REALTIME_FEED_REGIONS,
+    REALTIME_REGION_NONE,
+    resolve_realtime_region,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -69,6 +75,16 @@ _LOCATION_LABELS = {
     "place": "Place or address",
     "unknown": "Location",
 }
+
+
+def _realtime_region_selector() -> selector.SelectSelector:
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[*REALTIME_FEED_REGIONS, REALTIME_REGION_NONE],
+            mode=selector.SelectSelectorMode.DROPDOWN,
+            translation_key=CONF_REALTIME_REGION,
+        )
+    )
 
 
 def _location_candidates(
@@ -179,6 +195,12 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         ):
             return result
 
+        return self._show_journey_form(errors, user_input)
+
+    def _show_journey_form(
+        self, errors: dict[str, str], suggested: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        """Show journey settings, preserving a submission when retrying."""
         schema = vol.Schema(
             {
                 vol.Required(
@@ -186,6 +208,9 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 ): selector.TextSelector(),
                 vol.Required(CONF_START_NAME): selector.TextSelector(),
                 vol.Required(CONF_END_NAME): selector.TextSelector(),
+                vol.Required(
+                    CONF_REALTIME_REGION, default=DEFAULT_REALTIME_REGION
+                ): _realtime_region_selector(),
                 vol.Required(
                     CONF_TRANSPORT_MODES, default=DEFAULT_TRANSPORT_MODES
                 ): selector.SelectSelector(
@@ -201,7 +226,9 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             }
         )
         return self.async_show_form(
-            step_id="journey", data_schema=schema, errors=errors
+            step_id="journey",
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            errors=errors,
         )
 
     async def async_step_stop(
@@ -307,6 +334,8 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             result := await self._async_confirm_locations(mode, user_input, errors)
         ):
             return result
+        if errors.get("base") == "region_mismatch":
+            return self._show_journey_form(errors, self._pending_input)
         return self._show_location_selection(mode, errors)
 
     def _show_location_selection(
@@ -350,6 +379,10 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
             ),
         }
+        if mode == MODE_JOURNEY:
+            data[CONF_REALTIME_REGION] = self._pending_input.get(
+                CONF_REALTIME_REGION, DEFAULT_REALTIME_REGION
+            )
         for id_field, name_field, _ in _LOCATION_FIELDS[mode]:
             data[id_field] = locations[id_field].id
             data[name_field] = locations[id_field].name
@@ -357,7 +390,7 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         try:
             if self.source == config_entries.SOURCE_RECONFIGURE:
                 return await self._async_finish_reconfigure(unique_id, data)
-            return await self._async_finish_setup(mode, unique_id, data)
+            return await self._async_finish_setup(mode, unique_id, data, errors)
         except AbortFlow:
             raise
         except TranslinkApiError:
@@ -369,8 +402,12 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         return None
 
     async def _async_finish_setup(
-        self, mode: str, unique_id: str, data: dict[str, Any]
-    ) -> ConfigFlowResult:
+        self,
+        mode: str,
+        unique_id: str,
+        data: dict[str, Any],
+        errors: dict[str, str],
+    ) -> ConfigFlowResult | None:
         """Create a config entry from the confirmed locations."""
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
@@ -386,13 +423,17 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         )
         client = TranslinkClient(session=async_get_clientsession(self.hass))
         if mode == MODE_JOURNEY:
-            await client.plan_journey(
+            plan = await client.plan_journey(
                 start_location_id=data[CONF_START_LOCATION_ID],
                 start_name=data[CONF_START_NAME],
                 end_location_id=data[CONF_END_LOCATION_ID],
                 end_name=data[CONF_END_NAME],
                 transport_modes=data[CONF_TRANSPORT_MODES],
             )
+            if not plan_matches_realtime_region(plan, data[CONF_REALTIME_REGION]):
+                errors["base"] = "region_mismatch"
+                await self.async_set_unique_id(None)
+                return None
             data.update(
                 {
                     CONF_TRACK_VEHICLE: bool(
@@ -425,11 +466,20 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             client = TranslinkClient(session=async_get_clientsession(self.hass))
             await client.fetch_stop_timetable(stop_id)
 
-        options = {
-            key: value
-            for key, value in entry.options.items()
-            if key not in _RECONFIGURED_OPTIONS
-        }
+        region_only = CONF_REALTIME_REGION in data_updates and all(
+            value == entry.data.get(key)
+            for key, value in data_updates.items()
+            if key != CONF_REALTIME_REGION
+        )
+        options = (
+            entry.options
+            if region_only
+            else {
+                key: value
+                for key, value in entry.options.items()
+                if key not in _RECONFIGURED_OPTIONS
+            }
+        )
         if options != entry.options:
             return self.async_update_reload_and_abort(
                 entry, unique_id=unique_id, data_updates=data_updates, options=options
@@ -458,6 +508,12 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         ):
             return result
 
+        region_fields = {}
+        if mode == MODE_JOURNEY:
+            region, _ = resolve_realtime_region(current_data)
+            region_fields[vol.Required(CONF_REALTIME_REGION, default=region)] = (
+                _realtime_region_selector()
+            )
         schema = vol.Schema(
             {
                 **{
@@ -466,6 +522,7 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                     ): selector.TextSelector()
                     for _, name_field, _ in _LOCATION_FIELDS[mode]
                 },
+                **region_fields,
                 vol.Required(
                     CONF_TRANSPORT_MODES,
                     default=current_data.get(

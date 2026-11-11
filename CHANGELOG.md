@@ -8,6 +8,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Added
 
+- Journey entries can select the Cairns or South East Queensland live feed, or use scheduled times only. Cairns predictions and positions require verified service identity. Stop boards use the timetable for their selected stop. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
+
 - The Departures card offers an opt-in Arrivals view for drop-off-only stop visits and optional route, direction, and order controls. Scheduled and expected stop times are shown separately. [#52](https://github.com/tinkerologie/ha-translink/issues/52)
 - Added the response-only `translink.plan_journey` action and an opt-in Journey card planner for comparing scheduled alternatives at a selected Brisbane date and time. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
 

@@ -888,7 +888,10 @@ async def test_fetch_vehicle_positions(sample_vehicle_positions_bytes: bytes) ->
     mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
     mock_session.closed = False
 
-    client = TranslinkClient(session=mock_session)
+    client = TranslinkClient(
+        session=mock_session,
+        now=lambda: datetime.fromisoformat("2026-10-05T23:26:50+00:00"),
+    )
     vp = await client.fetch_vehicle_positions()
     assert len(vp) > 0
     first_rec = vp[0]
@@ -907,7 +910,10 @@ async def test_fetch_trip_updates(sample_trip_updates_bytes: bytes) -> None:
     mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
     mock_session.closed = False
 
-    client = TranslinkClient(session=mock_session)
+    client = TranslinkClient(
+        session=mock_session,
+        now=lambda: datetime.fromisoformat("2026-10-05T23:27:30+00:00"),
+    )
     tu = await client.fetch_trip_updates()
     assert len(tu) > 0
 

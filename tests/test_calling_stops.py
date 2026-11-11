@@ -68,7 +68,10 @@ def test_captured_overlay_and_service_date(captured_case):
     assert calls[1].platform is None
     assert updated == datetime.fromtimestamp(update.timestamp, UTC).isoformat()
     summary = build_journey_summary(
-        plan, trip_updates={"39040861": update}, trip_timetables={leg.tripId: timetable}
+        plan,
+        trip_updates={"39040861": update},
+        trip_timetables={leg.tripId: timetable},
+        now=datetime.fromtimestamp(update.timestamp, UTC),
     )
     assert summary.itinerary_legs[0]["callingStopsSource"] == source
     assert summary.itinerary_legs[0]["skippedStops"] == [

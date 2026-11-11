@@ -69,6 +69,8 @@ class TripUpdateRecord:
     stop_time_updates: tuple[StopTimeUpdateRecord, ...] = ()
     trip_delay_seconds: int | None = None
     feed_timestamp: int | None = None
+    vehicle_id: str | None = None
+    stale_timestamp: int | None = None
 
 
 @dataclass(slots=True)
@@ -84,17 +86,18 @@ class AlertRecord:
 
 def _parse_varint(data: bytes, offset: int) -> tuple[int, int]:
     """Parse a variable-length integer (varint) from binary data."""
-    res = 0
-    shift = 0
-    data_len = len(data)
-    while offset < data_len:
-        b = data[offset]
+    result = 0
+    for shift in range(0, 64, 7):
+        if offset >= len(data):
+            raise ValueError("Truncated protobuf varint")
+        byte = data[offset]
         offset += 1
-        res |= (b & 0x7F) << shift
-        if not (b & 0x80):
-            break
-        shift += 7
-    return res, offset
+        if shift == 63 and byte > 1:
+            raise ValueError("Oversized protobuf varint")
+        result |= (byte & 0x7F) << shift
+        if not (byte & 0x80):
+            return result, offset
+    raise ValueError("Oversized protobuf varint")  # pragma: no cover
 
 
 def _parse_fields(
@@ -109,31 +112,32 @@ def _parse_fields(
         tag, offset = _parse_varint(data, offset)
         field_num = tag >> 3
         wire_type = tag & 0x07
+        if not field_num:
+            raise ValueError("Invalid protobuf field number")
         if wire_type == 0:  # Varint
             val, offset = _parse_varint(data, offset)
             fields.append((field_num, wire_type, val))
         elif wire_type == 1:  # 64-bit
             if offset + 8 > limit:
-                break
+                raise ValueError("Truncated protobuf fixed64 field")
             val = struct.unpack("<Q", data[offset : offset + 8])[0]
             offset += 8
             fields.append((field_num, wire_type, val))
         elif wire_type == 2:  # Length-delimited (string / bytes / submessage)
             length, offset = _parse_varint(data, offset)
             if offset + length > limit:
-                break
+                raise ValueError("Truncated protobuf message field")
             val = data[offset : offset + length]
             offset += length
             fields.append((field_num, wire_type, val))
         elif wire_type == 5:  # 32-bit float / fixed32
             if offset + 4 > limit:
-                break
+                raise ValueError("Truncated protobuf fixed32 field")
             val = struct.unpack("<f", data[offset : offset + 4])[0]
             offset += 4
             fields.append((field_num, wire_type, val))
         else:
-            # Skip unsupported wire type or stop
-            break
+            raise ValueError("Unsupported protobuf wire type")
     return fields
 
 
@@ -317,16 +321,27 @@ def _parse_stop_update(data: bytes) -> StopTimeUpdateRecord:
     return result
 
 
+def _feed_header_timestamp(fields: list[tuple[int, int, Any]]) -> int | None:
+    """Read the header timestamp from decoded feed fields."""
+    timestamp: int | None = None
+    for field_num, _, header in fields:
+        if field_num == 1 and isinstance(header, bytes):
+            for header_field, wire, value in _parse_fields(header):
+                if header_field == 3 and wire == 0:
+                    timestamp = value
+    return timestamp
+
+
+def parse_feed_timestamp(raw_bytes: bytes) -> int | None:
+    """Read the feed generation time without interpreting any records."""
+    return _feed_header_timestamp(_parse_fields(raw_bytes))
+
+
 def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
     """Parse GTFS-RT TripUpdates binary payload into a lookup dict."""
     result: dict[str, TripUpdateRecord] = {}
     top_fields = _parse_fields(raw_bytes)
-    feed_timestamp: int | None = None
-    for field_num, _, header in top_fields:
-        if field_num == 1 and isinstance(header, bytes):
-            for header_field, wire, value in _parse_fields(header):
-                if header_field == 3 and wire == 0:
-                    feed_timestamp = value
+    feed_timestamp = _feed_header_timestamp(top_fields)
     for field_num, _, ent_bytes in top_fields:
         if field_num != 2 or not isinstance(ent_bytes, bytes):
             continue
@@ -354,6 +369,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
         start_date: str | None = None
         start_time: str | None = None
         relationship: int | None = None
+        vehicle_id: str | None = None
         stop_updates: list[StopTimeUpdateRecord] = []
 
         for tuf_num, _, tuf_val in tu_fields:
@@ -383,6 +399,10 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
                         for stef_num, _, stef_val in ste_fields:
                             if stef_num == 1 and isinstance(stef_val, int):
                                 delay_sec = _to_int32(stef_val)
+            elif tuf_num == 3 and isinstance(tuf_val, bytes):  # VehicleDescriptor
+                for field, wire, value in _parse_fields(tuf_val):
+                    if field == 1 and wire == 2:
+                        vehicle_id = _decode_string(value)
             elif tuf_num == 4 and isinstance(tuf_val, int):
                 timestamp = tuf_val
             elif tuf_num == 5 and isinstance(tuf_val, int):
@@ -401,6 +421,7 @@ def parse_trip_updates(raw_bytes: bytes) -> dict[str, TripUpdateRecord]:
             stop_time_updates=tuple(stop_updates),
             trip_delay_seconds=trip_delay,
             feed_timestamp=feed_timestamp,
+            vehicle_id=vehicle_id,
         )
         if trip_id:
             result[trip_id] = record

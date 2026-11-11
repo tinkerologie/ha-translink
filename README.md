@@ -12,7 +12,7 @@ The **Translink Queensland** custom integration connects Home Assistant directly
 
 The integration provides journey planning, vehicle tracking and stop timetables in Home Assistant.
 
-- **Journey Planning & Commute Tracking**: Real-time departure times, arrival times, duration, transfer counts, origin/destination platforms, line colors, Queensland 50c fares, and walking directions between any Starting Point and Destination.
+- **Journey Planning & Commute Tracking**: Scheduled departures and arrivals, durations, transfers, platforms, Queensland 50c fares, and walking directions. Matched live feeds add predictions where available.
 - **Live Vehicle GPS Tracking**: Real-time `device_tracker` entity powered by Translink's open GTFS-RT feeds, exposing live vehicle coordinates, bearing, and speed directly on Home Assistant maps.
 - **Station & Stop Departure Boards**: Boardable departures across routes and directions from the selected station or platform. Rows show scheduled times and include expected times and service flags where Translink supplies them.
 - **Disruptions & Service Alerts**: Journey planner notices and current timetable notices for the selected station or platform.
@@ -28,6 +28,24 @@ The integration provides journey planning, vehicle tracking and stop timetables 
   - **Trams / Light Rail**: G:link (Gold Coast Light Rail).
 - **Regional Queensland**:
   - Journey Planner mode supports regional urban networks (Cairns, Mackay, Toowoomba, Sunshine Coast, Bowen, etc.). Departure Board mode requires a station or platform with a public Translink timetable.
+
+### Live data by region
+
+| Journey feed | Coverage |
+| --- | --- |
+| South East Queensland | SEQ public trip updates and vehicle positions. |
+| Cairns | CNS public trip updates and vehicle positions. Live matches require the same service date, route, trip, and boarding stop. |
+| Schedule only | Planned times for journeys in other regions or for entries where you disable the live feed. |
+
+Journey entries apply the selected feed to eligible legs only. A leg with a
+different planner region uses scheduled times. Missing, malformed or stale feed
+data leaves the schedule available. The **Delay** sensor shows `unknown` when
+there is no applicable boarding prediction, and `0` for a measured zero delay.
+See [Translink's open data feed table](https://translink.com.au/about-translink/open-data).
+
+Departure and arrival boards use the timetable for the selected station or
+platform, including in Cairns. Expected times appear when Translink provides
+predictions in that timetable. Predictions can vary by stop and service.
 
 ---
 
@@ -81,6 +99,7 @@ When adding the integration, select whether you want to track a **Journey** or a
 | **Starting Point (Origin)** | Station name, bus stop name, landmark, or address. | `Central station` |
 | **Destination** | Destination station name, bus stop name, landmark, or address. | `Springfield Central station` |
 | **Transport Modes** | Public transport modes to include in journey routing. | `Bus`, `Ferry`, `Train`, `Tram` |
+| **Live feed region** | Choose South East Queensland, Cairns, or Schedule only. | `Cairns` |
 | **Enable Live Vehicle Tracking** | Create a live GPS `device_tracker` entity for the active transit vehicle. | `Enabled` |
 
 When a search returns several matches, choose the intended location for each endpoint shown.
@@ -97,7 +116,7 @@ Departure boards accept stations and stops. When several eligible matches appear
 
 ### Reconfigure an entry
 
-Choose **Reconfigure** from the Translink entry's menu to change locations or transport modes. Leave a location name as shown to keep its saved location. A departure board saved with a place or address searches again so you can choose a station or stop. A new search with several matches prompts you to choose a result.
+Choose **Reconfigure** from the Translink entry's menu to change locations or transport modes. For journeys, you can also change the live feed region. Existing journeys without a saved region use the SEQ feed only for legs the planner identifies as SEQ. Save **Reconfigure** to confirm a feed for that entry. Leave a location name as shown to keep its saved location. A departure board saved with a place or address searches again so you can choose a station or stop. A new search with several matches prompts you to choose a result.
 
 ### Integration Options (`Configure` button on the Translink entry)
 
@@ -468,7 +487,7 @@ automation:
 ## Troubleshooting & Diagnostics
 
 - **Public Open Data Feeds**: Translink journey planning and GTFS-Realtime feeds are open and do not require user credentials or API keys.
-- **Vehicle Live Tracking Availability**: Vehicles appear on the live map when active in service and transmitting GTFS-RT coordinates. If a vehicle has not yet begun its scheduled run, the entity remains available with the platform's station coordinates until live tracking commences.
+- **Vehicle Live Tracking Availability**: Vehicles appear on the live map when active in service and transmitting GTFS-RT coordinates. The tracker remains available with an unknown state until a current vehicle fix matches the active service.
 - **Diagnostics**: You can download an anonymized diagnostics bundle from **Settings > Devices & Services > Translink > Download Diagnostics** to assist with bug reports.
 
 ---

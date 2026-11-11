@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Final
 
 DOMAIN: Final = "translink"
@@ -28,6 +30,7 @@ CONF_WALKING_SPEED: Final = "walking_speed"
 CONF_FARE_PREFERENCE: Final = "fare_preference"
 CONF_TRACK_VEHICLE: Final = "track_vehicle"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
+CONF_REALTIME_REGION: Final = "realtime_region"
 
 # Defaults
 DEFAULT_MODE: Final = MODE_JOURNEY
@@ -71,6 +74,43 @@ STOP_TIMETABLE_MAX_BYTES: Final = 1024 * 1024
 GTFS_FEED_VEHICLE_POSITIONS: Final = "/api/realtime/SEQ/VehiclePositions"
 GTFS_FEED_TRIP_UPDATES: Final = "/api/realtime/SEQ/TripUpdates"
 GTFS_FEED_ALERTS: Final = "/api/realtime/SEQ/Alerts"
+
+REALTIME_REGION_SEQ: Final = "SEQ"
+REALTIME_REGION_CAIRNS: Final = "CNS"
+REALTIME_REGION_NONE: Final = "none"
+DEFAULT_REALTIME_REGION: Final = REALTIME_REGION_SEQ
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeFeedRegion:
+    """Published feed paths and their planner region identifiers."""
+
+    trip_updates: str
+    vehicle_positions: str
+    alerts: str
+    planner_region_id: str
+    planner_region_name: str
+    strict_identity: bool = False
+
+
+REALTIME_FEED_REGIONS: Final = {
+    REALTIME_REGION_SEQ: RealtimeFeedRegion(
+        GTFS_FEED_TRIP_UPDATES,
+        GTFS_FEED_VEHICLE_POSITIONS,
+        GTFS_FEED_ALERTS,
+        planner_region_id="T",
+        planner_region_name="SEQ",
+    ),
+    REALTIME_REGION_CAIRNS: RealtimeFeedRegion(
+        "/api/realtime/CNS/TripUpdates",
+        "/api/realtime/CNS/VehiclePositions",
+        "/api/realtime/CNS/Alerts",
+        planner_region_id="C",
+        planner_region_name="Cairns",
+        strict_identity=True,
+    ),
+}
+
 REALTIME_MAX_AGE_SECONDS: Final = 300
 REALTIME_MAX_FUTURE_SKEW_SECONDS: Final = 60
 
@@ -89,6 +129,20 @@ VEHICLE_ICON_MAP: Final[dict[str, str]] = {
     "tram": "mdi:tram",
     "light rail": "mdi:tram",
 }
+
+
+def resolve_realtime_region(data: Mapping[str, object]) -> tuple[str, bool]:
+    """Resolve the journey feed and whether the user explicitly selected it."""
+    if data.get(CONF_MODE, DEFAULT_MODE) != MODE_JOURNEY:
+        return REALTIME_REGION_NONE, False
+    if CONF_REALTIME_REGION not in data:
+        return DEFAULT_REALTIME_REGION, False
+    region = data[CONF_REALTIME_REGION]
+    if isinstance(region, str) and (
+        region in REALTIME_FEED_REGIONS or region == REALTIME_REGION_NONE
+    ):
+        return region, True
+    return REALTIME_REGION_NONE, False
 
 
 def get_vehicle_icon(vehicle: str | None, default: str = "mdi:train-bus") -> str:
