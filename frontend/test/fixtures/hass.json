@@ -566,7 +566,10 @@
             "time_source": "realtime",
             "platform": "5",
             "is_extra": true,
-            "platform_change": { "old_platform": "5", "platform": "6" }
+            "platform_change": {
+              "old_platform": "5",
+              "platform": "6"
+            }
           },
           {
             "trip_id": "train-loop",
@@ -618,6 +621,73 @@
       "state": "unavailable",
       "attributes": {
         "supported_features": 1
+      }
+    },
+    "sensor.renamed_cairns_notices": {
+      "entity_id": "sensor.renamed_cairns_notices",
+      "state": "22",
+      "attributes": {
+        "network": "CNS",
+        "scope_type": "route",
+        "scope_value": "RPSP",
+        "total_count": 22,
+        "disruptions": [
+          {
+            "id": "n-1",
+            "title": "Network maintenance",
+            "description": "Travel on replacement services.",
+            "status": "active",
+            "match": "network",
+            "informed_entities": [
+              {
+                "scope": "network",
+                "agency_id": "agency"
+              }
+            ],
+            "active_periods": [
+              {
+                "start": "2026-11-11T07:00:00Z",
+                "end": "2026-11-11T08:00:00Z"
+              },
+              {
+                "start": null,
+                "end": "2026-11-12T08:00:00Z"
+              }
+            ],
+            "active_periods_omitted": 2
+          },
+          {
+            "id": "n-2",
+            "title": "Platform works",
+            "status": "upcoming",
+            "match": "route",
+            "informed_entities": [
+              {
+                "scope": "stop",
+                "route_id": "RPSP-5154",
+                "stop_id": "600029",
+                "mode": "Train"
+              },
+              {
+                "scope": "unknown"
+              }
+            ],
+            "active_periods": [
+              {
+                "start": "2026-11-14T07:00:00Z",
+                "end": null
+              }
+            ],
+            "informed_entities_omitted": 3
+          }
+        ]
+      }
+    },
+    "sensor.renamed_cairns_freshness": {
+      "entity_id": "sensor.renamed_cairns_freshness",
+      "state": "2026-11-11T07:30:00Z",
+      "attributes": {
+        "last_update_success": true
       }
     }
   },
@@ -753,6 +823,18 @@
       "device_id": "stop",
       "platform": "translink",
       "translation_key": "departures_board"
+    },
+    "sensor.renamed_cairns_notices": {
+      "entity_id": "sensor.renamed_cairns_notices",
+      "platform": "translink",
+      "translation_key": "disruptions",
+      "device_id": "notice-device"
+    },
+    "sensor.renamed_cairns_freshness": {
+      "entity_id": "sensor.renamed_cairns_freshness",
+      "platform": "translink",
+      "translation_key": "last_successful_fetch",
+      "device_id": "notice-device"
     }
   },
   "devices": {
@@ -761,6 +843,9 @@
     },
     "stop": {
       "name": "Kippa-Ring station"
+    },
+    "notice-device": {
+      "name": "Cairns service notices"
     }
   },
   "locale": {

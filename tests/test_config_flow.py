@@ -1719,3 +1719,200 @@ async def test_reconfigure_region_only_preserves_journey_identity_and_options(
     assert entry.data[CONF_REALTIME_REGION] == "CNS"
     search.assert_not_called()
     reload.assert_called_once_with(entry.entry_id)
+
+
+async def _notice_flow(hass: HomeAssistant) -> str:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    form = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_MODE: "notices"}
+    )
+    assert form["type"] is FlowResultType.FORM
+    assert form["step_id"] == "notices"
+    return form["flow_id"]
+
+
+@pytest.mark.parametrize(
+    ("scope", "suffix", "stored_filter"),
+    [
+        ("network", "network", {}),
+        ("route", "route_RPSP", {"notice_route_id": "RPSP"}),
+        ("mode", "mode_Train", {"notice_route_mode": "Train"}),
+    ],
+)
+async def test_notice_config_entry_is_unique_to_network_and_scope(
+    hass: HomeAssistant, scope: str, suffix: str, stored_filter: dict[str, str]
+) -> None:
+    """Only the selected scope filter is saved and used in the unique ID."""
+    flow_id = await _notice_flow(hass)
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_alert_feed",
+        ) as fetch,
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {
+                CONF_NAME: "Rail notices",
+                "notice_network": "CNS",
+                "notice_scope": scope,
+                "notice_route_id": "  RPSP  ",
+                "notice_route_mode": "Train",
+            },
+        )
+    fetch.assert_awaited_once_with("CNS")
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == f"notices_CNS_{suffix}"
+    assert result["data"] == {
+        CONF_NAME: "Rail notices",
+        CONF_MODE: "notices",
+        CONF_SCAN_INTERVAL: 60,
+        "notice_network": "CNS",
+        "notice_scope": scope,
+        **stored_filter,
+    }
+
+
+@pytest.mark.parametrize("bad_route", ["", "foo\x00bar", "x" * 129])
+async def test_notice_config_validates_gtfs_route_id_before_fetch(
+    hass: HomeAssistant, bad_route: str
+) -> None:
+    """Empty, nonprintable or oversized route IDs are rejected."""
+    flow_id = await _notice_flow(hass)
+    with patch(
+        "custom_components.translink.client.TranslinkClient.fetch_alert_feed"
+    ) as fetch:
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {"notice_scope": "route", "notice_route_id": bad_route},
+        )
+    assert result["errors"] == {"notice_route_id": "invalid_route_id"}
+    fetch.assert_not_awaited()
+
+
+async def test_notice_config_validation_and_feed_failure(hass: HomeAssistant) -> None:
+    """A missing mode and a feed failure each retain an editable form."""
+    from custom_components.translink.client import AlertFeedError
+
+    flow_id = await _notice_flow(hass)
+    with patch(
+        "custom_components.translink.client.TranslinkClient.fetch_alert_feed",
+        side_effect=AlertFeedError("Unavailable"),
+    ) as fetch:
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"notice_scope": "mode"}
+        )
+        assert result["errors"] == {"notice_route_mode": "notice_mode_required"}
+        fetch.assert_not_awaited()
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"notice_scope": "mode", "notice_route_mode": "Tram"}
+        )
+        assert result["errors"] == {"base": "cannot_connect"}
+        fetch.assert_awaited_once_with("SEQ")
+
+
+async def test_notice_reconfigure_changes_id_and_preserves_scan_interval(
+    hass: HomeAssistant,
+) -> None:
+    """A changed notice scope reloads the entry with new and clean scope data."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="notices_SEQ_route_RPSP",
+        data={
+            CONF_MODE: "notices",
+            "notice_network": "SEQ",
+            "notice_scope": "route",
+            "notice_route_id": "RPSP",
+        },
+        options={CONF_SCAN_INTERVAL: 120},
+    )
+    entry.add_to_hass(hass)
+    for scope, extra, wanted_id in [
+        ("route", {"notice_route_id": "RPSP"}, "notices_SEQ_route_RPSP"),
+        ("mode", {"notice_route_mode": "Bus"}, "notices_SEQ_mode_Bus"),
+    ]:
+        form = await entry.start_reconfigure_flow(hass)
+        assert form["step_id"] == "notices_reconfigure"
+        with (
+            patch(
+                "custom_components.translink.client.TranslinkClient.fetch_alert_feed"
+            ) as fetch,
+            patch.object(hass.config_entries, "async_schedule_reload") as reload,
+        ):
+            result = await hass.config_entries.flow.async_configure(
+                form["flow_id"], {"notice_scope": scope, **extra}
+            )
+        assert result["reason"] == "reconfigure_successful"
+        assert entry.unique_id == wanted_id
+        assert entry.options == {CONF_SCAN_INTERVAL: 120}
+        assert entry.data["notice_scope"] == scope
+        fetch.assert_awaited_once_with("SEQ")
+        reload.assert_called_once_with(entry.entry_id)
+    assert "notice_route_id" not in entry.data
+
+    options = await hass.config_entries.options.async_init(entry.entry_id)
+    assert options["step_id"] == "notices"
+    assert set(options["data_schema"]({"scan_interval": 120})) == {"scan_interval"}
+    result = await hass.config_entries.options.async_configure(
+        options["flow_id"], {CONF_SCAN_INTERVAL: 90}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {CONF_SCAN_INTERVAL: 90}
+
+
+async def test_notice_scope_duplicate_blocks_setup_and_reconfigure(
+    hass: HomeAssistant,
+) -> None:
+    """The same network and scope cannot be configured twice."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="notices_SEQ_network",
+        data={CONF_MODE: "notices", "notice_network": "SEQ", "notice_scope": "network"},
+    )
+    entry.add_to_hass(hass)
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="notices_CNS_network",
+        data={CONF_MODE: "notices", "notice_network": "CNS", "notice_scope": "network"},
+    )
+    second.add_to_hass(hass)
+
+    form = await second.start_reconfigure_flow(hass)
+    flow_id = await _notice_flow(hass)
+    with patch(
+        "custom_components.translink.client.TranslinkClient.fetch_alert_feed"
+    ) as fetch:
+        for current_flow in (form["flow_id"], flow_id):
+            result = await hass.config_entries.flow.async_configure(
+                current_flow, {"notice_network": "SEQ", "notice_scope": "network"}
+            )
+            assert result["reason"] == "already_configured"
+        fetch.assert_not_awaited()
+    assert second.unique_id == "notices_CNS_network"
+
+
+async def test_loaded_notice_reconfigure_uses_entry_reload_listener(
+    hass: HomeAssistant,
+) -> None:
+    """A loaded notice entry uses its existing Home Assistant reload listener."""
+    from unittest.mock import AsyncMock
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="notices_SEQ_network",
+        data={CONF_MODE: "notices", "notice_network": "SEQ", "notice_scope": "network"},
+    )
+    entry.add_to_hass(hass)
+    reload = AsyncMock()
+    entry.add_update_listener(reload)
+    form = await entry.start_reconfigure_flow(hass)
+    with patch("custom_components.translink.client.TranslinkClient.fetch_alert_feed"):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {"notice_network": "CNS", "notice_scope": "network"}
+        )
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+    reload.assert_awaited_once_with(hass, entry)
+    assert entry.unique_id == "notices_CNS_network"

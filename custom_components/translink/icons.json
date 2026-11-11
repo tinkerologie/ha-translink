@@ -45,6 +45,9 @@
       "disruptions": {
         "default": "mdi:alert"
       },
+      "last_successful_fetch": {
+        "default": "mdi:clock-check-outline"
+      },
       "disruption_description": {
         "default": "mdi:alert-box-outline"
       },

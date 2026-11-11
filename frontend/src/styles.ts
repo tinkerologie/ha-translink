@@ -506,6 +506,10 @@ export const cardStyles = css`
     align-items: flex-start;
     gap: 10px;
   }
+  .alert-title > div,
+  .notice-scope {
+    overflow-wrap: anywhere;
+  }
   .alert-title ha-icon {
     color: var(--warning-color);
     flex-shrink: 0;

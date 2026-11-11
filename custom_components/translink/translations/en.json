@@ -3,12 +3,12 @@
     "step": {
       "user": {
         "title": "Translink Queensland",
-        "description": "Track a journey or create a departure board. Find a stop by name, stop number, or location.",
+        "description": "Track a journey, create a departure board or monitor regional service notices.",
         "data": {
           "mode": "Mode"
         },
         "data_description": {
-          "mode": "Choose Journey to track a trip, Stop / Station to search by name or number, or Nearby stop to search around a location."
+          "mode": "Choose Journey for a trip, Stop / Station to search by name or number, Nearby stop to search around a location, or Service Notices for GTFS-RT alerts."
         }
       },
       "journey": {
@@ -111,6 +111,36 @@
         "data_description": {
           "realtime_region": "Cairns and South East Queensland have public live feeds. Choose schedule only for other regions."
         }
+      },
+      "notices": {
+        "title": "Configure service notices",
+        "description": "Choose a Translink network and scope for service notices.",
+        "data": {
+          "name": "Name",
+          "notice_network": "Network",
+          "notice_scope": "Scope",
+          "notice_route_id": "GTFS route ID",
+          "notice_route_mode": "Transport mode"
+        },
+        "data_description": {
+          "notice_route_id": "For route scope, enter a GTFS route ID such as RPSP. Passenger-facing route names and numbers may differ.",
+          "notice_route_mode": "For transport mode scope, choose the mode to monitor."
+        }
+      },
+      "notices_reconfigure": {
+        "title": "Reconfigure service notices",
+        "description": "Update the name, network or scope for this service notice entry.",
+        "data": {
+          "name": "Name",
+          "notice_network": "Network",
+          "notice_scope": "Scope",
+          "notice_route_id": "GTFS route ID",
+          "notice_route_mode": "Transport mode"
+        },
+        "data_description": {
+          "notice_route_id": "For route scope, enter a GTFS route ID such as RPSP. Passenger-facing route names and numbers may differ.",
+          "notice_route_mode": "For transport mode scope, choose the mode to monitor."
+        }
       }
     },
     "error": {
@@ -121,10 +151,12 @@
       "region_mismatch": "Choose a live feed region that serves this journey, or choose schedule only.",
       "location_unavailable": "Choose a zone or map point with valid coordinates.",
       "no_nearby_stops": "Translink found no nearby stops for this location.",
-      "unknown": "Unexpected error occurred"
+      "unknown": "Unexpected error occurred",
+      "invalid_route_id": "Enter a printable GTFS route ID of 1 to 128 characters.",
+      "notice_mode_required": "Select a transport mode."
     },
     "abort": {
-      "already_configured": "This Translink journey or stop is already configured",
+      "already_configured": "This Translink journey, stop or notice scope is already configured",
       "reconfigure_successful": "Reconfiguration was successful",
       "reconfigure_failed": "Reconfiguration failed because the config entry could not be found"
     }
@@ -158,6 +190,15 @@
           "max_walking_distance": "Maximum acceptable walking distance.",
           "fare_preference": "Preferred go card fare category to display.",
           "track_vehicle": "Expose live GPS vehicle positions on Home Assistant maps."
+        }
+      },
+      "notices": {
+        "title": "Service notice options",
+        "data": {
+          "scan_interval": "Update Interval (seconds)"
+        },
+        "data_description": {
+          "scan_interval": "How frequently to refresh the regional Alerts feed."
         }
       }
     }
@@ -226,6 +267,9 @@
       },
       "departures_board": {
         "name": "Departures Board"
+      },
+      "last_successful_fetch": {
+        "name": "Last Successful Fetch"
       }
     },
     "device_tracker": {
@@ -316,6 +360,21 @@
         "departure": "Departure",
         "arrival": "Arrival",
         "duration": "Duration"
+      }
+    },
+    "notice_scope": {
+      "options": {
+        "network": "Whole network",
+        "route": "GTFS route",
+        "mode": "Transport mode"
+      }
+    },
+    "notice_route_mode": {
+      "options": {
+        "Bus": "Bus",
+        "Ferry": "Ferry",
+        "Train": "Train",
+        "Tram": "Tram"
       }
     }
   }

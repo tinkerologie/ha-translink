@@ -12,6 +12,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 - Journey entries can select the Cairns or South East Queensland live feed, or use scheduled times only. Cairns predictions and positions require verified service identity. Stop boards use the timetable for their selected stop. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
 
+- Service Notices entries show active and upcoming Translink GTFS-RT alerts for South East Queensland and Cairns, with optional route or mode filtering. The Alerts card shows affected entities, active periods and the last successful fetch. [#60](https://github.com/tinkerologie/ha-translink/issues/60)
+
 - The Departures card offers an opt-in Arrivals view for drop-off-only stop visits and optional route, direction, and order controls. Scheduled and expected stop times are shown separately. [#52](https://github.com/tinkerologie/ha-translink/issues/52)
 - Added a preview for sharing journeys, downloading calendar files and creating events in a configured Home Assistant calendar. Journey details link to verified Translink trip timetables. [#58](https://github.com/tinkerologie/ha-translink/issues/58)
 - Added the response-only `translink.plan_journey` action and an opt-in Journey card planner for comparing scheduled alternatives at a selected Brisbane date and time. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
@@ -26,7 +28,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 ### Fixed
 
 - Departure boards use the selected station or platform timetable across routes and directions, with scheduled and expected times shown separately. Stop notices remain visible when there are no departures. [#47](https://github.com/tinkerologie/ha-translink/issues/47)
-- Journey disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notices with a confirmed end time drop out once that time has passed. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
+- Journey disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notice details report `leg` or `request` scope, and notices expire when they reach a confirmed end time. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
 - Setup and reconfiguration ask you to confirm ambiguous location matches. Departure boards accept only stations and stops, and reconfiguration keeps unchanged locations. [#50](https://github.com/tinkerologie/ha-translink/issues/50)
 
 ## [2026.11.0] - 2026-11-11

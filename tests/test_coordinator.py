@@ -128,7 +128,9 @@ async def test_coordinator_update_journey_success(
     coordinator.client.fetch_vehicle_positions = AsyncMock(return_value=())
     coordinator.client.fetch_trip_updates = AsyncMock(return_value={})
 
+    coordinator.client.fetch_alert_feed = AsyncMock()
     summary = await coordinator._async_update_data()
+    coordinator.client.fetch_alert_feed.assert_not_awaited()
     assert isinstance(summary, JourneySummary)
     assert summary.status in ["scheduled", "on_time", "delayed", "departed", "arrived"]
     assert summary.duration_mins == 41
@@ -145,7 +147,9 @@ async def test_coordinator_stop_timetable_keeps_distinct_boardable_visits(
     coordinator.client.plan_journey = AsyncMock()
     coordinator.client.fetch_trip_updates = AsyncMock()
 
+    coordinator.client.fetch_alert_feed = AsyncMock()
     await coordinator.async_refresh()
+    coordinator.client.fetch_alert_feed.assert_not_awaited()
 
     assert coordinator.last_update_success
     coordinator.client.fetch_stop_timetable.assert_awaited_once_with("ST:place_romsta")
@@ -809,3 +813,168 @@ async def test_pinned_timetables_have_priority_within_refresh_budget(
         "new-trip-0",
         "new-trip-1",
     ]
+
+
+async def test_notice_entry_retains_freshness_through_failure_and_recovery(
+    hass: HomeAssistant,
+) -> None:
+    """A real config entry publishes refreshed notices without clearing on error."""
+    from homeassistant.const import STATE_UNAVAILABLE
+    from homeassistant.helpers import device_registry, entity_registry
+
+    from custom_components.translink.api.gtfs_realtime import AlertDetail, AlertFeed
+    from custom_components.translink.client import AlertFeedError
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Cairns notices",
+        data={
+            "name": "Cairns notices",
+            "mode": "notices",
+            "notice_network": "CNS",
+            "notice_scope": "network",
+        },
+        options={CONF_SCAN_INTERVAL: 45},
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.translink.coordinator.TranslinkClient.fetch_alert_feed",
+        side_effect=[
+            AlertFeed(42, "2.0", (AlertDetail("initial", "Initial alert"),)),
+            AlertFeedError("Unavailable"),
+            AlertFeed(43, "2.0", (AlertDetail("updated", "Updated alert"),)),
+            AlertFeed(44, "2.0", (AlertDetail("updated", "Updated text"),)),
+            AlertFeed(45, "2.0", ()),
+        ],
+    ) as fetch:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = entry.runtime_data
+        registry = entity_registry.async_get(hass)
+        entities = {
+            row.translation_key: row
+            for row in entity_registry.async_entries_for_config_entry(
+                registry, entry.entry_id
+            )
+        }
+        assert set(entities) == {
+            "disruptions",
+            "disruption_description",
+            "last_successful_fetch",
+            "disruption",
+        }
+        assert entities["disruptions"].unique_id == f"{entry.entry_id}_disruptions"
+        device = device_registry.async_get(hass).async_get(
+            entities["disruptions"].device_id
+        )
+        assert device.model == "Service Notices"
+        assert {row.device_id for row in entities.values()} == {device.id}
+        notice = entities["disruptions"].entity_id
+        freshness = entities["last_successful_fetch"].entity_id
+        event = entities["disruption"].entity_id
+
+        assert coordinator.update_interval == timedelta(seconds=45)
+        assert hass.states.get(notice).state == "1"
+        assert hass.states.get(notice).attributes["network"] == "CNS"
+        assert "route" not in hass.states.get(notice).attributes
+        assert hass.states.get(event).attributes["event_type"] == "disruption"
+        initial_event = hass.states.get(event).state
+        last_good = coordinator.data
+        last_freshness = hass.states.get(freshness).state
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert not coordinator.last_update_success
+        assert coordinator.data is last_good
+        assert hass.states.get(notice).state == STATE_UNAVAILABLE
+        assert hass.states.get(event).state == STATE_UNAVAILABLE
+        assert hass.states.get(freshness).state == last_freshness
+        assert hass.states.get(freshness).attributes["last_update_success"] is False
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert coordinator.last_update_success
+        assert hass.states.get(notice).attributes["disruptions"][0]["id"] == "updated"
+        recovered_event = hass.states.get(event)
+        assert recovered_event.state != initial_event
+        assert recovered_event.attributes["event_type"] == "disruption"
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert (
+            hass.states.get(notice).attributes["disruptions"][0]["title"]
+            == "Updated text"
+        )
+        assert hass.states.get(event).state == recovered_event.state
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert hass.states.get(notice).state == "0"
+        assert hass.states.get(event).attributes["event_type"] == "cleared"
+        assert [call.args for call in fetch.await_args_list] == [("CNS",)] * 5
+
+
+async def test_notice_entry_first_fetch_failure_retries(hass: HomeAssistant) -> None:
+    """An unavailable feed at setup raises the config-entry retry signal."""
+    from homeassistant.config_entries import ConfigEntryState
+
+    from custom_components.translink.client import AlertFeedError
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"mode": "notices", "notice_network": "SEQ", "notice_scope": "network"},
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.translink.coordinator.TranslinkClient.fetch_alert_feed",
+        side_effect=AlertFeedError("Unavailable"),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.reason is not None and "Unavailable" in entry.reason
+
+
+@pytest.mark.parametrize(
+    ("scope", "configured", "expected"),
+    [
+        ("route", {"notice_route_id": "RPSP"}, "RPSP"),
+        ("mode", {"notice_route_mode": "Tram"}, 0),
+    ],
+)
+async def test_notice_refresh_applies_configured_filter(
+    hass: HomeAssistant, scope: str, configured: dict[str, str], expected: str | int
+) -> None:
+    """The coordinator interprets notice route and mode settings for its own feed."""
+    from custom_components.translink.api.gtfs_realtime import (
+        AlertDetail,
+        AlertFeed,
+        AlertSelector,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_MODE: "notices",
+            "notice_network": "SEQ",
+            "notice_scope": scope,
+            **configured,
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = TranslinkCoordinator(hass, entry)
+    feed = AlertFeed(
+        None,
+        "2.0",
+        (
+            AlertDetail(
+                "right", selectors=(AlertSelector(route_id="RPSP-5154", route_type=0),)
+            ),
+            AlertDetail(
+                "wrong", selectors=(AlertSelector(route_id="else", route_type=3),)
+            ),
+        ),
+    )
+    with patch.object(coordinator.client, "fetch_alert_feed", return_value=feed):
+        await coordinator.async_refresh()
+    assert coordinator.last_update_success
+    assert coordinator.data.scope_value == expected
+    assert [row["id"] for row in coordinator.data.disruptions] == ["right"]

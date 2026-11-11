@@ -556,6 +556,29 @@ class StopSummary(TranslinkApiModel):
     last_updated: datetime | None = None
 
 
+class NoticeSummary(TranslinkApiModel):
+    """Bounded regional service notices from one successful feed fetch."""
+
+    network: str
+    scope_type: Literal["network", "route", "mode"]
+    scope_value: str | int | None
+    feed_timestamp: datetime | None
+    last_successful_fetch: datetime
+    last_updated: datetime
+    total_count: int
+    shown_count: int
+    active_count: int
+    upcoming_count: int
+    unclassified_count: int
+    duplicates_dropped: int
+    disruptions_count: int
+    disruptions: list[dict[str, Any]]
+    disruptions_description: str
+    disruptions_summary: str
+    latest_disruption_title: str | None
+    latest_disruption_description: str | None
+
+
 class TripDeparture(TranslinkApiModel):
     """An actual scheduled stop visit supplied by the public trip page."""
 

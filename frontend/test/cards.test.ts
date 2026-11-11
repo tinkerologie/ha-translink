@@ -1097,3 +1097,98 @@ it.each([
     } as CardConfig),
   ).toThrow(/show_actions|calendar_entity/);
 });
+
+const noticeEntity = "sensor.renamed_cairns_notices";
+
+async function noticeCard(hass: HomeAssistant, entity = noticeEntity) {
+  const card = document.createElement("translink-alerts-card") as AlertsCard;
+  card.setConfig({ type: "custom:translink-alerts-card", entity });
+  card.hass = hass;
+  document.body.append(card);
+  await card.updateComplete;
+  return card;
+}
+
+it("shows regional scope, status, affected selectors and every supplied period", async () => {
+  const card = await noticeCard(fixture);
+  const root = card.shadowRoot!;
+  const rendered = root.textContent;
+  expect(root.querySelector(".notice-scope")?.textContent).toContain(
+    "Cairns · Route RPSP",
+  );
+  expect(root.querySelectorAll(".notice-status")).toHaveLength(2);
+  expect(rendered).toContain("Active");
+  expect(rendered).toContain("Upcoming");
+  expect(rendered).toContain("Network-wide");
+  expect(rendered).toContain("Route RPSP-5154");
+  expect(rendered).toContain("Stop 600029");
+  expect(rendered).toContain("Train");
+  expect(rendered).toContain("Unknown scope");
+  expect(rendered).toContain("+2 more periods");
+  expect(rendered).toContain("+3 more selectors");
+  const periods = root.querySelectorAll(".notice-period");
+  expect(periods).toHaveLength(3);
+  expect(periods[0]?.textContent).toMatch(/From .+ Until /);
+  expect(periods[1]?.textContent?.trim()).toMatch(/^Until /);
+  expect(periods[2]?.textContent?.trim()).toMatch(/^From /);
+  expect(rendered).toContain("Showing 2 of 22 alerts");
+  expect(rendered).toContain("Last successful fetch");
+  expect(
+    window.customCards
+      ?.find((card) => card.type === "translink-alerts-card")
+      ?.getEntitySuggestion?.(fixture, noticeEntity),
+  ).toEqual({
+    config: { type: "custom:translink-alerts-card", entity: noticeEntity },
+  });
+});
+
+it("keeps the last successful fetch visible when a notice entity loses its attributes", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  hass.states[noticeEntity] = {
+    entity_id: noticeEntity,
+    state: "unavailable",
+    attributes: {},
+  };
+  const card = await noticeCard(hass);
+  const root = card.shadowRoot!;
+  expect(root.querySelector('[role="status"]')?.textContent).toContain(
+    "unavailable",
+  );
+  expect(root.textContent).toContain("Last successful fetch");
+  expect(root.textContent).not.toContain("Network maintenance");
+  const available = structuredClone(hass);
+  available.states[noticeEntity] = {
+    ...available.states[noticeEntity]!,
+    state: "0",
+    attributes: {
+      network: "SEQ",
+      scope_type: "mode",
+      scope_value: 4,
+      disruptions: [],
+    },
+  };
+  card.hass = available;
+  await card.updateComplete;
+  expect(root.querySelector(".notice-scope")?.textContent).toContain(
+    "South East Queensland · Ferry",
+  );
+  expect(root.querySelector('[role="status"]')?.textContent).toContain(
+    "No service notices match this scope",
+  );
+});
+
+it("uses legacy planner alert periods and metadata when regional fields are absent", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  hass.states[journeyDisruptions]!.attributes.disruptions = [
+    {
+      title: "Planner disruption",
+      route: "Route 7",
+      starts_utc: "2026-11-11T07:00:00Z",
+    },
+  ];
+  const root = (await noticeCard(hass, journeyDisruptions)).shadowRoot!;
+  expect(root.textContent).toContain("Route 7");
+  expect(root.textContent).toContain("From ");
+  expect(root.querySelector(".notice-status")).toBeNull();
+  expect(root.textContent).not.toContain("Last successful fetch");
+});

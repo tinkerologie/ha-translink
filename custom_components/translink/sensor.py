@@ -20,8 +20,17 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.models import JourneySummary, StopSummary
-from .const import BRISBANE_TZ, CONF_NAME, DOMAIN, MODE_JOURNEY, get_vehicle_icon
+from .api.models import JourneySummary, NoticeSummary, StopSummary
+from .const import (
+    BRISBANE_TZ,
+    CONF_NAME,
+    DEVICE_MODELS,
+    DOMAIN,
+    MODE_JOURNEY,
+    MODE_NOTICES,
+    MODE_STOP,
+    get_vehicle_icon,
+)
 from .coordinator import TranslinkCoordinator
 
 if TYPE_CHECKING:
@@ -321,6 +330,49 @@ STOP_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
 )
 
 
+def _notice_attributes(data: NoticeSummary) -> dict[str, Any]:
+    return {
+        "disruptions": data.disruptions,
+        "description": data.disruptions_description,
+        "summary": data.disruptions_summary,
+        "latest_title": data.latest_disruption_title,
+        "latest_description": data.latest_disruption_description,
+        "network": data.network,
+        "scope_type": data.scope_type,
+        "scope_value": data.scope_value,
+        "feed_timestamp": data.feed_timestamp,
+        "last_successful_fetch": data.last_successful_fetch,
+        "total_count": data.total_count,
+        "shown_count": data.shown_count,
+        "active_count": data.active_count,
+        "upcoming_count": data.upcoming_count,
+        "unclassified_count": data.unclassified_count,
+        "duplicates_dropped": data.duplicates_dropped,
+    }
+
+
+NOTICE_SENSORS = tuple(
+    TranslinkSensorEntityDescription(
+        key=description.key,
+        translation_key=description.translation_key,
+        entity_category=description.entity_category,
+        value_fn=description.value_fn,
+        attributes_fn=_notice_attributes
+        if description.key == "disruptions"
+        else description.attributes_fn,
+    )
+    for description in STOP_SENSORS
+    if description.key in {"disruptions", "disruption_description"}
+)
+NOTICE_FRESHNESS_SENSOR = TranslinkSensorEntityDescription(
+    key="last_successful_fetch",
+    translation_key="last_successful_fetch",
+    device_class=SensorDeviceClass.TIMESTAMP,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    value_fn=lambda data: data.last_successful_fetch,
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: TranslinkConfigEntry,
@@ -330,6 +382,20 @@ async def async_setup_entry(
     coordinator: TranslinkCoordinator = (
         getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
     )
+
+    if coordinator.mode == MODE_NOTICES:
+        async_add_entities(
+            [
+                *(
+                    TranslinkNoticeSensor(coordinator, description, entry)
+                    for description in NOTICE_SENSORS
+                ),
+                TranslinkNoticeFreshnessSensor(
+                    coordinator, NOTICE_FRESHNESS_SENSOR, entry
+                ),
+            ]
+        )
+        return
 
     descriptions = JOURNEY_SENSORS if coordinator.mode == MODE_JOURNEY else STOP_SENSORS
 
@@ -376,17 +442,11 @@ class TranslinkSensor(
         name = entry.data.get(CONF_NAME, "Translink")
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
 
-        device_model = (
-            "Public Transport Journey"
-            if coordinator.mode == MODE_JOURNEY
-            else "Station Departure Board"
-        )
-
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=name,
             manufacturer="Translink Queensland",
-            model=device_model,
+            model=DEVICE_MODELS.get(coordinator.mode, DEVICE_MODELS[MODE_STOP]),
             entry_type=DeviceEntryType.SERVICE,
         )
 
@@ -412,3 +472,29 @@ class TranslinkSensor(
         if not self.coordinator.data or not self.entity_description.attributes_fn:
             return {}
         return self.entity_description.attributes_fn(self.coordinator.data)
+
+
+class TranslinkNoticeSensor(TranslinkSensor):
+    """Publish service notices while excluding alert rows from the recorder."""
+
+    _unrecorded_attributes = TranslinkSensor._unrecorded_attributes | {"disruptions"}
+
+
+class TranslinkNoticeFreshnessSensor(TranslinkSensor):
+    """Show the last successful fetch even during a feed failure."""
+
+    @property
+    def available(self) -> bool:
+        """Report availability once a feed has been read successfully."""
+        return self.coordinator.data is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Show the feed timestamp and health of the last refresh separately."""
+        data = self.coordinator.data
+        if not isinstance(data, NoticeSummary):
+            return {}
+        return {
+            "feed_timestamp": data.feed_timestamp,
+            "last_update_success": self.coordinator.last_update_success,
+        }

@@ -14,6 +14,18 @@ CARD_URL: Final = f"/translink_cards/{CARD_FILENAME}"
 CONF_MODE: Final = "mode"
 MODE_JOURNEY: Final = "journey"
 MODE_STOP: Final = "stop"
+MODE_NOTICES: Final = "notices"
+
+DEVICE_MODELS: Final = {
+    MODE_JOURNEY: "Public Transport Journey",
+    MODE_STOP: "Station Departure Board",
+    MODE_NOTICES: "Service Notices",
+}
+
+CONF_NOTICE_NETWORK: Final = "notice_network"
+CONF_NOTICE_SCOPE: Final = "notice_scope"
+CONF_NOTICE_ROUTE_ID: Final = "notice_route_id"
+CONF_NOTICE_ROUTE_MODE: Final = "notice_route_mode"
 SETUP_NEARBY_STOP: Final = "nearby_stop"
 
 CONF_NAME: Final = "name"
@@ -112,6 +124,20 @@ REALTIME_FEED_REGIONS: Final = {
         strict_identity=True,
     ),
 }
+
+ALERT_NETWORK_NAMES: Final = {
+    REALTIME_REGION_SEQ: "South East Queensland",
+    REALTIME_REGION_CAIRNS: "Cairns",
+}
+ALERT_FEED_MAX_BYTES: Final = 2 * 1024 * 1024
+ALERT_FEED_TIMEOUT: Final = 10
+
+NOTICE_ROUTE_TYPES: Final = {"Bus": 3, "Ferry": 4, "Train": 2, "Tram": 0}
+NOTICE_LIMIT: Final = 20
+NOTICE_DESCRIPTION_LIMIT: Final = 1024
+NOTICE_SELECTOR_LIMIT: Final = 10
+NOTICE_PERIOD_LIMIT: Final = 10
+NOTICE_ROUTE_ID_LIMIT: Final = 128
 
 REALTIME_MAX_AGE_SECONDS: Final = 300
 REALTIME_MAX_FUTURE_SKEW_SECONDS: Final = 60

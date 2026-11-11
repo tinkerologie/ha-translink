@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +18,7 @@ from custom_components.translink.client import (
     JourneyPlanResult,
     TranslinkClient,
     TranslinkConnectionError,
+    TranslinkResponseError,
 )
 from custom_components.translink.const import (
     CONF_END_LOCATION_ID,
@@ -27,25 +30,34 @@ from custom_components.translink.const import (
     CONF_STOP_LOCATION_ID,
     CONF_STOP_NAME,
     DOMAIN,
+    JP_API_BASE_URL,
     MODE_JOURNEY,
     MODE_STOP,
 )
 from custom_components.translink.event import TranslinkDisruptionEvent
 
+if TYPE_CHECKING:
+    from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
+
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
 
 @pytest.fixture
-def planner(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    """Stub upstream requests while running the real integration and platforms."""
-    plan_journey = AsyncMock()
-    monkeypatch.setattr(TranslinkClient, "plan_journey", plan_journey)
+def mock_realtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep realtime feeds outside planner notice tests."""
     monkeypatch.setattr(
         TranslinkClient, "fetch_trip_updates", AsyncMock(return_value={})
     )
     monkeypatch.setattr(
         TranslinkClient, "fetch_vehicle_positions", AsyncMock(return_value={})
     )
+
+
+@pytest.fixture
+def planner(monkeypatch: pytest.MonkeyPatch, mock_realtime: None) -> AsyncMock:
+    """Stub journey plans while running the real integration and platforms."""
+    plan_journey = AsyncMock()
+    monkeypatch.setattr(TranslinkClient, "plan_journey", plan_journey)
     return plan_journey
 
 
@@ -207,6 +219,32 @@ async def test_journey_closure_clears_when_its_end_time_passes(
         "cleared",
         {"count": 0, "message": "All service disruptions cleared"},
     )
+
+
+@pytest.mark.usefixtures("mock_realtime")
+async def test_malformed_planner_notice_retains_previous_journey(
+    hass: HomeAssistant,
+    journey_entry: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    trigger: MagicMock,
+) -> None:
+    """A validation failure retains the last summary and disruption event."""
+    plan_url = re.compile(rf"^{re.escape(JP_API_BASE_URL)}/api/plan\?id=-?\d+$")
+    aioclient_mock.post(plan_url, json=closure_plan().model_dump())
+    assert await hass.config_entries.async_setup(journey_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = journey_entry.runtime_data
+    previous = coordinator.data
+    assert trigger.call_count == 1
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.post(plan_url, json={"notices": [{"id": [101]}]})
+    await coordinator.async_refresh()
+
+    assert isinstance(coordinator.last_exception, UpdateFailed)
+    assert isinstance(coordinator.last_exception.__cause__, TranslinkResponseError)
+    assert coordinator.data is previous
+    assert trigger.call_count == 1
 
 
 async def test_stop_notice_survives_empty_board_and_unavailable_alerts(

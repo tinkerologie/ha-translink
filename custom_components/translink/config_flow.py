@@ -18,8 +18,14 @@ from pydantic import ConfigDict
 
 from .api.client import nearby_coordinates, plan_matches_realtime_region
 from .api.models import NearbyStop
-from .client import LocationSearchResult, TranslinkApiError, TranslinkClient
+from .client import (
+    AlertFeedError,
+    LocationSearchResult,
+    TranslinkApiError,
+    TranslinkClient,
+)
 from .const import (
+    ALERT_NETWORK_NAMES,
     AVAILABLE_FARE_PREFERENCES,
     AVAILABLE_TIME_SEARCH_MODES,
     AVAILABLE_TRANSPORT_MODES,
@@ -30,6 +36,10 @@ from .const import (
     CONF_MAX_WALKING_DISTANCE,
     CONF_MODE,
     CONF_NAME,
+    CONF_NOTICE_NETWORK,
+    CONF_NOTICE_ROUTE_ID,
+    CONF_NOTICE_ROUTE_MODE,
+    CONF_NOTICE_SCOPE,
     CONF_REALTIME_REGION,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
@@ -52,7 +62,10 @@ from .const import (
     LOCATION_STOP_PREFIX,
     MIN_SCAN_INTERVAL,
     MODE_JOURNEY,
+    MODE_NOTICES,
     MODE_STOP,
+    NOTICE_ROUTE_ID_LIMIT,
+    NOTICE_ROUTE_TYPES,
     REALTIME_FEED_REGIONS,
     REALTIME_REGION_NONE,
     SETUP_NEARBY_STOP,
@@ -239,6 +252,8 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             mode = user_input.get(CONF_MODE, MODE_JOURNEY)
             if mode == MODE_JOURNEY:
                 return await self.async_step_journey()
+            if mode == MODE_NOTICES:
+                return await self.async_step_notices()
             if mode == SETUP_NEARBY_STOP:
                 return await self.async_step_nearby()
             return await self.async_step_stop()
@@ -259,6 +274,9 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                             selector.SelectOptionDict(
                                 value=SETUP_NEARBY_STOP,
                                 label="Nearby stop (Departure Board)",
+                            ),
+                            selector.SelectOptionDict(
+                                value=MODE_NOTICES, label="Service Notices"
                             ),
                         ],
                         mode=selector.SelectSelectorMode.LIST,
@@ -415,6 +433,133 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
             return None
         self._candidates = {CONF_STOP_LOCATION_ID: candidates}
         return await self.async_step_nearby_select()
+
+    async def async_step_notices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set up regional service notices."""
+        return await self._async_notices_form(user_input, None)
+
+    async def async_step_notices_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change a notice entry's name, network or scope."""
+        return await self._async_notices_form(user_input, self._get_reconfigure_entry())
+
+    async def _async_notices_form(
+        self,
+        user_input: dict[str, Any] | None,
+        entry: config_entries.ConfigEntry | None,
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        current = entry.data if entry else {}
+        if user_input is not None:
+            network = user_input[CONF_NOTICE_NETWORK]
+            scope = user_input[CONF_NOTICE_SCOPE]
+            name = user_input[CONF_NAME].strip() or "Service Notices"
+            data = {
+                key: value
+                for key, value in current.items()
+                if key not in {CONF_NOTICE_ROUTE_ID, CONF_NOTICE_ROUTE_MODE}
+            }
+            data.update(
+                {
+                    CONF_MODE: MODE_NOTICES,
+                    CONF_NAME: name,
+                    CONF_NOTICE_NETWORK: network,
+                    CONF_NOTICE_SCOPE: scope,
+                }
+            )
+            data.setdefault(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+            unique_id = f"notices_{network}_{scope}"
+            if scope == "route":
+                route_id = user_input.get(CONF_NOTICE_ROUTE_ID, "").strip()
+                if (
+                    not route_id
+                    or len(route_id) > NOTICE_ROUTE_ID_LIMIT
+                    or not route_id.isprintable()
+                ):
+                    errors[CONF_NOTICE_ROUTE_ID] = "invalid_route_id"
+                else:
+                    data[CONF_NOTICE_ROUTE_ID] = route_id
+                    unique_id += f"_{route_id}"
+            elif scope == "mode":
+                route_mode = user_input.get(CONF_NOTICE_ROUTE_MODE)
+                if route_mode not in NOTICE_ROUTE_TYPES:
+                    errors[CONF_NOTICE_ROUTE_MODE] = "notice_mode_required"
+                else:
+                    data[CONF_NOTICE_ROUTE_MODE] = route_mode
+                    unique_id += f"_{route_mode}"
+
+            if not errors:
+                if entry is None or entry.unique_id != unique_id:
+                    await self.async_set_unique_id(unique_id)
+                    self._abort_if_unique_id_configured()
+                client = TranslinkClient(session=async_get_clientsession(self.hass))
+                try:
+                    await client.fetch_alert_feed(network)
+                except AlertFeedError:
+                    errors["base"] = "cannot_connect"
+                    await self.async_set_unique_id(None)
+                else:
+                    if entry is None:
+                        return self.async_create_entry(title=name, data=data)
+                    if entry.update_listeners and (
+                        update_and_abort := getattr(
+                            self, "async_update_and_abort", None
+                        )
+                    ):
+                        return update_and_abort(
+                            entry, unique_id=unique_id, title=name, data=data
+                        )
+                    return self.async_update_reload_and_abort(
+                        entry, unique_id=unique_id, title=name, data=data
+                    )
+
+        values = {**current, **(user_input or {})}
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_NAME, default=values.get(CONF_NAME, "Service Notices")
+                ): selector.TextSelector(),
+                vol.Required(
+                    CONF_NOTICE_NETWORK, default=values.get(CONF_NOTICE_NETWORK, "SEQ")
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=network, label=label)
+                            for network, label in ALERT_NETWORK_NAMES.items()
+                        ],
+                    )
+                ),
+                vol.Required(
+                    CONF_NOTICE_SCOPE, default=values.get(CONF_NOTICE_SCOPE, "network")
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["network", "route", "mode"],
+                        translation_key="notice_scope",
+                    )
+                ),
+                vol.Optional(
+                    CONF_NOTICE_ROUTE_ID,
+                    description={"suggested_value": values.get(CONF_NOTICE_ROUTE_ID)},
+                ): selector.TextSelector(),
+                vol.Optional(
+                    CONF_NOTICE_ROUTE_MODE,
+                    description={"suggested_value": values.get(CONF_NOTICE_ROUTE_MODE)},
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=list(NOTICE_ROUTE_TYPES),
+                        translation_key="notice_route_mode",
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="notices_reconfigure" if entry else "notices",
+            data_schema=schema,
+            errors=errors,
+        )
 
     async def _async_search_locations(
         self, mode: str, user_input: dict[str, Any], errors: dict[str, str]
@@ -699,6 +844,8 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         if self._reconfigure_entry is None:
             return self.async_abort(reason="reconfigure_failed")
         current_data = self._reconfigure_entry.data
+        if current_data.get(CONF_MODE) == MODE_NOTICES:
+            return await self.async_step_notices_reconfigure(user_input)
         mode = (
             MODE_JOURNEY
             if current_data.get(CONF_MODE, MODE_JOURNEY) == MODE_JOURNEY
@@ -758,20 +905,29 @@ class TranslinkOptionsFlowHandler(config_entries.OptionsFlow):
         entry = self.config_entry
         current_data = {**entry.data, **entry.options}
 
+        scan_interval = {
+            vol.Required(
+                CONF_SCAN_INTERVAL,
+                default=current_data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=MIN_SCAN_INTERVAL,
+                    max=600,
+                    step=10,
+                    unit_of_measurement="seconds",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+        }
+
+        if entry.data.get(CONF_MODE) == MODE_NOTICES:
+            return self.async_show_form(
+                step_id="notices", data_schema=vol.Schema(scan_interval)
+            )
+
         schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_SCAN_INTERVAL,
-                    default=current_data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=MIN_SCAN_INTERVAL,
-                        max=600,
-                        step=10,
-                        unit_of_measurement="seconds",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
+                **scan_interval,
                 vol.Required(
                     CONF_TIME_SEARCH_MODE,
                     default=current_data.get(
@@ -825,3 +981,9 @@ class TranslinkOptionsFlowHandler(config_entries.OptionsFlow):
         )
 
         return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def async_step_notices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the scan interval for a notice entry."""
+        return await self.async_step_init(user_input)

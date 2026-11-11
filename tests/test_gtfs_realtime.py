@@ -574,3 +574,138 @@ def test_captured_vehicle_progress_keeps_both_candidates(
         )
         for record in candidates
     ] == [(30, "IN_TRANSIT_TO", "82", None), (1, "STOPPED_AT", "16510", None)]
+
+
+def test_parse_alert_feed_preserves_windows_selectors_and_language() -> None:
+    """Strict parsing preserves scope and the distinction between absent and zero."""
+    from custom_components.translink.api.gtfs_realtime import parse_alert_feed
+
+    def translation(text: str, language: str) -> bytes:
+        return _encode_field(
+            1, 2, _encode_field(1, 2, text) + _encode_field(2, 2, language)
+        )
+
+    header = _encode_field(1, 2, _encode_field(1, 2, "2.0") + _encode_field(3, 0, 42))
+    assert parse_alert_feed(header).alerts == ()
+    selector = (
+        _encode_field(1, 2, "agency")
+        + _encode_field(2, 2, "RPSP-5154")
+        + _encode_field(3, 0, 2)
+        + _encode_field(4, 2, _encode_field(1, 2, "trip") + _encode_field(5, 2, "RPSP"))
+        + _encode_field(5, 2, "stop")
+        + _encode_field(6, 0, 0)
+    )
+    alert = (
+        _encode_field(1, 2, _encode_field(1, 0, 0))
+        + _encode_field(1, 2, _encode_field(2, 0, 99))
+        + _encode_field(5, 2, selector)
+        + _encode_field(5, 2, _encode_field(1, 2, "other agency"))
+        + _encode_field(5, 2, b"")
+        + _encode_field(5, 2, _encode_field(99, 0, 0))
+        + _encode_field(6, 0, 6)
+        + _encode_field(7, 0, 99)
+        + _encode_field(10, 2, translation("Retard", "fr") + translation("Delay", "en"))
+        + _encode_field(11, 2, translation("Retard", "fr") + translation("Details", ""))
+        + _encode_field(14, 0, 3)
+    )
+    entity = _encode_field(2, 2, _encode_field(1, 2, "id") + _encode_field(5, 2, alert))
+    anonymous = _encode_field(2, 2, _encode_field(5, 2, b""))
+    feed = parse_alert_feed(header + entity + entity + anonymous)
+    assert feed.header_timestamp == 42
+    assert feed.gtfs_realtime_version == "2.0"
+    assert [record.entity_id for record in feed.alerts] == ["id", "id", ""]
+    record = feed.alerts[0]
+    assert (record.header_text, record.description_text) == ("Delay", "Details")
+    assert (record.cause, record.effect, record.severity) == (
+        "ACCIDENT",
+        "UNKNOWN_99",
+        "WARNING",
+    )
+    assert [(period.start, period.end) for period in record.periods] == [
+        (0, None),
+        (None, 99),
+    ]
+    combined, agency_only, empty, unknown = record.selectors
+    assert (combined.agency_id, combined.route_id, combined.route_type) == (
+        "agency",
+        "RPSP-5154",
+        2,
+    )
+    assert (
+        combined.trip_id,
+        combined.trip_route_id,
+        combined.stop_id,
+        combined.direction_id,
+    ) == ("trip", "RPSP", "stop", 0)
+    assert agency_only.agency_id == "other agency"
+    assert not empty.has_unknown_fields
+    assert unknown.has_unknown_fields
+    assert feed.alerts[-1].selectors == ()
+
+
+def test_parse_alert_feed_rejects_invalid_wire_data() -> None:
+    """Malformed data cannot look like a successfully cleared alert feed."""
+    import pytest
+
+    from custom_components.translink.api.gtfs_realtime import (
+        GtfsRealtimeDecodeError,
+        parse_alert_feed,
+    )
+
+    header = _encode_field(1, 2, _encode_field(1, 2, "2.0"))
+    for malformed in (
+        b"",
+        b"\x0a\x00",
+        b"\x08\x01",
+        header + b"\x80",
+        header + b"\x12\x80",
+        header + b"\x12\x0fshort",
+        header + b"\x12\x04\x2a\x02\x2a\x80",
+        header + b"\x12\x01\x0f",
+        header + b"\x12\x01\x29",
+        header + b"\x12\x01\x2d",
+        header + b"\x00",
+        header + b"\x80" * 10 + b"\x01",
+    ):
+        with pytest.raises(GtfsRealtimeDecodeError):
+            parse_alert_feed(malformed)
+
+
+def test_parse_alert_feed_skips_unrelated_fields_and_uses_first_translation() -> None:
+    """Unknown extensions do not displace alert content or change its language."""
+    from custom_components.translink.api.gtfs_realtime import parse_alert_feed
+
+    translations = (
+        _encode_field(2, 2, "extension")
+        + _encode_field(1, 2, _encode_field(2, 2, "en"))
+        + _encode_field(
+            1, 2, _encode_field(1, 2, "Premier") + _encode_field(2, 2, "fr")
+        )
+    )
+    feed = (
+        _encode_field(1, 2, _encode_field(1, 2, "2.0"))
+        + _encode_field(99, 0, 1)
+        + _encode_field(2, 2, _encode_field(1, 2, "no-alert"))
+        + _encode_field(2, 2, _encode_field(5, 2, _encode_field(10, 2, translations)))
+    )
+    assert [alert.header_text for alert in parse_alert_feed(feed).alerts] == ["Premier"]
+
+
+def test_legacy_alert_parser_preserves_records_before_truncated_data() -> None:
+    """The public legacy parser still returns complete alerts before malformed data."""
+    translated = _encode_field(1, 2, _encode_field(1, 2, "Delayed"))
+    alert = _encode_field(10, 2, translated)
+    entity = _encode_field(1, 2, "legacy-id") + _encode_field(5, 2, alert)
+    complete = _encode_field(2, 2, entity)
+
+    assert [row.entity_id for row in parse_alerts(complete + b"\x12\x0a\x00")] == [
+        "legacy-id"
+    ]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x2f")] == ["legacy-id"]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x09\x00")] == [
+        "legacy-id"
+    ]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x0d\x00")] == [
+        "legacy-id"
+    ]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x80")] == ["legacy-id"]

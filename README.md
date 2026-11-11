@@ -15,7 +15,7 @@ The integration provides journey planning, vehicle tracking and stop timetables 
 - **Journey Planning & Commute Tracking**: Scheduled departures and arrivals, durations, transfers, platforms, Queensland 50c fares, and walking directions. Matched live feeds add predictions where available.
 - **Live Vehicle GPS Tracking**: Real-time `device_tracker` entity powered by Translink's open GTFS-RT feeds, exposing live vehicle coordinates, bearing, and speed directly on Home Assistant maps.
 - **Station & Stop Departure Boards**: Boardable departures across routes and directions from the selected station or platform. Rows show scheduled times and include expected times and service flags where Translink supplies them.
-- **Disruptions & Service Alerts**: Journey planner notices and current timetable notices for the selected station or platform.
+- **Disruptions & Service Alerts**: Journey planner notices, stop timetable notices and independent regional GTFS-RT service notices.
 
 ---
 
@@ -89,7 +89,7 @@ After the first zip release, choosing an older release (one without the zip) in 
 
 ### Initial Setup (`Settings > Devices & Services > Add Integration > Translink`)
 
-When adding the integration, select whether you want to track a **Journey** or a **Stop**:
+When adding the integration, select **Journey**, **Stop**, **Nearby stop** or **Service Notices**.
 
 #### 1. Journey Mode (Commute Tracking)
 
@@ -120,11 +120,36 @@ When adding a Translink entry, choose **Nearby stop (Departure Board)**, then se
 
 Home Assistant sends the selected coordinates to Translink once per lookup and discards them afterwards. The entry saves the confirmed stop and your board preferences.
 
+#### 4. Service Notices
+
+Choose **South East Queensland (SEQ)** or **Cairns (CNS)** and a scope.
+
+| Scope | Included notices |
+| --- | --- |
+| **Whole network** | All active and upcoming alerts in the selected feed, including notices with unknown scope. |
+| **GTFS route** | Alerts for the selected GTFS route and agency-wide alerts. Enter a GTFS route ID such as `RPSP` or `RPSP-5154`. The base ID matches versioned IDs such as `RPSP-5154`. Passenger-facing route names and numbers may differ. |
+| **Transport mode** | Alerts with an explicit GTFS `route_type` for Bus, Ferry, Train or Tram, plus agency-wide alerts. |
+
+The Disruptions sensor counts matching notices and shows up to 20 notices. Each
+notice includes up to 10 affected-entity selectors, 10 active periods and 1,024
+description characters. The card shows omitted selector and period counts.
+The sensor's `unclassified_count` reports alerts whose supplied scope could not
+be determined for the selected filter. An empty selector is shown as unknown
+scope. The regional Alerts feed is separate from Journey Planner disruptions
+and the notices supplied by the selected station or platform timetable.
+
+When the Alerts feed fails, the notice sensors and disruption event become
+unavailable. The **Last Successful Fetch** diagnostic sensor keeps the last
+successful refresh time. Its `feed_timestamp` attribute comes from Translink's
+feed header.
+
 ### Reconfigure an entry
 
-Choose **Reconfigure** from the Translink entry's menu to change locations or transport modes. For journeys, you can also change the live feed region. Existing journeys without a saved region use the SEQ feed only for legs the planner identifies as SEQ. Save **Reconfigure** to confirm a feed for that entry. Leave a location name as shown to keep its saved location. A departure board saved with a place or address searches again so you can choose a station or stop. A new search with several matches prompts you to choose a result.
+Choose **Reconfigure** from the Translink entry's menu to change locations or transport modes. For journeys, you can also change the live feed region. Existing journeys without a saved region use the SEQ feed only for legs the planner identifies as SEQ. Save **Reconfigure** to confirm a feed for that entry. Leave a location name as shown to keep its saved location. A departure board saved with a place or address searches again so you can choose a station or stop. A new search with several matches prompts you to choose a result. Reconfigure a Service Notices entry to update its name, network or scope.
 
 ### Integration Options (`Configure` button on the Translink entry)
+
+Service Notices entries offer the update interval only.
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -162,7 +187,7 @@ data only shows that no notice was issued. [Routing research](docs/routing-optio
 | **Fare** | `sensor` (`monetary`, `AUD`) | Go Card transit fare (e.g. `$0.50` under Queensland 50c fares). Attributes: `fares_breakdown`. |
 | **Delay** | `sensor` (`duration`, `min`) | Signed boarding delay in minutes. `unknown` when an applicable prediction is missing. |
 | **Walking Distance** | `sensor` (`distance`, `m`) | Total walking distance in meters across journey legs. |
-| **Disruptions** | `sensor` (`diagnostic`) | Active disruption notices count. Attributes: `disruptions` details. |
+| **Disruptions** | `sensor` (`diagnostic`) | Count of planner notices, including during `no_service`. Each notice in `disruptions` has `leg` scope if referenced by the selected itinerary or `request` scope if returned as a top-level fallback. Notices expire at their timezone-aware end time. |
 | **Itinerary** | `sensor` (`diagnostic`) | Journey legs, available timed calling stops with explicit schedule/prediction provenance, and route polyline. |
 | **Live Vehicle** | `device_tracker` (`gps`) | Live vehicle GPS position, bearing, speed, and vehicle ID from GTFS Realtime feeds. |
 
@@ -226,7 +251,7 @@ Use each card's visual editor to choose the appropriate Translink sensor:
 | `custom:translink-journey-card` | Journey **Itinerary** sensor | `title`, `show_fare`, `legs_expanded`, `show_disruptions`, `show_planner` (default false), `alternatives_limit` (1–10, default 5), `show_actions` (default true), `calendar_entity` (optional) |
 | `custom:translink-departures-card` | Stop **Departures board** sensor | `title`, `max_departures` (1–20, default 5), `show_platform`, `show_arrivals` (default false), `show_filters` (default false) |
 | `custom:translink-progress-card` | Journey **Journey Progress** sensor | `title` |
-| `custom:translink-alerts-card` | Journey or stop **Disruptions** count sensor | `title`, `max_alerts` (1–20, default 5) |
+| `custom:translink-alerts-card` | Journey, stop or Service Notices **Disruptions** count sensor | `title`, `max_alerts` (1–20, default 5) |
 
 Cards find related sensors through Home Assistant's entity registry and device
 identity, so renamed entity IDs are supported. They follow the dashboard theme,
@@ -246,6 +271,15 @@ and **Expected stop time**. An expected time appears only when supplied.
 Enable **Show board filters** to filter the active view by route and direction.
 Choose **Scheduled time** or **Route** order. Within each route, services appear in
 scheduled-time order. The display limit applies after filtering in either view.
+
+To show a regional notice scope, select the **Disruptions** sensor from its
+Service Notices entry.
+
+```yaml
+type: custom:translink-alerts-card
+entity: sensor.cairns_service_notices_disruptions
+max_alerts: 10
+```
 
 Example for a Sections dashboard (replace these IDs with your actual entities):
 

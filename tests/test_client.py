@@ -755,6 +755,7 @@ def test_build_journey_summary_empty_with_notice() -> None:
     assert summary.latest_disruption_title == "Line closure"
     assert summary.latest_disruption_description == "Buses replace trains."
     assert summary.disruptions[0]["severity"] == "Informative"
+    assert summary.disruptions[0]["scope"] == "request"
     assert summary.disruptions[0]["leg"] is None
     assert summary.disruptions[0]["route"] is None
 
@@ -1641,19 +1642,25 @@ def test_build_journey_summary_top_level_notices_fallback() -> None:
 
     assert summary.disruptions_count == 1
     assert summary.disruptions[0]["title"] == "General Alert"
+    assert summary.disruptions[0]["scope"] == "request"
     assert summary.disruptions_summary == "General Alert"
     assert summary.latest_disruption_title == "General Alert"
 
 
+@pytest.mark.parametrize(
+    "ends_utc",
+    ["2026-10-06T09:59:59+10:00", "2026-10-06T10:00:00+10:00"],
+    ids=["past-end", "exact-end"],
+)
 @pytest.mark.parametrize("leg_referenced", [False, True])
 def test_build_journey_summary_filters_expired_winning_notice(
-    leg_referenced: bool,
+    leg_referenced: bool, ends_utc: str
 ) -> None:
     """Use first fallback detail or last referenced detail before testing expiry."""
     expired = {
         "id": "101",
         "title": "Trackwork",
-        "endsUtc": "2026-10-06T09:59:59+10:00",
+        "endsUtc": ends_utc,
     }
     active = {"id": 101, "title": "Duplicate notice", "endsUtc": "2026-10-06T12:00:00Z"}
     unrelated = {"id": 102, "title": "Unreferenced notice"}
@@ -1679,12 +1686,11 @@ def test_build_journey_summary_filters_expired_winning_notice(
     ("starts_utc", "ends_utc"),
     [
         ("2026-10-07T00:00:00Z", "2026-10-08T00:00:00Z"),
-        (None, "2026-10-06T00:00:00Z"),
         (None, "not a date"),
         (None, "2026-10-05T23:59:59"),
         (None, None),
     ],
-    ids=["future", "inclusive-end", "malformed-end", "naive-end", "missing-end"],
+    ids=["future", "malformed-end", "naive-end", "missing-end"],
 )
 def test_build_journey_summary_preserves_current_or_unknown_notice_dates(
     starts_utc: str | None, ends_utc: str | None
@@ -1733,6 +1739,7 @@ def test_build_journey_summary_scopes_notices_to_usable_leg_references() -> None
     summary = build_journey_summary(plan)
 
     assert [notice["id"] for notice in summary.disruptions] == [101, 102]
+    assert [notice["scope"] for notice in summary.disruptions] == ["leg", "leg"]
     referenced, missing_detail = summary.disruptions
     assert referenced["title"] == "Line closure"
     assert referenced["severity"] == "Major"
@@ -2100,3 +2107,61 @@ async def test_plan_journey_uses_brisbane_date_boundary(
     assert leg["route_code"] == "SPRP"
     assert leg["route_name"] == "Springfield line"
     assert leg["departure"] == "2026-10-05T23:43:00+00:00"
+
+
+@pytest.mark.parametrize("network", ["SEQ", "CNS"])
+async def test_fetch_alert_feed_requests_supported_regional_feed(network: str) -> None:
+    """Read a complete regional feed with redirects disabled."""
+    body = b"\x0a\x05\x0a\x032.0\x12\x06\x0a\x02id\x2a\x00"
+    session = stop_timetable_session(body)
+    result = await TranslinkClient(session=session).fetch_alert_feed(network)
+    assert [alert.entity_id for alert in result.alerts] == ["id"]
+    assert session.get.call_args.args == (
+        f"https://gtfsrt.api.translink.com.au/api/realtime/{network}/Alerts",
+    )
+    assert session.get.call_args.kwargs["headers"] == {
+        "Accept": "application/x-protobuf"
+    }
+    assert session.get.call_args.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.parametrize(
+    ("status", "declared", "body", "reason"),
+    [
+        (503, None, b"", "status 503"),
+        (200, 2097153, b"", "size bound"),
+        (200, None, b" " * 2097153, "size bound"),
+        (200, None, b"\x0a", "Malformed"),
+    ],
+    ids=["http", "declared-size", "streamed-size", "malformed"],
+)
+async def test_fetch_alert_feed_distinguishes_failure_from_an_empty_feed(
+    status: int, declared: int | None, body: bytes, reason: str
+) -> None:
+    """Invalid responses fail instead of clearing known notices."""
+    from custom_components.translink.client import AlertFeedError
+
+    session = stop_timetable_session(body, status=status, content_length=declared)
+    with pytest.raises(AlertFeedError, match=reason):
+        await TranslinkClient(session=session).fetch_alert_feed("SEQ")
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, aiohttp.ClientError])
+async def test_fetch_alert_feed_wraps_transport_error(failure: type[Exception]) -> None:
+    """Connection errors are exposed as alert feed failures."""
+    from custom_components.translink.client import AlertFeedError
+
+    session = MagicMock(closed=False)
+    session.get.side_effect = failure
+    with pytest.raises(AlertFeedError, match="Unable to fetch"):
+        await TranslinkClient(session=session).fetch_alert_feed("SEQ")
+
+
+async def test_fetch_alert_feed_rejects_unsupported_network() -> None:
+    """An unrecognised network cannot change the request path."""
+    from custom_components.translink.client import AlertFeedError
+
+    session = MagicMock(closed=False)
+    with pytest.raises(AlertFeedError, match="Unsupported"):
+        await TranslinkClient(session=session).fetch_alert_feed("other")
+    session.get.assert_not_called()

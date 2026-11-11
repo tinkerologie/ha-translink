@@ -17,6 +17,27 @@ export const strings = {
     disabled: "Tracking disabled",
   },
   noAlerts: "No active disruptions reported",
+  notice: {
+    noMatches: "No service notices match this scope",
+    active: "Active",
+    upcoming: "Upcoming",
+    network: "Network",
+    networkWide: "Network-wide",
+    unknown: "Unknown scope",
+    lastSuccessfulFetch: "Last successful fetch",
+    routeType: "Route type",
+    stop: "Stop",
+    trip: "Trip",
+    from: "From",
+    until: "Until",
+    networkName: { SEQ: "South East Queensland", CNS: "Cairns" },
+    modeName: { 0: "Tram", 2: "Train", 3: "Bus", 4: "Ferry" } as Record<
+      number,
+      string
+    >,
+    more: (count: number, label: "period" | "selector") =>
+      `+${count} more ${label}${count === 1 ? "" : "s"}`,
+  },
   scheduled: "Scheduled",
   expected: "Expected",
   scheduledStopTime: "Scheduled stop time",
