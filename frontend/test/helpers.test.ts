@@ -128,3 +128,20 @@ it("collapses duplicate planner departures but preserves different trip identiti
   ).toHaveLength(2);
   expect(normalizeDepartures([row, { ...row, platform: "1" }])).toHaveLength(2);
 });
+
+it("deduplicates timetable rows by visit ID while keeping repeated visits", () => {
+  const visit = {
+    trip_id: "loop",
+    visit_id: "first",
+    route: "T2",
+    platform: "2",
+    scheduled_departure_time: "2026-10-26T08:46:00Z",
+  };
+  const rows = normalizeDepartures([
+    visit,
+    { ...visit, headsign: "Duplicate with different metadata" },
+    { ...visit, visit_id: "repeat" },
+  ]);
+  expect(rows.map((row) => row.visitId)).toEqual(["first", "repeat"]);
+  expect(rows[0]?.time).toBe("2026-10-26T08:46:00Z");
+});

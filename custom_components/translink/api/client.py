@@ -19,6 +19,7 @@ from ..const import (
     ENDPOINT_LOCATION_SEARCH,
     ENDPOINT_PLAN,
     ENDPOINT_STOP_BY_GEOLOCATION,
+    ENDPOINT_STOP_TIMETABLE,
     ENDPOINT_TRIP_PAGE,
     GTFS_FEED_ALERTS,
     GTFS_FEED_TRIP_UPDATES,
@@ -27,6 +28,7 @@ from ..const import (
     JP_API_BASE_URL,
     REALTIME_MAX_AGE_SECONDS,
     REALTIME_MAX_FUTURE_SKEW_SECONDS,
+    STOP_TIMETABLE_MAX_BYTES,
     TRIP_PAGE_CONCURRENCY,
     TRIP_PAGE_MAX_BYTES,
     TRIP_PAGE_TIMEOUT,
@@ -58,6 +60,9 @@ from .models import (
     PlanNotice,
     RealtimeStatus,
     StopRelationship,
+    StopSummary,
+    StopTimetable,
+    TimetableServiceAlerts,
     TripTimetable,
 )
 
@@ -198,6 +203,40 @@ class TranslinkClient:
             raise TranslinkConnectionError("Unable to fetch trip timetable") from err
         except UnicodeDecodeError as err:
             raise TranslinkResponseError("Invalid trip page encoding") from err
+
+    async def fetch_stop_timetable(self, location_id: str) -> StopTimetable:
+        """Fetch the timetable for the complete stored station or platform ID."""
+        path = urllib.parse.quote(location_id, safe="")
+        url = URL(f"{self._jp_base_url}{ENDPOINT_STOP_TIMETABLE}{path}", encoded=True)
+        session = await self._get_session()
+        try:
+            async with session.get(
+                url,
+                headers={"Accept": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+            ) as response:
+                if response.status != 200:
+                    raise TranslinkResponseError(
+                        f"Stop timetable failed with status {response.status}"
+                    )
+                if (
+                    response.content_length is not None
+                    and response.content_length > STOP_TIMETABLE_MAX_BYTES
+                ):
+                    raise TranslinkResponseError("Stop timetable exceeds size bound")
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    body.extend(chunk)
+                    if len(body) > STOP_TIMETABLE_MAX_BYTES:
+                        raise TranslinkResponseError(
+                            "Stop timetable exceeds size bound"
+                        )
+                return StopTimetable.model_validate_json(body)
+        except ValidationError as err:
+            raise TranslinkResponseError("Invalid stop timetable response") from err
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise TranslinkConnectionError("Unable to fetch stop timetable") from err
 
     async def search_locations(self, query: str) -> list[LocationSearchResult]:
         """Search for stops, stations, and locations matching the query."""
@@ -711,25 +750,60 @@ def _build_disruption_fields(
                 )
 
     if not disruptions:
-        for n in notices:
-            nid = str(n.id) if n.id is not None else None
+        for planner_notice in notices:
+            nid = str(planner_notice.id) if planner_notice.id is not None else None
             if nid and nid not in seen_notice_ids:
                 seen_notice_ids.add(nid)
-                disruptions.append(
-                    {
-                        "id": n.id,
-                        "title": n.title,
-                        "description": n.description,
-                        "cause": n.cause,
-                        "effect": n.effect,
-                        "severity": "Informative",
-                        "starts_utc": n.startsUtc,
-                        "ends_utc": n.endsUtc,
-                        "leg": None,
-                        "route": None,
-                    }
-                )
+                disruptions.append(_unscoped_notice(planner_notice, "Informative"))
 
+    return _format_disruptions(disruptions, now)
+
+
+def _unscoped_notice(notice: PlanNotice, severity: str | None) -> dict[str, Any]:
+    """Build the common notice shape when no leg supplies additional detail."""
+    return {
+        "id": notice.id,
+        "title": notice.title,
+        "description": notice.description,
+        "cause": notice.cause,
+        "effect": notice.effect,
+        "severity": severity,
+        "starts_utc": notice.startsUtc,
+        "ends_utc": notice.endsUtc,
+        "leg": None,
+        "route": None,
+    }
+
+
+def stop_disruption_fields(
+    alerts: TimetableServiceAlerts | None,
+    previous: StopSummary | None,
+    now: datetime,
+) -> _DisruptionFields:
+    """Format current stop alerts or retain the previous unavailable result."""
+    if alerts is None and previous is not None:
+        return {
+            "disruptions_count": previous.disruptions_count,
+            "disruptions": previous.disruptions,
+            "disruptions_description": previous.disruptions_description,
+            "disruptions_summary": previous.disruptions_summary,
+            "latest_disruption_title": previous.latest_disruption_title,
+            "latest_disruption_description": previous.latest_disruption_description,
+        }
+
+    notices: dict[str, dict[str, Any]] = {}
+    for notice in alerts.current if alerts is not None else ():
+        if notice.id is not None and notice.id != "":
+            notices.setdefault(
+                str(notice.id), _unscoped_notice(notice, notice.severity)
+            )
+    return _format_disruptions(list(notices.values()), now)
+
+
+def _format_disruptions(
+    disruptions: list[dict[str, Any]], now: datetime
+) -> _DisruptionFields:
+    """Apply expiry and format normalized notices for entities."""
     # Apply expiry after choosing the notice scope and winning detail.
     disruptions = [d for d in disruptions if not _notice_expired(d["ends_utc"], now)]
     titles = [str(d["title"]) for d in disruptions if d.get("title")]

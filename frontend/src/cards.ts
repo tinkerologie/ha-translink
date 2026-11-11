@@ -22,7 +22,13 @@ import {
 } from "./helpers";
 import { strings } from "./strings";
 import { cardStyles } from "./styles";
-import type { CardConfig, EntityState, HomeAssistant, Row } from "./types";
+import type {
+  CardConfig,
+  Departure,
+  EntityState,
+  HomeAssistant,
+  Row,
+} from "./types";
 
 const labels: Record<string, string> = {
   entity: "Translink entity",
@@ -225,6 +231,21 @@ export abstract class TranslinkCard extends LitElement {
       </div>
     </ha-card>`;
   }
+  protected renderDisruptionStrip(state?: EntityState) {
+    const alerts = number(value(state));
+    return this.config.show_disruptions !== false &&
+      alerts !== undefined &&
+      alerts > 0
+      ? html`<div class="alert-strip">
+          <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon
+          ><span
+            >${alerts} service alert${alerts === 1 ? "" : "s"} ·
+            ${text(state?.attributes.latest_title) ??
+            "Check service information"}</span
+          >
+        </div>`
+      : nothing;
+  }
   protected formatTime(value: unknown, date = false) {
     return time(value, this.hass, date);
   }
@@ -366,21 +387,6 @@ export class JourneyCard extends TranslinkCard {
         : html`<div id="journey-legs" hidden></div>`}
     `;
   }
-  private renderDisruptionStrip(state?: EntityState) {
-    const alerts = number(value(state));
-    return this.config.show_disruptions !== false &&
-      alerts !== undefined &&
-      alerts > 0
-      ? html`<div class="alert-strip">
-          <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon
-          ><span
-            >${alerts} service alert${alerts === 1 ? "" : "s"} ·
-            ${text(state?.attributes.latest_title) ??
-            "Check service information"}</span
-          >
-        </div>`
-      : nothing;
-  }
   private renderLeg(leg: Row) {
     const calls = rows(leg.callingStops);
     const source = text(leg.callingStopsSource);
@@ -494,37 +500,23 @@ export class DeparturesCard extends TranslinkCard {
   protected icon = "mdi:train-bus";
   protected renderContent(state: EntityState) {
     const departures = normalizeDepartures(state.attributes.departures);
+    const related = this.related;
     if (!departures.length)
-      return html`<div class="state" role="status">${strings.noServices}</div>`;
-    const delay = number(value(this.related.delay));
-    return html`<div class="secondary">
-        Upcoming departures · Planner results
-      </div>
+      return html`
+        <div class="state" role="status">${strings.noServices}</div>
+        ${this.renderDisruptionStrip(related.disruptions)}
+      `;
+    const delay = number(value(related.delay));
+    return html`<div class="secondary">${strings.stopTimetable}</div>
       ${delay !== undefined && delay !== 0
         ? html`<div class="alert-strip">
             Next service · ${statusLabel(undefined, delay)}
           </div>`
         : nothing}
       <ol class="departures">
-        ${departures.slice(0, this.config.max_departures ?? 5).map(
-          (row) =>
-            html`<li class="departure">
-              <div>
-                ${chip(row.route, row.vehicle, row.color)}${row.headsign
-                  ? html`<div class="destination-name">${row.headsign}</div>`
-                  : nothing}${this.config.show_platform !== false &&
-                row.platform
-                  ? html`<div class="secondary">Platform ${row.platform}</div>`
-                  : nothing}
-              </div>
-              <div class="when">
-                <time datetime=${row.time ?? ""}
-                  >${this.formatTime(row.time)}</time
-                >
-                <div class="secondary">Scheduled</div>
-              </div>
-            </li>`,
-        )}
+        ${departures
+          .slice(0, this.config.max_departures ?? 5)
+          .map((row) => this.renderDeparture(row))}
       </ol>
       ${departures.length > (this.config.max_departures ?? 5)
         ? html`<div class="note">
@@ -532,6 +524,49 @@ export class DeparturesCard extends TranslinkCard {
             departures
           </div>`
         : nothing}`;
+  }
+  private renderDeparture(row: Departure) {
+    const showPlatform = this.config.show_platform !== false;
+    const change = row.platformChange;
+    const statuses = [
+      row.cancelled && strings.cancelled,
+      row.skipped && strings.skipped,
+      row.extra && strings.extraService,
+    ].filter(Boolean);
+    return html`<li class="departure">
+      <div>
+        ${chip(row.route, row.vehicle, row.color)}
+        ${row.headsign
+          ? html`<div class="destination-name">${row.headsign}</div>`
+          : nothing}
+        ${showPlatform && row.platform
+          ? html`<div class="secondary">Platform ${row.platform}</div>`
+          : nothing}
+        ${showPlatform && change
+          ? html`<div class="secondary">
+              ${strings.platformChange}: ${change.oldPlatform ?? "—"} →
+              ${change.platform ?? "—"}
+            </div>`
+          : nothing}
+        ${statuses.length
+          ? html`<div class="departure-status">
+              ${statuses.map((status) => html`<span>${status}</span>`)}
+            </div>`
+          : nothing}
+      </div>
+      <div class="when">
+        <time datetime=${row.time ?? ""}>${this.formatTime(row.time)}</time>
+        <div class="secondary">${strings.scheduled}</div>
+        ${row.expectedTime
+          ? html`<div class="expected-time">
+              <time datetime=${row.expectedTime}
+                >${this.formatTime(row.expectedTime)}</time
+              >
+              <div class="secondary">${strings.expected}</div>
+            </div>`
+          : nothing}
+      </div>
+    </li>`;
   }
 }
 

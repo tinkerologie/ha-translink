@@ -4,9 +4,19 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from itertools import pairwise
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    OnErrorOmit,
+    StrictBool,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from ..const import LOCATION_PLACE_PREFIX, LOCATION_STATION_PREFIX, LOCATION_STOP_PREFIX
 
@@ -200,6 +210,108 @@ class PlanNotice(TranslinkApiModel):
     endsUtc: str | None = None
 
 
+def _require_utc_time(value: str) -> str:
+    """Keep the original timestamp after verifying its UTC offset."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("Timetable departure must be timezone-aware UTC")
+    return value
+
+
+type TimetableTime = Annotated[str, AfterValidator(_require_utc_time)]
+
+
+class TimetableRouteLine(TranslinkApiModel):
+    """Mode metadata for one line of a timetable route."""
+
+    vehicleType: str | None = None
+
+
+class TimetableRoute(TranslinkApiModel):
+    """Timetable route metadata, which may repeat across directions."""
+
+    id: str
+    shortName: str | None = None
+    code: str | None = None
+    name: str | None = None
+    direction: str | None = None
+    routeHexColor: str | None = None
+    lines: list[OnErrorOmit[TimetableRouteLine]] | None = None
+
+
+class TimetablePlatformChange(TranslinkApiModel):
+    """Upstream platform-change metadata for a stop visit."""
+
+    platform: str | None = None
+    oldPlatform: str | None = None
+    isSource: StrictBool | None = None
+
+
+class TimetableRealtime(TranslinkApiModel):
+    """Live data supplied for one stop visit."""
+
+    expectedDepartureUtc: TimetableTime | None = None
+    isExtra: StrictBool | None = None
+    isSkipped: StrictBool | None = None
+    isCancelled: StrictBool | None = None
+    platformChange: TimetablePlatformChange | None = None
+
+
+class TimetableDeparture(TranslinkApiModel):
+    """One visit in a selected station or platform timetable."""
+
+    id: str | None = None
+    routeId: str | None = None
+    headsign: str | None = None
+    direction: str | None = None
+    scheduledDepartureUtc: TimetableTime | None = None
+    departurePlatform: str | None = None
+    canBoardDebark: str | None = None
+    realtime: TimetableRealtime | None = None
+
+    @model_validator(mode="after")
+    def validate_visit(self) -> Self:
+        """Reject empty or unrelated records without requiring a complete identity."""
+        if not (self.id or self.routeId or self.scheduledDepartureUtc):
+            raise ValueError("Expected a timetable visit")
+        return self
+
+
+class TimetableNotice(PlanNotice):
+    """A timetable notice with severity supplied alongside its details."""
+
+    severity: str | None = None
+
+
+class TimetableServiceAlerts(TranslinkApiModel):
+    """Notices currently active at the selected location."""
+
+    current: list[TimetableNotice]
+
+
+class StopTimetable(TranslinkApiModel):
+    """Public timetable and notices scoped to the requested station or platform."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    stops: list[StopInfo] | None = None
+    station: StationInfo | None = None
+    routes: list[OnErrorOmit[TimetableRoute]] = Field(default_factory=list)
+    departures: list[OnErrorOmit[TimetableDeparture]]
+    serviceAlerts: TimetableServiceAlerts | None = None
+
+    @field_validator("serviceAlerts", mode="before")
+    @classmethod
+    def allow_unavailable_alerts(cls, value: Any) -> TimetableServiceAlerts | None:
+        """A missing or unusable section carries no notice update."""
+        if value is not None:
+            try:
+                return TimetableServiceAlerts.model_validate(value)
+            except ValidationError:
+                pass
+        return None
+
+
 class JourneyPlanResult(TranslinkApiModel):
     """Response from /api/plan."""
 
@@ -259,17 +371,35 @@ class JourneySummary(TranslinkApiModel):
     last_updated: datetime | None = None
 
 
-class StopDepartureItem(TranslinkApiModel):
-    """Single departure item from a stop."""
+class StopDeparturePlatformChange(TranslinkApiModel):
+    """Platform-change provenance exposed on a departure row."""
 
-    route_code: str
-    route_name: str
-    vehicle: str
-    headsign: str
-    departure_time: datetime | None = None
-    platform: str | None = None
-    delay_mins: int | None = None
-    trip_id: str | None = None
+    platform: str | None
+    old_platform: str | None
+    is_source: bool | None
+
+
+class StopDepartureItem(TranslinkApiModel):
+    """Normalized departure row exposed in the Home Assistant board attribute."""
+
+    route: str
+    vehicle: str | None
+    headsign: str | None
+    departure_time: str | None
+    platform: str | None
+    trip_id: str | None
+    visit_id: str
+    route_id: str | None
+    direction: str | None
+    boarding: str | None
+    scheduled_departure_time: str | None
+    expected_departure_time: str | None
+    time_source: Literal["scheduled", "realtime"]
+    is_cancelled: bool | None
+    is_skipped: bool | None
+    is_extra: bool | None
+    platform_change: StopDeparturePlatformChange | None
+    route_color: str | None
 
 
 class StopSummary(TranslinkApiModel):
@@ -308,17 +438,8 @@ class TripDeparture(TranslinkApiModel):
     stopId: str
     name: str | None = None
     order: int
-    scheduledDepartureUtc: str
+    scheduledDepartureUtc: TimetableTime
     canBoardDebark: str | None = None
-
-    @field_validator("scheduledDepartureUtc")
-    @classmethod
-    def validate_utc_time(cls, value: str) -> str:
-        """Reject missing time zones and non-UTC timetable values."""
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
-            raise ValueError("Scheduled departure must be timezone-aware UTC")
-        return value
 
 
 class TripTimetable(TranslinkApiModel):

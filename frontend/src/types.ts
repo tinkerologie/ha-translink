@@ -32,7 +32,19 @@ export interface CardConfig {
 export type Row = Record<string, unknown>;
 export interface Departure {
   tripId?: string;
+  visitId?: string;
   time?: string;
+  expectedTime?: string;
+  timeSource?: "scheduled" | "realtime";
+  cancelled?: boolean;
+  skipped?: boolean;
+  extra?: boolean;
+  platformChange?: {
+    platform?: string;
+    oldPlatform?: string;
+    isSource?: boolean;
+  };
+  boarding?: string;
   route: string;
   vehicle: string;
   headsign?: string;

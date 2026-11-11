@@ -384,8 +384,8 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
             }
         )
+        client = TranslinkClient(session=async_get_clientsession(self.hass))
         if mode == MODE_JOURNEY:
-            client = TranslinkClient(session=async_get_clientsession(self.hass))
             await client.plan_journey(
                 start_location_id=data[CONF_START_LOCATION_ID],
                 start_name=data[CONF_START_NAME],
@@ -406,6 +406,8 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                     CONF_FARE_PREFERENCE: DEFAULT_FARE_PREFERENCE,
                 }
             )
+        else:
+            await client.fetch_stop_timetable(data[CONF_STOP_LOCATION_ID])
         return self.async_create_entry(title=name, data=data)
 
     async def _async_finish_reconfigure(
@@ -417,6 +419,11 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         if unique_id != entry.unique_id:
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
+
+        stop_id = data_updates.get(CONF_STOP_LOCATION_ID)
+        if stop_id and stop_id != entry.data.get(CONF_STOP_LOCATION_ID):
+            client = TranslinkClient(session=async_get_clientsession(self.hass))
+            await client.fetch_stop_timetable(stop_id)
 
         options = {
             key: value

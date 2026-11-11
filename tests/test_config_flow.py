@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -14,6 +14,7 @@ from custom_components.translink.client import (
     LocationSearchResult,
     TranslinkApiError,
     TranslinkConnectionError,
+    TranslinkResponseError,
 )
 from custom_components.translink.config_flow import TranslinkConfigFlow
 from custom_components.translink.const import (
@@ -196,6 +197,9 @@ async def test_step_stop_success(hass: HomeAssistant) -> None:
     )
 
     with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable"
+        ) as timetable,
         patch("custom_components.translink.config_flow.async_get_clientsession"),
         patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
@@ -220,6 +224,7 @@ async def test_step_stop_success(hass: HomeAssistant) -> None:
             },
         )
 
+    timetable.assert_awaited_once_with("ST:place_romsta")
     assert result3["type"] is FlowResultType.CREATE_ENTRY
     assert result3["title"] == "Roma Street"
     assert result3["data"][CONF_MODE] == MODE_STOP
@@ -249,6 +254,10 @@ async def test_stop_search_confirms_a_board_candidate(hass: HomeAssistant) -> No
 
     with (
         patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable",
+            side_effect=[TranslinkResponseError("Unavailable timetable"), None],
+        ) as timetable,
+        patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
             return_value=[*_ROMA_STREET_RESULTS, _ROMA_STREET_RESULTS[-1]],
         ),
@@ -271,6 +280,7 @@ async def test_stop_search_confirms_a_board_candidate(hass: HomeAssistant) -> No
             {"value": "SI:600036", "label": "Roma Street platform 4 — Stop 600036"},
         ]
 
+        timetable.assert_not_awaited()
         with pytest.raises(InvalidData):
             await hass.config_entries.flow.async_configure(
                 flow_id, {CONF_STOP_LOCATION_ID: "PL:parkland"}
@@ -279,6 +289,15 @@ async def test_stop_search_confirms_a_board_candidate(hass: HomeAssistant) -> No
             flow_id, {CONF_STOP_LOCATION_ID: "SI:600036"}
         )
 
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "stop_select"
+        assert result["errors"] == {"base": "cannot_connect"}
+        timetable.assert_awaited_once_with("SI:600036")
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_STOP_LOCATION_ID: "SI:600036"}
+        )
+
+    assert timetable.await_args_list == [call("SI:600036"), call("SI:600036")]
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_STOP_LOCATION_ID] == "SI:600036"
     assert result["data"][CONF_STOP_NAME] == "Roma Street platform 4"
@@ -446,6 +465,9 @@ async def test_step_reconfigure_stop(hass: HomeAssistant) -> None:
     )
 
     with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable"
+        ) as timetable,
         patch("custom_components.translink.config_flow.async_get_clientsession"),
         patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
@@ -459,6 +481,7 @@ async def test_step_reconfigure_stop(hass: HomeAssistant) -> None:
             },
         )
 
+    timetable.assert_awaited_once_with("ST:place_romsta")
     assert result2["type"] is FlowResultType.ABORT
     assert result2["reason"] == "reconfigure_successful"
     assert entry.data["stop_location_id"] == "ST:place_romsta"
@@ -987,6 +1010,9 @@ async def test_step_reconfigure_stop_same_location_and_conflict(
     # 1. Reconfigure entry1 keeping the exact same stop (branch: new_unique_id == entry.unique_id)
     flow1 = await entry1.start_reconfigure_flow(hass)
     with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable"
+        ) as timetable,
         patch("custom_components.translink.config_flow.async_get_clientsession"),
         patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
@@ -997,6 +1023,7 @@ async def test_step_reconfigure_stop_same_location_and_conflict(
             flow1["flow_id"],
             {CONF_STOP_NAME: "Central station"},
         )
+    timetable.assert_not_awaited()
     search.assert_not_awaited()
     assert res1["type"] is FlowResultType.ABORT
     assert res1["reason"] == "reconfigure_successful"
@@ -1196,6 +1223,9 @@ async def test_reconfigure_legacy_place_board_searches_again(
 
     with (
         patch(
+            "custom_components.translink.client.TranslinkClient.fetch_stop_timetable"
+        ) as timetable,
+        patch(
             "custom_components.translink.client.TranslinkClient.search_locations",
             return_value=results,
         ) as search,
@@ -1205,6 +1235,10 @@ async def test_reconfigure_legacy_place_board_searches_again(
             flow["flow_id"], {CONF_STOP_NAME: "Roma Street Parkland"}
         )
 
+    if has_station:
+        timetable.assert_awaited_once_with("ST:place_rompl")
+    else:
+        timetable.assert_not_awaited()
     search.assert_awaited_once_with("Roma Street Parkland")
     if has_station:
         assert result["reason"] == "reconfigure_successful"

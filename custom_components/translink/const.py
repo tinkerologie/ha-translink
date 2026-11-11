@@ -58,6 +58,8 @@ LOCATION_PLACE_PREFIX: Final = "PL:"
 ENDPOINT_LOCATION_SEARCH: Final = "/api/location/search"
 ENDPOINT_PLAN: Final = "/api/plan"
 ENDPOINT_STOP_BY_GEOLOCATION: Final = "/api/stop/bygeolocation"
+ENDPOINT_STOP_TIMETABLE: Final = "/api/stop/timetable/"
+STOP_TIMETABLE_MAX_BYTES: Final = 1024 * 1024
 
 GTFS_FEED_VEHICLE_POSITIONS: Final = "/api/realtime/SEQ/VehiclePositions"
 GTFS_FEED_TRIP_UPDATES: Final = "/api/realtime/SEQ/TripUpdates"

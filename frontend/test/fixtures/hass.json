@@ -475,17 +475,28 @@
       "attributes": {
         "departures": [
           {
+            "trip_id": "train-loop",
+            "visit_id": "train-loop-1",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
             "headsign": "Springfield Central",
             "departure_time": "2026-10-26T07:46:00Z",
-            "platform": "5"
+            "scheduled_departure_time": "2026-10-26T07:46:00Z",
+            "expected_departure_time": "2026-10-26T07:48:00Z",
+            "time_source": "realtime",
+            "platform": "5",
+            "is_extra": true,
+            "platform_change": { "old_platform": "5", "platform": "6" }
           },
           {
+            "trip_id": "train-loop",
+            "visit_id": "train-loop-2",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
             "headsign": "Springfield Central",
-            "departure_time": "2026-10-26T07:46:00Z",
+            "departure_time": "2026-10-26T08:46:00Z",
+            "scheduled_departure_time": "2026-10-26T08:46:00Z",
+            "time_source": "scheduled",
             "platform": "5"
           }
         ]

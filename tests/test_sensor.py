@@ -248,6 +248,7 @@ def test_stop_sensor_properties(sample_stop_summary: StopSummary) -> None:
     }
 
     assert sensors["platform"].native_value == "3"
+    assert "departures" in sensors["departures_board"]._unrecorded_attributes
     assert sensors["platform"].icon == "mdi:bus-stop-uncovered"
     assert sensors["disruptions"].native_value == 1
     assert sensors["disruption_description"].native_value == "Lift Maintenance"
