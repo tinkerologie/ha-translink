@@ -45,17 +45,20 @@ jobs:
         channel: [release, dev]
     steps:
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up uv
+        id: uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: latest
           enable-cache: true
 
       - name: Set up Python
+        id: python
         run: |
           uv python install 3.14.2
           uv venv --python 3.14.2
@@ -117,6 +120,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out the resolved Core development commit
+        id: core_checkout
         if: matrix.channel == 'dev'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -223,6 +227,7 @@ jobs:
           echo "ref=$revision" >> "$GITHUB_OUTPUT"
 
       - name: Build the Core development test plugin
+        id: build_plugin
         if: matrix.channel == 'dev' && steps.classify.outputs.harness == 'supported'
         run: uv build .local/ha-next-core/packages/pytest-homeassistant --out-dir "$RUNNER_TEMP/ha-next-wheels"
 
@@ -300,6 +305,13 @@ jobs:
         env:
           CHANNEL: ${{ matrix.channel }}
           HA_VERSION: ${{ steps.resolve.outputs.ha_version }}
+          CHECKOUT: ${{ steps.checkout.outcome }}
+          UV_SETUP: ${{ steps.uv.outcome }}
+          PYTHON_SETUP: ${{ steps.python.outcome }}
+          RESOLVE: ${{ steps.resolve.outcome }}
+          CORE_CHECKOUT: ${{ steps.core_checkout.outcome }}
+          RELEASE_REF: ${{ steps.release_revision.outcome }}
+          BUILD_PLUGIN: ${{ steps.build_plugin.outcome }}
           INSTALL: ${{ steps.install.outcome }}
           CLASSIFY: ${{ steps.classify.outcome }}
           REASON: ${{ steps.classify.outputs.reason }}
@@ -327,6 +339,21 @@ jobs:
           if [[ "$HARNESS" == supported && "$TESTS" != success ]]; then
             status=failure
           fi
+          failed_step=""
+          if [[ "$status" == failure ]]; then
+            for step in \
+              "Repository checkout:$CHECKOUT" "uv setup:$UV_SETUP" \
+              "Python setup:$PYTHON_SETUP" "Version resolution:$RESOLVE" \
+              "Core checkout:$CORE_CHECKOUT" "PyPI classification:$CLASSIFY" \
+              "Core tag resolution:$RELEASE_REF" "Plugin build:$BUILD_PLUGIN" \
+              "Dependency installation:$INSTALL" "Import smoke:$SMOKE" \
+              "Pytest:$TESTS" "Hassfest:$HASSFEST"; do
+              case "${step##*:}" in
+                failure|cancelled) failed_step="${step%:*}"; break ;;
+              esac
+            done
+            failed_step="${failed_step:-Required check did not complete}"
+          fi
           tests="$TESTS"
           if [[ "$HARNESS" == unsupported ]]; then
             tests="skipped: $REASON"
@@ -349,10 +376,10 @@ jobs:
           mkdir -p ha-next-result
           jq -n --arg channel "$CHANNEL" --arg version "${HA_VERSION:-unresolved}" \
             --arg status "$status" --arg install "${INSTALL:-not run}" \
-            --arg harness "$HARNESS" --arg reason "$REASON" \
-            '{channel: $channel, version: $version, status: $status, install: $install, harness: $harness, reason: $reason}' > "ha-next-result/$CHANNEL.json"
+            --arg harness "$HARNESS" --arg reason "$REASON" --arg failed_step "$failed_step" \
+            '{channel: $channel, version: $version, status: $status, install: $install, harness: $harness, reason: $reason, failed_step: $failed_step}' > "ha-next-result/$CHANNEL.json"
           if [[ "$status" == failure ]]; then
-            echo "::error::HA Next checks failed for Home Assistant ${HA_VERSION:-unresolved}. See the run summary."
+            echo "::error::$failed_step failed for Home Assistant ${HA_VERSION:-unresolved}. See the run summary."
             exit 1
           fi
 
@@ -447,6 +474,7 @@ jobs:
               const body = [
                 marker,
                 `The HA Next workflow failed on the ${channel} channel against Home Assistant ${result.version}.`,
+                `Failed during ${result.failed_step || "an unknown step"}.`,
                 "",
                 `Run log: ${runUrl}`,
                 "",
