@@ -134,6 +134,38 @@ def test_cairns_journey_uses_validated_boarding_visit_and_position(
     assert summary.vehicle_id == "cns-bus-1"
 
 
+@pytest.mark.parametrize(
+    ("route_id", "service_date", "expected_status"),
+    [
+        ("C112-33", None, "no_position"),
+        ("C", None, "no_position"),
+        ("C110-33", "20261005", "no_position"),
+        (None, None, "live"),
+    ],
+)
+def test_cairns_vehicle_rejects_contradictory_optional_identity(
+    cairns_plan: JourneyPlanResult,
+    cairns_update: TripUpdateRecord,
+    cairns_position: VehiclePositionRecord,
+    route_id: str | None,
+    service_date: str | None,
+    expected_status: str,
+) -> None:
+    """An exact vehicle trip still has to agree with explicit route and date."""
+    summary = build_journey_summary(
+        cairns_plan,
+        trip_updates={"38292621": cairns_update},
+        vehicle_positions=(
+            replace(cairns_position, route_id=route_id, start_date=service_date),
+        ),
+        realtime_region="CNS",
+        now=CNS_NOW,
+    )
+    assert summary.departure_delay_seconds == 182
+    assert summary.vehicle_position_status == expected_status
+    assert summary.vehicle_tracked is (expected_status == "live")
+
+
 @pytest.fixture
 def feed_session() -> MagicMock:
     """Serve an empty protobuf message over the public client transport."""

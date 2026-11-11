@@ -64,20 +64,24 @@ def _selector_matches_route(selector: AlertSelector, route_id: str) -> bool:
     route_ids = tuple(
         value for value in (selector.route_id, selector.trip_route_id) if value
     )
-    return any(_route_matches(value, route_id) for value in route_ids)
+    return bool(route_ids) and all(
+        _route_matches(value, route_id) for value in route_ids
+    )
 
 
 def _match(
     selectors: tuple[AlertSelector, ...], scope: NoticeScope, value: str | int | None
 ) -> tuple[SelectorScope | None, bool]:
-    scopes = tuple(_scope(selector) for selector in selectors)
-    classified = next((kind for kind in scopes if kind != "unknown"), None)
-    if scope == "network":
-        return (
-            "network" if "network" in scopes else classified or "unknown"
-        ), classified is None
+    scopes: tuple[SelectorScope, ...] = tuple(
+        _scope(selector) for selector in selectors
+    )
     if "network" in scopes:
         return "network", False
+    classified: SelectorScope | None = next(
+        (kind for kind in scopes if kind != "unknown"), None
+    )
+    if scope == "network":
+        return (classified, False) if classified is not None else ("unknown", True)
     if scope == "route":
         if isinstance(value, str) and any(
             _selector_matches_route(selector, value) for selector in selectors

@@ -6,7 +6,10 @@ from unittest.mock import patch
 import pytest
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_state_report_event,
+)
 from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.translink.api.gtfs_realtime import TripUpdateRecord
@@ -82,8 +85,9 @@ async def test_idle_entry_activates_without_early_api_requests(
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_reload_in_grace_preserves_alerts_and_public_trip_snapshot(
-    hass: HomeAssistant, freezer
+@pytest.mark.parametrize("changed_selection", [False, True])
+async def test_reload_in_grace_respects_transport_selection(
+    hass: HomeAssistant, freezer, changed_selection: bool
 ) -> None:
     """Recover tracked transit facts without a new plan or repeated events."""
     freezer.move_to("2026-11-10T21:19:00Z")
@@ -96,6 +100,7 @@ async def test_reload_in_grace_preserves_alerts_and_public_trip_snapshot(
             "start_name": "Private address",
             "end_location_id": "SI:101",
             "end_name": "Destination",
+            "transport_modes": ["Bus", "Train"],
             "window_kind": "once",
             "window_date": "2026-11-11",
             "window_start": "07:00",
@@ -207,9 +212,25 @@ async def test_reload_in_grace_preserves_alerts_and_public_trip_snapshot(
 
         freezer.move_to("2026-11-10T21:22:00Z")
         record.timestamp = int(datetime.now(UTC).timestamp())
-        assert await hass.config_entries.async_reload(entry.entry_id)
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                "transport_modes": ["Ferry"]
+                if changed_selection
+                else ["Train", "Bus", "Bus"],
+            },
+        )
         await hass.async_block_till_done()
         coordinator = entry.runtime_data
+        if changed_selection:
+            assert coordinator.data.status == "expired"
+            assert coordinator.data.trips == ()
+            assert coordinator.ledger_size == 0
+            assert plan.await_count == 2
+            assert realtime.await_count == 1
+            await hass.config_entries.async_remove(entry.entry_id)
+            return
         assert coordinator.data.status == "active"
         assert coordinator.data.alerts == ()
         assert plan.await_count == 2
@@ -224,7 +245,12 @@ async def test_reload_in_grace_preserves_alerts_and_public_trip_snapshot(
         freezer.move_to("2026-11-10T21:23:00Z")
         record.timestamp = int(datetime.now(UTC).timestamp())
         record.trip_delay_seconds = 600
+        reports = []
+        unsubscribe = async_track_state_report_event(hass, event_id, reports.append)
         await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        unsubscribe()
+        assert reports == []
         event = hass.states.get(event_id)
         assert event is not None
         assert event.attributes["event_type"] == "trip_delayed"

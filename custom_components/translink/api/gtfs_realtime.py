@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -87,6 +88,15 @@ class TripUpdateRecords(dict[str, TripUpdateRecord]):
     ) -> None:
         super().__init__(aliases)
         self.records = records
+
+
+def distinct_trip_updates(
+    records: Mapping[str, TripUpdateRecord],
+) -> Iterable[TripUpdateRecord]:
+    """Retain feed rows and deduplicate object aliases in plain mappings."""
+    if isinstance(records, TripUpdateRecords):
+        return records.records
+    return {id(record): record for record in records.values()}.values()
 
 
 @dataclass(slots=True)

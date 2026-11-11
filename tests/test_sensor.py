@@ -452,3 +452,92 @@ async def test_notice_recorder_exclusion_and_initial_freshness_availability() ->
             assert freshness.native_value is None
             assert freshness.extra_state_attributes == {}
             assert "disruptions" not in freshness._unrecorded_attributes
+
+
+async def test_progress_vehicle_observation_expires_without_refresh(
+    hass, freezer, plan_response_data: dict[str, Any]
+) -> None:
+    """A replacement fix has its own expiry, and no transition is repeated."""
+    from datetime import timedelta
+    from unittest.mock import patch
+
+    from homeassistant.helpers import entity_registry as er
+    from pytest_homeassistant.common import (
+        MockConfigEntry,
+        async_fire_time_changed_exact,
+    )
+
+    from custom_components.translink.api.client import VEHICLE_POSITION_MAX_AGE_SECONDS
+    from custom_components.translink.api.models import JourneyPlanResult
+    from custom_components.translink.api.progress import evaluate_progress
+    from tests.test_progress import _transfer_feed
+
+    now = datetime(2026, 10, 5, 23, 55, 35, tzinfo=UTC)
+    freezer.move_to(now)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_MODE: MODE_JOURNEY, CONF_NAME: "My Journey", "track_vehicle": True},
+        pref_disable_polling=True,
+    )
+    entry.add_to_hass(hass)
+    itinerary = JourneyPlanResult.model_validate(plan_response_data).itineraries[1]
+    first = evaluate_progress(
+        itinerary,
+        planned_at=now,
+        now=now,
+        feeds=_transfer_feed(itinerary, now, stopped=False),
+    )
+    with patch(
+        "custom_components.translink.TranslinkCoordinator._async_update_data",
+        return_value=JourneySummary(progress=first.progress),
+    ) as refresh:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}_journey_progress"
+        )
+        event_id = registry.async_get_entity_id(
+            "event", DOMAIN, f"{entry.entry_id}_journey_transition"
+        )
+        assert entity_id and event_id
+        assert hass.states.get(entity_id).attributes["vehicle_observation"]["fresh"]
+
+        stopped_at = now + timedelta(seconds=25)
+        freezer.move_to(stopped_at)
+        stopped = evaluate_progress(
+            itinerary,
+            planned_at=now,
+            now=stopped_at,
+            feeds=_transfer_feed(itinerary, stopped_at, stopped=True),
+            memory=first.memory,
+        )
+        coordinator = entry.runtime_data
+        coordinator.async_set_updated_data(JourneySummary(progress=stopped.progress))
+        event_state = hass.states.get(event_id)
+        assert event_state.attributes["event_type"] == "transfer_stop_reached"
+
+        original_deadline = now + timedelta(
+            seconds=VEHICLE_POSITION_MAX_AGE_SECONDS, microseconds=1
+        )
+        freezer.move_to(original_deadline)
+        async_fire_time_changed_exact(hass, original_deadline)
+        await hass.async_block_till_done()
+        assert hass.states.get(entity_id).attributes["active_leg_source"] == "vehicle"
+
+        boundary = stopped_at + timedelta(seconds=VEHICLE_POSITION_MAX_AGE_SECONDS)
+        freezer.move_to(boundary)
+        async_fire_time_changed_exact(hass, boundary)
+        await hass.async_block_till_done()
+        assert hass.states.get(entity_id).attributes["vehicle_observation"]["fresh"]
+
+        expired = boundary + timedelta(microseconds=1)
+        freezer.move_to(expired)
+        async_fire_time_changed_exact(hass, expired)
+        await hass.async_block_till_done()
+        state = hass.states.get(entity_id)
+        assert state.state == "in_progress"
+        assert state.attributes["vehicle_observation"] is None
+        assert state.attributes["active_leg_source"] == "realtime_schedule"
+        assert hass.states.get(event_id) is event_state
+        refresh.assert_awaited_once()
+        assert await hass.config_entries.async_unload(entry.entry_id)

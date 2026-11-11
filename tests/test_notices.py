@@ -33,6 +33,14 @@ def test_route_notices_keep_network_alerts_and_match_complete_route_ids() -> Non
         AlertDetail(
             "trip-route", selectors=(AlertSelector(trip_id="T", trip_route_id="RPSP"),)
         ),
+        AlertDetail(
+            "consistent",
+            selectors=(AlertSelector(route_id="RPSP-5154", trip_route_id="RPSP"),),
+        ),
+        AlertDetail(
+            "contradictory",
+            selectors=(AlertSelector(route_id="RPSP", trip_route_id="other"),),
+        ),
         AlertDetail("stop", selectors=(AlertSelector(stop_id="600029"),)),
         AlertDetail("trip", selectors=(AlertSelector(trip_id="T"),)),
         AlertDetail(
@@ -46,9 +54,11 @@ def test_route_notices_keep_network_alerts_and_match_complete_route_ids() -> Non
         "agency",
         "route",
         "trip-route",
+        "consistent",
     ]
     assert [row["match"] for row in summary.disruptions] == [
         "network",
+        "route",
         "route",
         "route",
     ]

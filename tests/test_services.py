@@ -11,8 +11,13 @@ from urllib.parse import parse_qs
 import pytest
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import SupportsResponse
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.core import Context, SupportsResponse
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    Unauthorized,
+    UnknownUser,
+)
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.service import async_get_all_descriptions
 from pytest_homeassistant.common import MockConfigEntry
@@ -23,6 +28,7 @@ from custom_components.translink.const import DOMAIN, JP_API_BASE_URL
 from custom_components.translink.coordinator import TranslinkCoordinator
 
 if TYPE_CHECKING:
+    from homeassistant.auth.models import User
     from homeassistant.core import HomeAssistant
     from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
@@ -72,12 +78,16 @@ async def journey_entity(hass: HomeAssistant) -> str:
     entry.add_to_hass(hass)
     coordinator = TranslinkCoordinator(hass, entry)
     coordinator.data = JourneySummary(status="scheduled")
-    hass.data[DOMAIN] = {entry.entry_id: coordinator}
+    entry.runtime_data = coordinator
     return register_itinerary(hass, entry)
 
 
 async def call_planner(
-    hass: HomeAssistant, entity_id: str, **fields: Any
+    hass: HomeAssistant,
+    entity_id: str,
+    *,
+    context: Context | None = None,
+    **fields: Any,
 ) -> dict[str, Any]:
     """Call the registered action and request the planner response."""
     response = await hass.services.async_call(
@@ -85,6 +95,7 @@ async def call_planner(
         "plan_journey",
         {"entity_id": entity_id, "date": "2026-10-06", "time": "00:00", **fields},
         blocking=True,
+        context=context,
         return_response=True,
     )
     assert response is not None
@@ -114,7 +125,8 @@ async def test_planner_action_uses_loaded_settings_for_one_explicit_request(
     plan_response_data: dict[str, Any],
 ) -> None:
     """A manual request reuses options and leaves the current journey data alone."""
-    coordinator = next(iter(hass.data[DOMAIN].values()))
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    coordinator = entry.runtime_data
     before = coordinator.data
     aioclient_mock.post(PLAN_URL, json=plan_response_data)
 
@@ -212,7 +224,7 @@ async def test_planner_action_requires_loaded_journey_itinerary(
         )
         entry.add_to_hass(hass)
         if case == "stop_mode":
-            hass.data[DOMAIN] = {entry.entry_id: TranslinkCoordinator(hass, entry)}
+            entry.runtime_data = TranslinkCoordinator(hass, entry)
 
     entity_id = "sensor.missing"
     if case != "missing":
@@ -254,3 +266,38 @@ async def test_planner_action_propagates_cancellation(
 
     with pytest.raises(asyncio.CancelledError):
         await call_planner(hass, journey_entity)
+
+
+@pytest.mark.usefixtures("planner_action")
+@pytest.mark.parametrize("authorization", ["read", "denied", "unknown"])
+async def test_planner_action_checks_itinerary_read_permission(
+    hass: HomeAssistant,
+    hass_read_only_user: User,
+    aioclient_mock: AiohttpClientMocker,
+    journey_entity: str,
+    plan_response_empty: dict[str, Any],
+    authorization: str,
+) -> None:
+    """Only a user who can read this itinerary can request its alternatives."""
+    context = Context(
+        user_id=hass_read_only_user.id if authorization != "unknown" else "unknown"
+    )
+    aioclient_mock.post(PLAN_URL, json=plan_response_empty)
+    if authorization == "read":
+        assert (await call_planner(hass, journey_entity, context=context))[
+            "returned"
+        ] == 0
+        assert len(aioclient_mock.mock_calls) == 1
+    else:
+        with (
+            patch.object(
+                type(hass_read_only_user.permissions),
+                "check_entity",
+                return_value=False,
+            ) as check,
+            pytest.raises(UnknownUser if authorization == "unknown" else Unauthorized),
+        ):
+            await call_planner(hass, journey_entity, context=context)
+        if authorization == "denied":
+            check.assert_called_once_with(journey_entity, "read")
+        assert not aioclient_mock.mock_calls

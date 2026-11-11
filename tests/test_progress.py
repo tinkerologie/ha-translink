@@ -145,6 +145,7 @@ def test_two_fresh_fixes_confirm_transfer(transfer: JourneyItinerary) -> None:
         "duplicate_vehicle",
         "wrong_vehicle",
         "missing_vehicle_id",
+        "missing_route",
         "wrong_route",
         "wrong_service_date",
         "wrong_stop",
@@ -194,6 +195,8 @@ def test_unconfirmed_arrival_does_not_emit(
         position.vehicle_id = "TRAIN2"
     elif rejected == "missing_vehicle_id":
         before.vehicle_positions[0].vehicle_id = None
+    elif rejected == "missing_route":
+        position.route_id = None
     elif rejected == "wrong_route":
         position.route_id = "OTHER"
     elif rejected == "wrong_service_date":
@@ -247,6 +250,7 @@ def test_unconfirmed_arrival_does_not_emit(
     if rejected == "cancelled":
         assert latest.state == "cancelled"
     if rejected in {
+        "missing_route",
         "wrong_route",
         "wrong_service_date",
         "duplicate_vehicle",
@@ -350,7 +354,7 @@ def test_same_vehicle_continuation_skips_transfer_cue(
     transfer: JourneyItinerary,
 ) -> None:
     """A continuation remains on board and guides alighting at the last leg."""
-    transfer.legs[1].sameVehicleContinuation = True
+    transfer.legs[0].sameVehicleContinuation = True
     arrival = datetime(2026, 10, 5, 23, 56, tzinfo=UTC)
     earlier = arrival - timedelta(seconds=25)
     prior = evaluate_progress(
@@ -490,3 +494,87 @@ def test_same_vehicle_sample_remains_visible_without_advancing_evidence(
     assert second.progress.vehicle_observation == first.progress.vehicle_observation
     assert second.progress.active_leg_source == "vehicle"
     assert not second.progress.transitions
+
+
+@pytest.mark.parametrize(
+    ("prior_status", "same_stop", "expected"),
+    [
+        ("INCOMING_AT", True, True),
+        ("IN_TRANSIT_TO", True, True),
+        ("STOPPED_AT", True, False),
+        ("IN_TRANSIT_TO", False, False),
+    ],
+)
+def test_same_sequence_dwell_confirms_a_new_stop_occurrence(
+    transfer: JourneyItinerary, prior_status: str, same_stop: bool, expected: bool
+) -> None:
+    """The vehicle can enter the target stop without changing the sequence."""
+    arrival = datetime(2026, 10, 5, 23, 56, tzinfo=UTC)
+    earlier = arrival - timedelta(seconds=25)
+    prior_feeds = _transfer_feed(transfer, earlier, stopped=True)
+    vehicle = prior_feeds.vehicle_positions[0]
+    vehicle.current_status = prior_status
+    if not same_stop:
+        vehicle.stop_id = "600320"
+    prior = evaluate_progress(
+        transfer, planned_at=earlier, now=earlier, feeds=prior_feeds
+    )
+    result = evaluate_progress(
+        transfer,
+        planned_at=earlier,
+        now=arrival,
+        feeds=_transfer_feed(transfer, arrival, stopped=True),
+        memory=prior.memory,
+    )
+    assert [event.type for event in result.progress.transitions] == (
+        ["transfer_stop_reached"] if expected else []
+    )
+
+
+def test_late_transit_overlapping_scheduled_walk_keeps_progress(
+    transfer: JourneyItinerary,
+) -> None:
+    """A valid schedule keeps transit and its observed alighting through a delay."""
+    arrival = datetime(2026, 10, 5, 23, 56, tzinfo=UTC)
+    transfer.legs[1] = JourneyLeg(
+        travelMode="Walk",
+        departureTimeUtc=arrival.isoformat(),
+        arrivalTimeUtc=(arrival + timedelta(minutes=5)).isoformat(),
+    )
+
+    def feed(now: datetime, *, stopped: bool) -> ProgressFeeds:
+        feeds = _transfer_feed(transfer, now, stopped=stopped)
+        (update,) = feeds.trip_updates.values()
+        (visit,) = update.stop_time_updates
+        visit.arrival.time += 60
+        visit.arrival.delay = 60
+        return feeds
+
+    earlier = arrival + timedelta(seconds=35)
+    at_stop = arrival + timedelta(seconds=60)
+    prior = evaluate_progress(
+        transfer, planned_at=earlier, now=earlier, feeds=feed(earlier, stopped=False)
+    )
+    assert prior.progress.state == "in_progress"
+    assert prior.progress.active_leg_index == 0
+    result = evaluate_progress(
+        transfer,
+        planned_at=earlier,
+        now=at_stop,
+        feeds=feed(at_stop, stopped=True),
+        memory=prior.memory,
+    )
+    assert result.progress.active_leg_index == 0
+    assert [event.type for event in result.progress.transitions] == [
+        "alighting_stop_reached"
+    ]
+    walking = evaluate_progress(
+        transfer,
+        planned_at=earlier,
+        now=at_stop + timedelta(seconds=1),
+        feeds=feed(at_stop, stopped=True),
+        memory=result.memory,
+    )
+    assert walking.progress.state == "in_progress"
+    assert walking.progress.active_leg_index == 1
+    assert not walking.progress.transitions

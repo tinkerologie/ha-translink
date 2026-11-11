@@ -259,15 +259,16 @@ class TranslinkWindowEvent(CoordinatorEntity[WindowCoordinator], EventEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Publish all changes and update entity availability."""
-        self._emit_alerts()
-        self.async_write_ha_state()
+        if not self._emit_alerts():
+            self.async_write_ha_state()
 
     @callback
-    def _emit_alerts(self) -> None:
+    def _emit_alerts(self) -> bool:
         data = self.coordinator.data
         if data is self._last_data:
-            return
+            return False
         self._last_data = data
         for event_type, attributes in data.alerts:
             self._trigger_event(event_type, attributes)
             self.async_write_ha_state()
+        return bool(data.alerts)

@@ -356,7 +356,14 @@ def _confirm_transition(
         or not vehicle_position_is_fresh(before.observed_at.timestamp(), now)
         or previous.trip_id != current.trip_id
         or current.trip_id != occurrence.trip_id
-        or before.sequence >= occurrence.sequence
+        or before.sequence > occurrence.sequence
+        or (
+            before.sequence == occurrence.sequence
+            and (
+                before.status not in ("IN_TRANSIT_TO", "INCOMING_AT")
+                or _stop_key(before.stop_id) != _stop_key(occurrence.stop_id)
+            )
+        )
         or after.status != "STOPPED_AT"
         or after.sequence != occurrence.sequence
         or _stop_key(after.stop_id) != _stop_key(occurrence.stop_id)
@@ -408,7 +415,7 @@ def _next_action(
     else:
         leg = legs[active]
         next_leg = _next_transit(legs, active + 1)
-        while next_leg is not None and next_leg.same_vehicle_continuation:
+        while next_leg is not None and leg.same_vehicle_continuation:
             leg = next_leg
             next_leg = _next_transit(legs, leg.index + 1)
         kind = "transfer" if next_leg is not None else "alight"
@@ -526,13 +533,16 @@ def evaluate_progress(
         start is None
         or end is None
         or any(
-            departure is None or arrival is None or departure > arrival
-            for departure, arrival in windows
+            leg.scheduled_departure is None
+            or leg.scheduled_arrival is None
+            or leg.scheduled_departure > leg.scheduled_arrival
+            for leg in legs
         )
         or any(
-            left[1] > right[0]
-            for left, right in pairwise(windows)
-            if left[1] is not None and right[0] is not None
+            left.scheduled_arrival > right.scheduled_departure
+            for left, right in pairwise(legs)
+            if left.scheduled_arrival is not None
+            and right.scheduled_departure is not None
         )
     ):
         return ProgressResult(progress, current, end)
@@ -561,11 +571,12 @@ def evaluate_progress(
         )
         if active is not None:
             progress.active_leg_index = active
-            progress.active_leg_source = (
+            progress.active_leg_timing_source = (
                 "realtime_schedule"
                 if departures[active] is not None or arrivals[active] is not None
                 else "schedule"
             )
+            progress.active_leg_source = progress.active_leg_timing_source
     for index, (planner_leg, leg, data) in enumerate(
         zip(itinerary.legs, legs, realtime, strict=True)
     ):
@@ -599,7 +610,7 @@ def evaluate_progress(
             and prior is not None
             and departure is not None
             and departure <= min(now, evidence.observation.observed_at)
-            and (next_leg is None or not next_leg.same_vehicle_continuation)
+            and (next_leg is None or not leg.same_vehicle_continuation)
         ):
             transition = _confirm_transition(
                 leg,

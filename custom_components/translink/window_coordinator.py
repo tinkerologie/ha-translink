@@ -129,12 +129,14 @@ class WindowCoordinator(DataUpdateCoordinator[WindowData]):
         self._scan = timedelta(seconds=self._options[CONF_SCAN_INTERVAL])
         self._limit = self._options[CONF_WINDOW_TRIP_LIMIT]
         self._store = window_store(hass, entry.entry_id)
+        modes = entry.data.get(CONF_TRANSPORT_MODES) or DEFAULT_TRANSPORT_MODES
         self._scope = sha256(
             repr(
                 (
                     entry.data[CONF_START_LOCATION_ID],
                     entry.data[CONF_END_LOCATION_ID],
                     self.schedule.identity,
+                    tuple(sorted(set(modes))),
                 )
             ).encode()
         ).hexdigest()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.device_tracker.const import SourceType
@@ -14,7 +14,7 @@ from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .api.client import VEHICLE_POSITION_MAX_AGE_SECONDS, vehicle_position_is_fresh
+from .api.client import vehicle_position_expiry, vehicle_position_is_fresh
 from .client import JourneySummary, parse_iso_datetime
 from .const import CONF_NAME, DOMAIN, MODE_JOURNEY, get_vehicle_icon
 from .coordinator import TranslinkCoordinator
@@ -183,12 +183,10 @@ class TranslinkVehicleTracker(
         data = self._journey
         timestamp = self._live_position_time(data) if data is not None else None
         if timestamp is not None:
-            # A fix at the maximum age is still live. Expire just past that boundary.
-            deadline = timestamp + timedelta(
-                seconds=VEHICLE_POSITION_MAX_AGE_SECONDS, microseconds=1
-            )
             self._cancel_expiry = async_track_point_in_time(
-                self.hass, self._async_position_expired, deadline
+                self.hass,
+                self._async_position_expired,
+                vehicle_position_expiry(timestamp),
             )
 
     @callback

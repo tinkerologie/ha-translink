@@ -1184,63 +1184,9 @@ def test_build_journey_summary_with_base_trip_id_correlation(
     plan_response_data: dict[str, Any],
 ) -> None:
     """Test correlation succeeds when GTFS-RT feed uses normalized base trip ID."""
-    from custom_components.translink.api.client import _match_trip_record
     from custom_components.translink.api.gtfs_realtime import (
         TripUpdateRecord,
         VehiclePositionRecord,
-    )
-
-    # Test _match_trip_record edge cases
-    assert _match_trip_record(None, {"123": "val"}) is None
-    assert _match_trip_record("123", None) is None
-    assert _match_trip_record("123", {}) is None
-    assert _match_trip_record("123", {"123": "matched"}) == "matched"
-    assert (
-        _match_trip_record("s_T_SPRP_9_20261008_39040630", {"39040630": "matched"})
-        == "matched"
-    )
-    assert _match_trip_record("unmatched_trip", {"other": "val"}) is None
-
-    # Test route_id validation in _match_trip_record
-    rec_with_route = TripUpdateRecord(
-        entity_id="tu1", trip_id="39040630", route_id="SPRP"
-    )
-    rec_no_route = TripUpdateRecord(entity_id="tu2", trip_id="39040630", route_id=None)
-    # Expected route matches
-    assert (
-        _match_trip_record(
-            "s_T_SPRP_9_20261008_39040630",
-            {"39040630": rec_with_route},
-            expected_route_id="SPRP",
-        )
-        is rec_with_route
-    )
-    # Expected route does not match
-    assert (
-        _match_trip_record(
-            "s_T_SPRP_9_20261008_39040630",
-            {"39040630": rec_with_route},
-            expected_route_id="OTHER_ROUTE",
-        )
-        is None
-    )
-    # Record has no route_id (passes through)
-    assert (
-        _match_trip_record(
-            "s_T_SPRP_9_20261008_39040630",
-            {"39040630": rec_no_route},
-            expected_route_id="SPRP",
-        )
-        is rec_no_route
-    )
-    # No expected_route_id provided (passes through)
-    assert (
-        _match_trip_record(
-            "s_T_SPRP_9_20261008_39040630",
-            {"39040630": rec_with_route},
-            expected_route_id=None,
-        )
-        is rec_with_route
     )
 
     plan = JourneyPlanResult.model_validate(plan_response_data)
@@ -2165,3 +2111,94 @@ async def test_fetch_alert_feed_rejects_unsupported_network() -> None:
     with pytest.raises(AlertFeedError, match="Unsupported"):
         await TranslinkClient(session=session).fetch_alert_feed("other")
     session.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("candidate_set", "expected"),
+    [
+        ("exact_duplicate", None),
+        ("exact_first", 2),
+        ("base_duplicate", None),
+        ("scoped_fallback", 2),
+        ("missing_route", 2),
+        ("no_candidates", None),
+    ],
+)
+def test_journey_delay_requires_a_unique_trip_update(
+    plan_response_data: dict[str, Any], candidate_set: str, expected: int | None
+) -> None:
+    """A feed collision cannot override exact or route/date-scoped identity."""
+    from dataclasses import replace
+
+    from custom_components.translink.api.gtfs_realtime import (
+        TripUpdateRecord,
+        TripUpdateRecords,
+    )
+
+    plan = JourneyPlanResult.model_validate(plan_response_data)
+    leg = plan.itineraries[0].legs[0]
+    leg.tripId = "s_T_RPSP_9_20261006_123"
+    leg.legRoute.code = "RPSP"
+    selected = TripUpdateRecord(
+        entity_id="feed-123",
+        trip_id=leg.tripId if candidate_set.startswith("exact") else "123-variant",
+        route_id="RPSP",
+        start_date="20261006",
+        trip_delay_seconds=120,
+    )
+    collision = replace(selected, trip_delay_seconds=600)
+    if candidate_set == "exact_first":
+        collision.trip_id = "123-variant"
+    if candidate_set == "scoped_fallback":
+        collision = replace(collision, route_id="SPRP", start_date="20261005")
+    if candidate_set == "missing_route":
+        selected.route_id = None
+        records = (selected,)
+    elif candidate_set == "no_candidates":
+        records = (replace(collision, trip_id="456"),)
+    else:
+        records = (selected, collision)
+
+    # Simulate the aliases that survive two same-key records on the wire.
+    aliases = {
+        alias: record
+        for record in records
+        for alias in (record.trip_id, record.entity_id, "123")
+    }
+    summary = build_journey_summary(
+        plan,
+        trip_updates=TripUpdateRecords(aliases, records),
+        now=datetime(2026, 10, 5, 23, tzinfo=UTC),
+    )
+    assert summary.delay_mins == expected
+
+
+def test_journey_alternatives_use_validated_planner_transfer_counts() -> None:
+    """Use the planner's explicit count and keep the legacy fallback."""
+    legs = [
+        {"travelMode": "Train", "sameVehicleContinuation": True},
+        {"travelMode": "Train"},
+    ]
+    plan = JourneyPlanResult.model_validate(
+        {
+            "itineraries": [
+                *(
+                    {"legs": legs, "transfers": value}
+                    for value in (0, -1, False, "0", 0.0)
+                ),
+                {"legs": legs},
+                {"legs": [], "transfers": 0},
+            ]
+        }
+    )
+    result = build_journey_alternatives(plan, "departure", 10)
+    assert [item["transfers"] for item in result["alternatives"]] == [
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+    ]
+    assert build_journey_summary(plan).transfers == 1

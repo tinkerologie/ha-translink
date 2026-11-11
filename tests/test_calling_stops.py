@@ -80,6 +80,7 @@ def test_captured_overlay_and_service_date(captured_case):
     wrong_date = deepcopy(update)
     wrong_date.start_date = "20261007"
     assert _match_trip_record(leg.tripId, {"39040861": wrong_date}, "RPSP") is None
+    wrong_date.trip_id = leg.tripId
     assert (
         _match_trip_record(leg.tripId, {leg.tripId: wrong_date}, "RPSP") is wrong_date
     )

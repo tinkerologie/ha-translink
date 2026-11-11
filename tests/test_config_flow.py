@@ -2102,3 +2102,45 @@ async def test_window_location_search_failure_keeps_the_form(
         CONF_START_NAME: "location_not_found",
         CONF_END_NAME: "location_not_found",
     }
+
+
+@pytest.mark.parametrize("legacy_flow_api", [False, True])
+async def test_loaded_stop_reconfigure_has_one_reload_owner(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_flow_api: bool,
+) -> None:
+    """Reconfiguring a loaded entry performs one reload through its listener."""
+    from custom_components.translink.api.models import StopSummary
+
+    if legacy_flow_api:
+        monkeypatch.setattr(TranslinkConfigFlow, "async_update_and_abort", None)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="stop_ST:place_romsta",
+        data={
+            CONF_MODE: MODE_STOP,
+            CONF_NAME: "My Stop",
+            CONF_STOP_NAME: "Roma Street",
+            CONF_STOP_LOCATION_ID: "ST:place_romsta",
+            CONF_TRANSPORT_MODES: ["Bus"],
+        },
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.translink.TranslinkCoordinator._async_update_data",
+        return_value=StopSummary(stop_id="ST:place_romsta", stop_name="Roma Street"),
+    ) as refresh:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        flow = await entry.start_reconfigure_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"],
+            {CONF_STOP_NAME: "Roma Street", CONF_TRANSPORT_MODES: ["Train"]},
+        )
+        assert result["reason"] == "reconfigure_successful"
+        await hass.async_block_till_done()
+        assert entry.runtime_data.transport_modes == ["Train"]
+        assert refresh.await_count == 2
+        assert "has an update listener and should use it" not in caplog.text
+        assert await hass.config_entries.async_unload(entry.entry_id)

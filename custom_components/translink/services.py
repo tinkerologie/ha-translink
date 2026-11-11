@@ -7,10 +7,16 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 import voluptuous as vol
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse, callback
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    Unauthorized,
+    UnknownUser,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -75,9 +81,7 @@ def _journey_coordinator(hass: HomeAssistant, entity_id: str) -> TranslinkCoordi
         raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="planner_entry"
         )
-    coordinator: TranslinkCoordinator | None = hass.data.get(DOMAIN, {}).get(
-        entry.entry_id
-    )
+    coordinator: TranslinkCoordinator | None = getattr(entry, "runtime_data", None)
     if entry.state is not ConfigEntryState.LOADED or coordinator is None:
         raise ServiceValidationError(
             translation_domain=DOMAIN, translation_key="planner_unloaded"
@@ -94,7 +98,16 @@ def async_setup_services(hass: HomeAssistant) -> None:
     """Register the action independently of any config entry."""
 
     async def async_plan_journey(call: ServiceCall) -> ServiceResponse:
-        coordinator = _journey_coordinator(hass, call.data[ATTR_ENTITY_ID])
+        entity_id = call.data[ATTR_ENTITY_ID]
+        if (user_id := call.context.user_id) is not None:
+            user = await hass.auth.async_get_user(user_id)
+            if user is None:
+                raise UnknownUser(context=call.context, permission=POLICY_READ)
+            if not user.permissions.check_entity(entity_id, POLICY_READ):
+                raise Unauthorized(
+                    context=call.context, entity_id=entity_id, permission=POLICY_READ
+                )
+        coordinator = _journey_coordinator(hass, entity_id)
         target = datetime.combine(
             call.data["date"], call.data["time"], ZoneInfo(BRISBANE_TZ)
         )

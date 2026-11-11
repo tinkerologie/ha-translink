@@ -79,3 +79,40 @@ it("keeps unavailable, unknown and cancelled states distinct", async () => {
     "Journey cancelled",
   );
 });
+
+it("clears an expired vehicle observation after a Home Assistant state update", async () => {
+  const root = await progress("in_progress", {
+    active_leg_index: 0,
+    active_leg_source: "vehicle",
+    progress_legs: [{ index: 0, mode: "Train", route: "CAIP" }],
+    vehicle_observation: {
+      fresh: true,
+      status: "STOPPED_AT",
+      stop_name: "Darra",
+    },
+  });
+  expect(root.textContent).toContain("Vehicle stopped at Darra");
+
+  const card = root.host as TranslinkCard;
+  const hass = card.hass!;
+  const state = hass.states[entity]!;
+  card.hass = {
+    ...hass,
+    states: {
+      ...hass.states,
+      [entity]: {
+        ...state,
+        attributes: {
+          ...state.attributes,
+          active_leg_source: "realtime_schedule",
+          vehicle_observation: null,
+        },
+      },
+    },
+  };
+  await card.updateComplete;
+
+  expect(root.textContent).toContain("Live prediction");
+  expect(root.textContent).not.toContain("Vehicle observation");
+  expect(root.textContent).not.toContain("Darra");
+});

@@ -648,15 +648,7 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 else:
                     if entry is None:
                         return self.async_create_entry(title=name, data=data)
-                    if entry.update_listeners and (
-                        update_and_abort := getattr(
-                            self, "async_update_and_abort", None
-                        )
-                    ):
-                        return update_and_abort(
-                            entry, unique_id=unique_id, title=name, data=data
-                        )
-                    return self.async_update_reload_and_abort(
+                    return self._update_reconfigured_entry(
                         entry, unique_id=unique_id, title=name, data=data
                     )
 
@@ -1004,13 +996,20 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
                 if key not in _RECONFIGURED_OPTIONS
             }
         )
-        if options != entry.options:
-            return self.async_update_reload_and_abort(
-                entry, unique_id=unique_id, data_updates=data_updates, options=options
-            )
-        return self.async_update_reload_and_abort(
-            entry, unique_id=unique_id, data_updates=data_updates
+        return self._update_reconfigured_entry(
+            entry, unique_id=unique_id, data=entry.data | data_updates, options=options
         )
+
+    def _update_reconfigured_entry(
+        self, entry: config_entries.ConfigEntry, **changes: Any
+    ) -> ConfigFlowResult:
+        """Let the installed listener reload an updated entry."""
+        if not entry.update_listeners:
+            return self.async_update_reload_and_abort(entry, **changes)
+        if update_and_abort := getattr(self, "async_update_and_abort", None):
+            return update_and_abort(entry, **changes)
+        self.hass.config_entries.async_update_entry(entry, **changes)
+        return self.async_abort(reason="reconfigure_successful")
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None

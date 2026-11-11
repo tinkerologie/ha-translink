@@ -9,6 +9,7 @@ from custom_components.translink.api.gtfs_realtime import (
     TRIP_CANCELED,
     StopTimeUpdateRecord,
     TripUpdateRecord,
+    TripUpdateRecords,
 )
 from custom_components.translink.api.models import (
     JourneyItinerary,
@@ -250,3 +251,50 @@ def test_transfer_uses_largest_confirmed_boarding_delay_and_ignores_stale_leg() 
     )
     assert observation.trip.departed
     assert observation.delay is None
+
+
+def test_duplicate_trip_updates_remain_ambiguous_after_aliasing() -> None:
+    """Two feed entities with colliding aliases cannot confirm a window delay."""
+    first = _record(trip_delay_seconds=600)
+    second = replace(first, trip_delay_seconds=0)
+    aliased = TripUpdateRecords({"900": first, "900-variant": second}, (first, second))
+    # The entity ID can overwrite the base alias as well as the complete trip ID.
+    aliased["900"] = second
+    observation = observe_window_trip(TRIP, RealtimeIndex(aliased), NOW, {})
+    assert observation.status == "unknown"
+    assert observation.delay is None
+
+
+def test_window_recovery_requires_fresh_predictions_for_all_transit_legs() -> None:
+    """A stale delayed connection cannot recover on an on-time first leg."""
+    transfer = TRIP.legs[0].model_copy(
+        update={
+            "tripId": "s_T_61_8_20261111_901",
+            "departureTimeUtc": "2026-11-10T21:30:00Z",
+        }
+    )
+    trip = replace(TRIP, legs=(TRIP.legs[0], transfer))
+    first = _record(trip_delay_seconds=0)
+    second = _record(trip_id="901-variant", trip_delay_seconds=600)
+    records = {"900": first, "901": second}
+    observation = observe_window_trip(trip, RealtimeIndex(records), NOW, {})
+    ledger, alerts = evaluate_window_trip(
+        observation, AlertLedgerEntry(), threshold=3, step=5
+    )
+    assert [alert.event_type for alert in alerts] == ["trip_delayed"]
+
+    later = NOW + timedelta(minutes=6)
+    first.timestamp = int(later.timestamp())
+    observation = observe_window_trip(trip, RealtimeIndex(records), later, {})
+    assert observation.delay == 0
+    assert evaluate_window_trip(observation, ledger, threshold=3, step=5) == (
+        ledger,
+        (),
+    )
+
+    second.timestamp = int(later.timestamp())
+    second.trip_delay_seconds = 0
+    observation = observe_window_trip(trip, RealtimeIndex(records), later, {})
+    recovered, alerts = evaluate_window_trip(observation, ledger, threshold=3, step=5)
+    assert recovered.delay_state == "recovered"
+    assert [alert.event_type for alert in alerts] == ["trip_recovered"]

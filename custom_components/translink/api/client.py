@@ -55,6 +55,7 @@ from .gtfs_realtime import (
     TripUpdateRecord,
     TripUpdateRecords,
     VehiclePositionRecord,
+    distinct_trip_updates,
     extract_base_trip_id,
     parse_alert_feed,
     parse_alerts,
@@ -657,37 +658,36 @@ class TranslinkClient:
 
 def _match_trip_record(
     trip_id: str | None,
-    records: dict[str, Any] | None,
-    expected_route_id: str | None = None,
-) -> Any | None:
-    """Find matching GTFS-RT record by exact trip ID or normalized base trip ID."""
-    if not trip_id or not records:
+    records: Mapping[str, TripUpdateRecord] | None,
+    expected_route_id: str | None,
+    *,
+    strict_identity: bool = False,
+) -> TripUpdateRecord | None:
+    """Prefer a unique exact trip ID, then a uniquely scoped normalized ID."""
+    if not trip_id or records is None or not (base_id := extract_base_trip_id(trip_id)):
         return None
-    if trip_id in records:
-        return records[trip_id]
-    base_id = extract_base_trip_id(trip_id)
-    if base_id and base_id in records:
-        record = records[base_id]
-        record_route_id = getattr(record, "route_id", None)
-        if (
-            expected_route_id
-            and record_route_id
-            and record_route_id.split("-", 1)[0] != expected_route_id.split("-", 1)[0]
-        ):
-            return None
-        parts = trip_id.split("_")
-        service_date = parts[-2] if len(parts) > 2 else None
-        feed_date = getattr(record, "start_date", None)
-        if (
-            service_date
-            and len(service_date) == 8
-            and service_date.isdigit()
-            and feed_date
-            and service_date != feed_date
-        ):
-            return None
-        return record
-    return None
+    service_date = _service_date(trip_id)
+    route = _route_prefix(expected_route_id, cairns=strict_identity)
+    exact, fallback = [], []
+    for record in distinct_trip_updates(records):
+        if record.trip_id == trip_id:
+            exact.append(record)
+        elif extract_base_trip_id(record.trip_id) == base_id:
+            feed_route = _route_prefix(record.route_id, cairns=strict_identity)
+            if strict_identity:
+                if (
+                    not route
+                    or route != feed_route
+                    or service_date != record.start_date
+                ):
+                    continue
+            elif (route and feed_route and route != feed_route) or (
+                service_date and record.start_date and service_date != record.start_date
+            ):
+                continue
+            fallback.append(record)
+    matches = exact or fallback
+    return matches[0] if len(matches) == 1 else None
 
 
 def _planner_region_signals(leg: JourneyLeg) -> tuple[str, str]:
@@ -726,28 +726,22 @@ def _match_journey_update(
     updates: dict[str, TripUpdateRecord] | None,
     strict_identity: bool,
 ) -> TripUpdateRecord | None:
-    """Validate Cairns trip and boarding identity before exposing a live update."""
+    """Match one feed trip and validate Cairns boarding identity."""
     trip_id = leg.tripId
     route = leg.legRoute.code if leg.legRoute else None
-    if not strict_identity:
-        return _match_trip_record(trip_id, updates, route)
-    if not trip_id or not route or not updates or leg.origin is None:
-        return None
-    base_id = extract_base_trip_id(trip_id)
-    record = updates.get(trip_id) or updates.get(base_id or "")
-    if record is None or not base_id or extract_base_trip_id(record.trip_id) != base_id:
-        return None
-    feed_route = (record.route_id or "").split("-", 1)[0].removeprefix("C")
-    planner_route = route.split("-", 1)[0].removeprefix("C")
-    parts = trip_id.split("_")
-    date = parts[-2] if len(parts) > 2 else ""
+    record = _match_trip_record(
+        trip_id, updates, route, strict_identity=strict_identity
+    )
+    if not strict_identity or record is None:
+        return record
+    feed_route = _route_prefix(record.route_id, cairns=True)
+    service_date = _service_date(trip_id or "")
     if (
-        not feed_route
-        or feed_route != planner_route
-        or len(date) != 8
-        or not date.isascii()
-        or not date.isdigit()
-        or record.start_date != date
+        leg.origin is None
+        or not feed_route
+        or feed_route != _route_prefix(route, cairns=True)
+        or service_date is None
+        or record.start_date != service_date
     ):
         return None
     origin = _stop_key(leg.origin.id)
@@ -793,14 +787,9 @@ def match_progress_update(
     base_id = extract_base_trip_id(trip_id)
     if not trip_id or not base_id:
         return None, False
-    records = (
-        updates.records
-        if isinstance(updates, TripUpdateRecords)
-        else {id(record): record for record in updates.values()}.values()
-    )
     candidates = [
         record
-        for record in records
+        for record in distinct_trip_updates(updates)
         if record.trip_id == trip_id or extract_base_trip_id(record.trip_id) == base_id
     ]
     if len(candidates) != 1:
@@ -829,6 +818,13 @@ def vehicle_position_is_fresh(timestamp: float, now: datetime) -> bool:
     )
 
 
+def vehicle_position_expiry(observed_at: datetime) -> datetime:
+    """Expire just after the inclusive maximum age of a vehicle fix."""
+    return observed_at + timedelta(
+        seconds=VEHICLE_POSITION_MAX_AGE_SECONDS, microseconds=1
+    )
+
+
 def _match_vehicle_position(
     leg: JourneyLeg,
     positions: Mapping[str, VehiclePositionRecord] | Sequence[VehiclePositionRecord],
@@ -843,26 +839,21 @@ def _match_vehicle_position(
         return None, "no_position"
     base_id = extract_base_trip_id(trip_id)
     expected_route = leg.legRoute.code if leg.legRoute else None
-    expected_prefix = _route_prefix(expected_route)
+    cairns = validated_update is not None
+    expected_prefix = _route_prefix(expected_route, cairns=cairns)
     service_date = _service_date(trip_id)
 
     records = positions.values() if isinstance(positions, Mapping) else positions
     saw_match = False
     fresh: dict[tuple[str, str | int], tuple[int, VehiclePositionRecord]] = {}
     for record in records:
-        if require_route:
-            cairns = validated_update is not None
-            route = _route_prefix(expected_route, cairns=cairns)
-            if (
-                not route
-                or _route_prefix(record.route_id, cairns=cairns) != route
-                or (
-                    service_date
-                    and record.start_date
-                    and service_date != record.start_date
-                )
-            ):
-                continue
+        route_prefix = _route_prefix(record.route_id, cairns=cairns)
+        if require_route and not (expected_prefix and route_prefix):
+            continue
+        if expected_prefix and record.route_id and expected_prefix != route_prefix:
+            continue
+        if service_date and record.start_date and service_date != record.start_date:
+            continue
         if validated_update is not None:
             if record.trip_id != validated_update.trip_id or (
                 record.vehicle_id
@@ -870,19 +861,10 @@ def _match_vehicle_position(
                 and record.vehicle_id != validated_update.vehicle_id
             ):
                 continue
-        else:
-            if record.trip_id != trip_id and (
-                not base_id or extract_base_trip_id(record.trip_id) != base_id
-            ):
-                continue
-            if (
-                expected_prefix
-                and record.route_id
-                and expected_prefix != _route_prefix(record.route_id)
-            ):
-                continue
-            if service_date and record.start_date and service_date != record.start_date:
-                continue
+        elif record.trip_id != trip_id and (
+            not base_id or extract_base_trip_id(record.trip_id) != base_id
+        ):
+            continue
         saw_match = True
         timestamp = record.timestamp
         if timestamp is None or not vehicle_position_is_fresh(timestamp, now):
@@ -1374,6 +1356,11 @@ def build_journey_alternatives(
         notices = _collect_leg_notices(itinerary, notice_lookup)
         referenced_notices.update(str(notice["id"]) for notice in notices)
         duration = itinerary.durationMins
+        transfers = itinerary.transfers
+        if transfers is None and itinerary.legs:
+            transfers = max(
+                0, sum(leg.travelMode.lower() != "walk" for leg in itinerary.legs) - 1
+            )
         alternatives.append(
             {
                 "planner_index": index,
@@ -1385,15 +1372,7 @@ def build_journey_alternatives(
                     if "durationMins" in itinerary.model_fields_set and duration >= 0
                     else None
                 ),
-                "transfers": (
-                    max(
-                        0,
-                        sum(leg.travelMode.lower() != "walk" for leg in itinerary.legs)
-                        - 1,
-                    )
-                    if itinerary.legs
-                    else None
-                ),
+                "transfers": transfers,
                 "legs": [
                     _alternative_leg(leg)
                     for leg in itinerary.legs[:MAX_ALTERNATIVE_LEGS]

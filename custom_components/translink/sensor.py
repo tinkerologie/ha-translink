@@ -15,12 +15,15 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
-from .api.models import JourneySummary, NoticeSummary, StopSummary
+from .api.client import vehicle_position_expiry, vehicle_position_is_fresh
+from .api.models import JourneyProgress, JourneySummary, NoticeSummary, StopSummary
 from .const import (
     BRISBANE_TZ,
     CONF_NAME,
@@ -67,11 +70,31 @@ def _delay_attributes(data: JourneySummary | StopSummary) -> dict[str, Any]:
     }
 
 
+def _live_progress_observation_time(progress: JourneyProgress) -> datetime | None:
+    observation = progress.vehicle_observation
+    if (
+        observation is not None
+        and observation.fresh
+        and vehicle_position_is_fresh(
+            observation.observed_at.timestamp(), dt_util.utcnow()
+        )
+    ):
+        return observation.observed_at
+    return None
+
+
 def _progress_attributes(data: JourneySummary) -> dict[str, Any]:
-    if data.progress is None:
+    progress = data.progress
+    if progress is None:
         return {}
-    attributes = data.progress.model_dump(mode="json", exclude={"state", "transitions"})
+    attributes = progress.model_dump(mode="json", exclude={"state", "transitions"})
     attributes["progress_legs"] = attributes.pop("legs")
+    if (
+        progress.active_leg_source == "vehicle"
+        and _live_progress_observation_time(progress) is None
+    ):
+        attributes["vehicle_observation"] = None
+        attributes["active_leg_source"] = progress.active_leg_timing_source
     return attributes
 
 
@@ -408,7 +431,11 @@ async def async_setup_entry(
     descriptions = JOURNEY_SENSORS if coordinator.mode == MODE_JOURNEY else STOP_SENSORS
 
     async_add_entities(
-        TranslinkSensor(
+        (
+            TranslinkProgressSensor
+            if description.key == "journey_progress"
+            else TranslinkSensor
+        )(
             coordinator=coordinator,
             description=description,
             entry=entry,
@@ -480,6 +507,51 @@ class TranslinkSensor(
         if not self.coordinator.data or not self.entity_description.attributes_fn:
             return {}
         return self.entity_description.attributes_fn(self.coordinator.data)
+
+
+class TranslinkProgressSensor(TranslinkSensor):
+    """Expire vehicle observations independently of coordinator polling."""
+
+    _cancel_expiry: CALLBACK_TYPE | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Schedule expiry for the first observation and clean up on removal."""
+        await super().async_added_to_hass()
+        self.async_on_remove(self._async_cancel_expiry)
+        self._async_schedule_expiry()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._async_schedule_expiry()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _async_schedule_expiry(self) -> None:
+        self._async_cancel_expiry()
+        data = self.coordinator.data
+        if (
+            self.available
+            and isinstance(data, JourneySummary)
+            and data.progress is not None
+            and (observed_at := _live_progress_observation_time(data.progress))
+            is not None
+        ):
+            self._cancel_expiry = async_track_point_in_time(
+                self.hass,
+                self._async_observation_expired,
+                vehicle_position_expiry(observed_at),
+            )
+
+    @callback
+    def _async_cancel_expiry(self) -> None:
+        if self._cancel_expiry is not None:
+            self._cancel_expiry()
+            self._cancel_expiry = None
+
+    @callback
+    def _async_observation_expired(self, _now: datetime) -> None:
+        self._cancel_expiry = None
+        self.async_write_ha_state()
 
 
 class TranslinkNoticeSensor(TranslinkSensor):

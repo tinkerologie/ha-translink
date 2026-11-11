@@ -211,11 +211,18 @@ class JourneyItinerary(TranslinkApiModel):
     """Single complete journey itinerary."""
 
     durationMins: int = 0
+    transfers: int | None = None
     endTimeUtc: str | None = None
     firstDepartureTimeUtc: str | None = None
     lastArrivalTimeUtc: str | None = None
     fares: list[FareItem] = Field(default_factory=list)
     legs: list[JourneyLeg] = Field(default_factory=list)
+
+    @field_validator("transfers", mode="before")
+    @classmethod
+    def validate_transfer_count(cls, value: Any) -> int | None:
+        """Treat malformed optional counts as unavailable."""
+        return value if type(value) is int and value >= 0 else None
 
 
 class PlanNotice(TranslinkApiModel):
@@ -425,6 +432,9 @@ class JourneyProgress(TranslinkApiModel):
     state: ProgressState | None = None
     active_leg_index: int | None = None
     active_leg_source: ProgressSource = "unknown"
+    active_leg_timing_source: Literal["realtime_schedule", "schedule", "unknown"] = (
+        Field(default="unknown", exclude=True)
+    )
     next_action: ProgressAction | None = None
     vehicle_observation: VehicleStopObservation | None = None
     legs: list[ProgressLeg] = Field(default_factory=list)

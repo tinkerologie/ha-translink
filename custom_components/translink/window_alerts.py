@@ -14,7 +14,12 @@ from .api.client import (
     _realtime_freshness,
     parse_iso_datetime,
 )
-from .api.gtfs_realtime import TRIP_CANCELED, TripUpdateRecord, extract_base_trip_id
+from .api.gtfs_realtime import (
+    TRIP_CANCELED,
+    TripUpdateRecord,
+    distinct_trip_updates,
+    extract_base_trip_id,
+)
 from .api.models import JourneyLeg, PlanNotice
 from .const import (
     DEFAULT_REALTIME_REGION,
@@ -37,8 +42,7 @@ class RealtimeIndex:
     def __init__(self, records: Mapping[str, TripUpdateRecord]) -> None:
         """Group records by normalized trip ID while preserving collisions."""
         self._trips: dict[str, list[TripUpdateRecord]] = defaultdict(list)
-        unique = {id(record): record for record in records.values()}
-        for record in unique.values():
+        for record in distinct_trip_updates(records):
             if base := extract_base_trip_id(record.trip_id):
                 self._trips[base].append(record)
 
@@ -128,6 +132,7 @@ class WindowObservation:
     cancelled: bool = False
     updated_at: datetime | None = None
     notices: tuple[PlanNotice, ...] = ()
+    recovery_confirmed: bool = False
 
     def as_state(self) -> dict[str, Any]:
         """Return the bounded state shown in the tracked trips sensor."""
@@ -185,6 +190,7 @@ def observe_window_trip(
     first_departure = trip.effective_departure
     updated_at = None
     delay_seconds = None
+    confirmed_delays = 0
     cancelled = False
 
     for index, leg in enumerate(trip.legs):
@@ -243,6 +249,7 @@ def observe_window_trip(
         updated_at = max(updated_at, timestamp) if updated_at else timestamp
         cancelled |= leg_cancelled
         if boarding.delay_seconds is not None:
+            confirmed_delays += 1
             delay_seconds = (
                 boarding.delay_seconds
                 if delay_seconds is None
@@ -266,6 +273,7 @@ def observe_window_trip(
         cancelled,
         updated_at,
         tuple(notices.values()),
+        recovery_confirmed=confirmed_delays == len(trip.legs),
     )
 
 
@@ -292,7 +300,10 @@ def evaluate_window_trip(
             if delay >= previous + step:
                 alerts.append(WindowAlert(EVENT_TRIP_DELAYED, delay, previous))
                 ledger = replace(ledger, last_delay=delay)
-            elif delay <= threshold - WINDOW_RECOVERY_HYSTERESIS_MINUTES:
+            elif (
+                observation.recovery_confirmed
+                and delay <= threshold - WINDOW_RECOVERY_HYSTERESIS_MINUTES
+            ):
                 alerts.append(WindowAlert(EVENT_TRIP_RECOVERED, delay, previous))
                 ledger = replace(ledger, delay_state="recovered")
         elif delay >= threshold:
