@@ -9,6 +9,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 ### Added
 
 - Added the response-only `translink.plan_journey` action and an opt-in Journey card planner for comparing scheduled alternatives at a selected Brisbane date and time. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
+- Added opt-in nearby stop discovery during setup. Choose a Home Assistant zone or map point, then confirm a stop ID to create a departure board. The lookup discards the selected coordinates. [#55](https://github.com/tinkerologie/ha-translink/issues/55)
 
 ### Changed
 

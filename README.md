@@ -95,6 +95,12 @@ When a search returns several matches, choose the intended location for each end
 
 Departure boards accept stations and stops. When several eligible matches appear, choose the station, stop, or platform you want to track.
 
+#### 3. Nearby Stop Mode (Departure Board)
+
+When adding a Translink entry, choose **Nearby stop (Departure Board)**, then select a Home Assistant zone or choose a point on the map. Confirm the exact stop ID from the nearby results, which show distances in metres and group platforms at the same station. The board shows departures across routes and directions from the selected stop's public Translink timetable.
+
+Home Assistant sends the selected coordinates to Translink once per lookup and discards them afterwards. The entry saves the confirmed stop and your board preferences.
+
 ### Reconfigure an entry
 
 Choose **Reconfigure** from the Translink entry's menu to change locations or transport modes. Leave a location name as shown to keep its saved location. A departure board saved with a place or address searches again so you can choose a station or stop. A new search with several matches prompts you to choose a result.

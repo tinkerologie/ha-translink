@@ -1,0 +1,37 @@
+[
+  {
+    "id": "SI:010783",
+    "description": "King George Square platform 3",
+    "distanceM": 42,
+    "station": {"id": "ST:place_kgbs", "name": "King George Square"}
+  },
+  {
+    "id": "SI:000138",
+    "description": "King George Square platform 2",
+    "distanceM": 31,
+    "station": {"id": "ST:place_kgbs", "name": "King George Square"}
+  },
+  {
+    "id": "SI:000014",
+    "description": "King George Square platform 1",
+    "distanceM": 31,
+    "stopId": "000014",
+    "stopType": "Bus",
+    "position": {"lat": -26.345678, "lng": 152.456789},
+    "station": {
+      "id": "ST:place_kgbs",
+      "name": "King George Square",
+      "position": {"lat": -26.345678, "lng": 152.456789}
+    }
+  },
+  {"id": "SI:900001", "description": "Synthetic stop near City Hall", "distanceM": 32},
+  {"id": "SI:900002", "description": "Synthetic stop farther away", "distanceM": 95},
+  {"id": "SI:900003", "description": "Synthetic stop with no distance"},
+  {"id": "SI:900004", "description": "Synthetic stop with a negative distance", "distanceM": -1},
+  {"id": "SI:900005", "description": "Synthetic stop with a text distance", "distanceM": "1"},
+  {"id": "SI:900006", "description": "Synthetic stop with a boolean distance", "distanceM": true},
+  {"id": 900007, "description": "Synthetic stop with an invalid ID", "distanceM": 1},
+  {"id": "", "description": "Synthetic stop with an empty ID", "distanceM": 1},
+  {"id": "SI:900008", "distanceM": 1},
+  null
+]

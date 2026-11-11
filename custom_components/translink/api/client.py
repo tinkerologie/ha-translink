@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import urllib.parse
 from collections.abc import Mapping, Sequence
@@ -30,6 +31,7 @@ from ..const import (
     MAX_ALTERNATIVE_LEGS,
     MAX_ALTERNATIVE_NOTICES,
     MAX_ALTERNATIVES_LIMIT,
+    NEARBY_RESULT_LIMIT,
     REALTIME_MAX_AGE_SECONDS,
     REALTIME_MAX_FUTURE_SKEW_SECONDS,
     STOP_TIMETABLE_MAX_BYTES,
@@ -61,6 +63,7 @@ from .models import (
     JourneyStatus,
     JourneySummary,
     LocationSearchResult,
+    NearbyStop,
     PlanNotice,
     RealtimeStatus,
     StopRelationship,
@@ -90,6 +93,20 @@ class TranslinkConnectionError(TranslinkApiError):
 
 class TranslinkResponseError(TranslinkApiError):
     """Raised when Translink returns an error status code."""
+
+
+def nearby_coordinates(lat: object, lng: object) -> tuple[float, float] | None:
+    """Accept numeric coordinates within the finite latitude and longitude ranges."""
+    if (
+        not isinstance(lat, (int, float))
+        or not isinstance(lng, (int, float))
+        or isinstance(lat, bool)
+        or isinstance(lng, bool)
+        or not -90 <= lat <= 90
+        or not -180 <= lng <= 180
+    ):
+        return None
+    return float(lat), float(lng)
 
 
 def calculate_plan_hash(query_string: str) -> int:
@@ -330,6 +347,38 @@ class TranslinkClient:
             raise TranslinkConnectionError(
                 f"Error connecting to Translink geolocation stop search: {err}"
             ) from err
+
+    async def find_nearby_stops(
+        self, lat: float, lng: float, limit: int = NEARBY_RESULT_LIMIT
+    ) -> list[NearbyStop]:
+        """Return the nearest valid stops without retaining positions."""
+        if nearby_coordinates(lat, lng) is None:
+            del lat, lng
+            raise ValueError("Invalid nearby stop search coordinates")
+        if type(limit) is not int or limit < 1:
+            del lat, lng
+            raise ValueError("Nearby stop search requires a positive limit")
+
+        try:
+            rows = await self.get_stops_by_geolocation(lat, lng, max_results=limit)
+        except TranslinkApiError as err:
+            error_type = type(err)
+        except (json.JSONDecodeError, UnicodeError):
+            error_type = TranslinkResponseError
+        else:
+            stops: list[NearbyStop] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    stops.append(NearbyStop.model_validate(row))
+                except ValidationError:
+                    continue
+            return sorted(stops, key=lambda stop: (stop.distanceM, stop.id))[:limit]
+
+        # Leave the handler so the original request error is absent from __context__.
+        del lat, lng
+        raise error_type("Unable to find nearby Translink stops") from None
 
     def build_plan_request(
         self,
