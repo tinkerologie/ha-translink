@@ -366,7 +366,27 @@ export const cardStyles = css`
   }
   .departure .destination-name {
     margin-top: var(--ha-space-2, 8px);
+  }
+  .departure > div:first-child {
     overflow-wrap: anywhere;
+  }
+  .departure-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ha-space-1, 4px);
+    margin-top: var(--ha-space-1, 4px);
+  }
+  .departure-status span {
+    padding: var(--ha-space-1, 4px) var(--ha-space-2, 8px);
+    background: var(
+      --ha-color-fill-neutral-quiet-resting,
+      var(--secondary-background-color)
+    );
+    border-radius: var(--ha-border-radius-md, 8px);
+    font-size: var(--ha-font-size-s, 12px);
+  }
+  .expected-time {
+    margin-top: var(--ha-space-2, 8px);
   }
   .departure .when {
     text-align: end;

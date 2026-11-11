@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from datetime import timedelta
-from typing import Any
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .api.client import stop_disruption_fields
+from .api.models import (
+    StopDepartureItem,
+    StopDeparturePlatformChange,
+    StopTimetable,
+    TimetableDeparture,
+    TimetableRoute,
+)
 from .client import (
     JourneyPlanResult,
     JourneySummary,
@@ -21,8 +30,10 @@ from .client import (
     TranslinkClient,
     TripTimetable,
     build_journey_summary,
+    parse_iso_datetime,
 )
 from .const import (
+    AVAILABLE_TRANSPORT_MODES,
     CONF_END_LOCATION_ID,
     CONF_END_NAME,
     CONF_FARE_PREFERENCE,
@@ -61,6 +72,133 @@ def _describe_error(err: BaseException) -> str:
     """Return the exception type and message, so an empty message stays readable."""
     message = str(err)
     return f"{type(err).__name__}: {message}" if message else type(err).__name__
+
+
+def _timetable_vehicle(
+    routes: list[TimetableRoute], route_id: str | None
+) -> str | None:
+    """Resolve a mode from consistent route lines, then the route ID."""
+    line_modes = {
+        line.vehicleType.casefold()
+        for route in routes
+        for line in route.lines or ()
+        if line.vehicleType
+    }
+    known_modes = {mode.casefold(): mode for mode in AVAILABLE_TRANSPORT_MODES}
+    if len(line_modes) == 1:
+        vehicle = known_modes.get(next(iter(line_modes)))
+        if vehicle is not None:
+            return vehicle
+
+    parts = route_id.split(":", maxsplit=2) if route_id else []
+    if len(parts) == 3 and parts[0] == "T":
+        return known_modes.get(parts[1].casefold())
+    return None
+
+
+def _departure_row(
+    departure: TimetableDeparture,
+    routes: list[TimetableRoute],
+    vehicle: str | None,
+    visit_id: str,
+) -> StopDepartureItem:
+    """Keep the upstream schedule and realtime fields independent."""
+    short_name = next((route.shortName for route in routes if route.shortName), None)
+    code = next((route.code for route in routes if route.code), None)
+    route_id = departure.routeId
+    route_label = (
+        short_name or code or (route_id.rsplit(":", 1)[-1] if route_id else "")
+    )
+    realtime = departure.realtime
+    expected = realtime.expectedDepartureUtc if realtime is not None else None
+    platform_change = realtime.platformChange if realtime is not None else None
+
+    return StopDepartureItem(
+        route=route_label or "Transit",
+        vehicle=vehicle,
+        headsign=departure.headsign,
+        departure_time=departure.scheduledDepartureUtc,
+        platform=departure.departurePlatform,
+        trip_id=departure.id,
+        visit_id=visit_id,
+        route_id=route_id,
+        direction=departure.direction,
+        boarding=departure.canBoardDebark,
+        scheduled_departure_time=departure.scheduledDepartureUtc,
+        expected_departure_time=expected,
+        time_source="realtime" if expected is not None else "scheduled",
+        is_cancelled=realtime.isCancelled if realtime is not None else None,
+        is_skipped=realtime.isSkipped if realtime is not None else None,
+        is_extra=realtime.isExtra if realtime is not None else None,
+        platform_change=(
+            StopDeparturePlatformChange(
+                platform=platform_change.platform,
+                old_platform=platform_change.oldPlatform,
+                is_source=platform_change.isSource,
+            )
+            if platform_change is not None
+            else None
+        ),
+        route_color=next(
+            (route.routeHexColor for route in routes if route.routeHexColor), None
+        ),
+    )
+
+
+def _stop_departure_rows(
+    timetable: StopTimetable, modes: list[str]
+) -> list[StopDepartureItem]:
+    """Select boardable visits and deduplicate only complete visit identities."""
+    routes_by_id: dict[str, list[TimetableRoute]] = defaultdict(list)
+    for route in timetable.routes:
+        routes_by_id[route.id].append(route)
+
+    visits: dict[str, tuple[TimetableDeparture, list[TimetableRoute], str | None]] = {}
+    for index, departure in enumerate(timetable.departures):
+        if departure.canBoardDebark == "Alighting":
+            continue
+        routes = [
+            route
+            for route in routes_by_id.get(departure.routeId or "", ())
+            if departure.direction is None or route.direction == departure.direction
+        ]
+        vehicle = _timetable_vehicle(routes, departure.routeId)
+        if modes and vehicle is not None and vehicle not in modes:
+            continue
+
+        visit_id = (
+            json.dumps(
+                (
+                    departure.id,
+                    departure.scheduledDepartureUtc,
+                    departure.departurePlatform,
+                ),
+                separators=(",", ":"),
+            )
+            if (
+                departure.id
+                and departure.scheduledDepartureUtc
+                and departure.departurePlatform
+            )
+            else f"unidentified:{index}"
+        )
+        previous = visits.get(visit_id)
+        if previous is None or (
+            previous[0].realtime is None and departure.realtime is not None
+        ):
+            visits[visit_id] = departure, routes, vehicle
+
+    ordered = sorted(
+        visits.items(),
+        key=lambda item: (
+            parse_iso_datetime(item[1][0].scheduledDepartureUtc)
+            or datetime.max.replace(tzinfo=UTC)
+        ),
+    )
+    return [
+        _departure_row(departure, routes, vehicle, visit_id)
+        for visit_id, (departure, routes, vehicle) in ordered
+    ]
 
 
 class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
@@ -296,78 +434,44 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         stop_id = self.entry.data.get(CONF_STOP_LOCATION_ID, "")
         stop_name = self.entry.data.get(CONF_STOP_NAME, "")
 
-        # Select reference destination avoiding collision if stop is Central
-        ref_id = "ST:place_censta"
-        ref_name = "Central Station"
-        if stop_id == "ST:place_censta" or "central" in stop_name.lower():
-            ref_id = "ST:place_romsta"
-            ref_name = "Roma Street Station"
-
-        plan = await self.client.plan_journey(
-            start_location_id=stop_id,
-            start_name=stop_name,
-            end_location_id=ref_id,
-            end_name=ref_name,
-            transport_modes=self.transport_modes,
-            time_search_mode="LeaveAfter",
-            max_walking_distance=self.max_walking_distance,
+        timetable = await self.client.fetch_stop_timetable(stop_id)
+        rows = _stop_departure_rows(timetable, self.transport_modes)
+        now = datetime.now(UTC)
+        disruptions = stop_disruption_fields(
+            timetable.serviceAlerts,
+            self.data if isinstance(self.data, StopSummary) else None,
+            now,
         )
-
-        tu_res = await self.client.fetch_trip_updates()
-
-        journey_summary = build_journey_summary(
-            plan=plan,
-            trip_updates=tu_res,
-            origin_name_fallback=stop_name,
-            destination_name_fallback=ref_name,
-        )
-
-        # Collect upcoming departures from across planned itineraries
-        departures: list[dict[str, Any]] = []
-        for itin in plan.itineraries:
-            for leg in itin.legs:
-                if leg.travelMode.lower() != "walk":
-                    departures.append(
-                        {
-                            "route": (leg.legRoute.name if leg.legRoute else None)
-                            or leg.tripHeadsign
-                            or "Transit",
-                            "vehicle": leg.travelMode,
-                            "headsign": leg.tripHeadsign,
-                            "departure_time": leg.departureTimeUtc,
-                            "platform": leg.origin.platform if leg.origin else None,
-                        }
-                    )
-                    break
-        if not departures:
-            departures = journey_summary.itinerary_legs
-
-        stop_summary = StopSummary(
+        summary = StopSummary(
             stop_id=stop_id,
-            stop_name=stop_name,
-            next_departure_time=journey_summary.departure_time,
-            next_route=journey_summary.next_service_name,
-            next_vehicle=journey_summary.next_service_vehicle,
-            next_platform=journey_summary.origin_platform,
-            next_headsign=journey_summary.next_service_headsign,
-            delay_mins=journey_summary.delay_mins,
-            departure_delay_seconds=journey_summary.departure_delay_seconds,
-            arrival_delay_seconds=journey_summary.arrival_delay_seconds,
-            predicted_departure_time=journey_summary.predicted_departure_time,
-            realtime_status=journey_summary.realtime_status,
-            realtime_updated_at=journey_summary.realtime_updated_at,
-            delay_source=journey_summary.delay_source,
-            departures=departures,
-            disruptions_count=journey_summary.disruptions_count,
-            disruptions=journey_summary.disruptions,
-            disruptions_description=journey_summary.disruptions_description,
-            disruptions_summary=journey_summary.disruptions_summary,
-            latest_disruption_title=journey_summary.latest_disruption_title,
-            latest_disruption_description=journey_summary.latest_disruption_description,
-            last_updated=journey_summary.last_updated,
+            stop_name=stop_name or timetable.name,
+            departures=[row.model_dump() for row in rows],
+            last_updated=now,
+            **disruptions,
         )
-
-        return stop_summary
+        for row in rows:
+            if row.is_cancelled or row.is_skipped:
+                continue
+            scheduled = parse_iso_datetime(row.scheduled_departure_time)
+            expected = parse_iso_datetime(row.expected_departure_time)
+            effective = expected or scheduled
+            if effective is None or effective < now:
+                continue
+            summary.next_departure_time = scheduled
+            summary.next_route = row.route
+            summary.next_vehicle = row.vehicle
+            summary.next_platform = row.platform
+            summary.next_headsign = row.headsign
+            if expected is not None:
+                summary.predicted_departure_time = expected
+                summary.realtime_status = "live"
+                if scheduled is not None:
+                    delay_seconds = (expected - scheduled).total_seconds()
+                    summary.departure_delay_seconds = round(delay_seconds)
+                    summary.delay_mins = round(delay_seconds / 60)
+                    summary.delay_source = "stop_event"
+            break
+        return summary
 
     async def async_shutdown(self) -> None:
         """Cleanly close coordinator connections."""

@@ -109,3 +109,40 @@ labelled in tests and cover formats and edge cases absent from those captures.
 supports the explicit event fields and absence semantics. Route suffix and
 zero-padded stop-ID normalization are observations from Translink's data, not
 published universal GTFS rules.
+
+## Station and platform timetables
+
+Stop boards fetch `/api/stop/timetable/{id}` with the full configured location ID
+encoded as a path segment. A station response carries its `stops` and an
+unprefixed station ID. A platform response can carry a nested `station` and
+its prefixed `SI:` ID. Both supply route records and departure visits. Routes
+can repeat across directions and within a direction. Train route records can
+supply mode through `lines[].vehicleType`. The `T:<Mode>:` route prefix also
+identifies modes such as Bus when line metadata is absent.
+
+A departure includes a trip ID, route ID, direction, headsign, scheduled UTC
+time, platform and boarding value. The response has no stop ID on each
+departure. A trip can visit the selected station multiple times. The board
+uses trip ID, scheduled time and platform together for identity, preferring
+a duplicate with realtime metadata. Visits missing any part of the key stay
+separate. The board excludes explicit `Alighting` visits and labels `Boarding`
+visits as **Boarding only**.
+A realtime object can supply expected UTC time and cancellation, skip, extra
+service and platform-change fields. Platform changes can appear as two visits
+on different platforms. The board keeps the listed platform and exposes
+`platformChange` separately. The meaning of `isSource` for choosing one
+platform remains unverified.
+
+The board uses `serviceAlerts.current` from the selected response, even with
+zero departures. Translink has not established a station-to-platform notice
+inheritance contract. An absent or malformed current list preserves the last
+valid notices. A valid empty list clears them. Upcoming notices are kept out
+of the active disruption count.
+
+Early investigation included reads with certificate verification disabled.
+Later checks on 11 November 2026 verified TLS and confirmed station responses
+for Kippa-Ring and Central and a platform response for Roma Street platform 4.
+The integration uses Home Assistant's session with TLS verification, a
+10-second timeout and a 1 MiB decoded body bound. The regression fixtures
+under `tests/fixtures/stop_timetable/` use synthetic identifiers, times and
+notice text.

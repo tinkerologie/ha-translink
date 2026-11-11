@@ -10,11 +10,12 @@
 
 The **Translink Queensland** custom integration connects Home Assistant directly to the [Translink](https://translink.com.au/) public transport network across South East Queensland (Brisbane, Gold Coast, Sunshine Coast, Ipswich, Logan, Moreton Bay, Redlands) and regional Queensland centers.
 
-It brings the complete real-time experience of the official Translink app into Home Assistant:
+The integration provides journey planning, vehicle tracking and stop timetables in Home Assistant.
+
 - **Journey Planning & Commute Tracking**: Real-time departure times, arrival times, duration, transfer counts, origin/destination platforms, line colors, Queensland 50c fares, and walking directions between any Starting Point and Destination.
 - **Live Vehicle GPS Tracking**: Real-time `device_tracker` entity powered by Translink's open GTFS-RT feeds, exposing live vehicle coordinates, bearing, and speed directly on Home Assistant maps.
-- **Station & Stop Departure Boards**: Real-time upcoming service timetables and platform allocations for any bus stop, train station, ferry terminal, or tram station.
-- **Disruptions & Service Alerts**: Live network disruption alerts and delay tracking.
+- **Station & Stop Departure Boards**: Boardable departures across routes and directions from the selected station or platform. Rows show scheduled times and include expected times and service flags where Translink supplies them.
+- **Disruptions & Service Alerts**: Journey planner notices and current timetable notices for the selected station or platform.
 
 ---
 
@@ -26,7 +27,7 @@ It brings the complete real-time experience of the official Translink app into H
   - **Ferries**: CityCat, CityHopper, and Cross River Ferries across the Brisbane River.
   - **Trams / Light Rail**: G:link (Gold Coast Light Rail).
 - **Regional Queensland**:
-  - Journey Planner mode supports regional urban networks (Cairns, Mackay, Toowoomba, Sunshine Coast, Bowen, etc.). Departure Board mode is optimized for South East Queensland transit stations.
+  - Journey Planner mode supports regional urban networks (Cairns, Mackay, Toowoomba, Sunshine Coast, Bowen, etc.). Departure Board mode requires a station or platform with a public Translink timetable.
 
 ---
 
@@ -135,12 +136,18 @@ Choose **Reconfigure** from the Translink entry's menu to change locations or tr
 
 | Entity | Type | Details |
 | --- | --- | --- |
-| **Next Departure** | `sensor` (`timestamp`) | Next scheduled departure, with `predicted_time` and `predicted_readable_time` when available. |
+| **Next Departure** | `sensor` (`timestamp`) | Scheduled timestamp for the first eligible upcoming visit, with `predicted_time` and `predicted_readable_time` when supplied. |
 | **Next Service** | `sensor` | Next service line code and vehicle type. |
 | **Platform** | `sensor` | Platform or bay for the next service. |
-| **Delay** | `sensor` (`duration`, `min`) | Signed delay for the next service, or `unknown`. |
-| **Disruptions** | `sensor` (`diagnostic`) | Disruption notices affecting this stop. |
-| **Departures Board** | `sensor` (`diagnostic`) | Full upcoming departures list with routes, times, and destinations. |
+| **Delay** | `sensor` (`duration`, `min`) | Signed delay in minutes for the same visit as **Next Departure**, or `unknown` without a prediction offset. |
+| **Disruptions** | `sensor` (`diagnostic`) | Current notices returned for the selected station or platform, including when the board has zero departures. |
+| **Departures Board** | `sensor` (`diagnostic`) | Boardable visits from the selected timetable with routes, directions, platforms and available prediction details. |
+
+A platform board uses its platform response for notices. A station board uses
+its station response. If the current notice section is unavailable, the board
+retains the last valid notices until a later response supplies them. The live
+`departures` attribute is available to cards and automations and excluded from
+Recorder.
 
 ### Real-time status and delay automations
 
@@ -153,7 +160,7 @@ boarding stop sets `boarding_skipped`. The status attributes include
 departure and arrival times determine the `departed` and `arrived` transitions.
 Timestamp-triggered automations continue to use the scheduled sensor states.
 
-When calculating the summary status and delay, the integration ignores updates
+When calculating journey status and delay, the integration ignores GTFS-RT updates
 more than 300 seconds old or more than 60 seconds ahead of the current time. It
 checks the trip update timestamp first and uses the feed timestamp when the trip
 timestamp is absent. Predictions with no timestamp can still apply if they match
@@ -188,10 +195,12 @@ Use each card's visual editor to choose the appropriate Translink sensor:
 Cards find related sensors through Home Assistant's entity registry and device
 identity, so renamed entity IDs are supported. They follow the dashboard theme,
 locale/time preferences and Sections sizing. Journey details and alert descriptions
-expand with keyboard-accessible controls. Times from the planner are labelled
-**Scheduled**. A reported delay belongs to the next-service summary; it is never
-applied to every departure. Missing data, unavailable entities and no services
-have distinct messages.
+expand with keyboard-accessible controls. The stop timetable card shows
+**Scheduled** and **Expected** times separately. It shows **Cancelled**,
+**Skipped**, **Extra service**, **Boarding only** and platform changes when supplied
+for that visit.
+An empty board shows any current stop notices alongside the no-services
+message. A reported delay belongs to the next-service summary.
 
 Example for a Sections dashboard (replace these IDs with your actual entities):
 

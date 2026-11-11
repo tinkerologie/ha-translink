@@ -149,6 +149,23 @@ it.each(["unknown", "unavailable", "missing"])(
   },
 );
 
+it("deduplicates timetable rows by visit ID while keeping repeated visits", () => {
+  const visit = {
+    trip_id: "loop",
+    visit_id: "first",
+    route: "T2",
+    platform: "2",
+    scheduled_departure_time: "2026-10-26T08:46:00Z",
+  };
+  const rows = normalizeDepartures([
+    visit,
+    { ...visit, headsign: "Duplicate with different metadata" },
+    { ...visit, visit_id: "repeat" },
+  ]);
+  expect(rows.map((row) => row.visitId)).toEqual(["first", "repeat"]);
+  expect(rows[0]?.time).toBe("2026-10-26T08:46:00Z");
+});
+
 it.each([
   ["departure", [1, 0, 3, 4, 2]],
   ["arrival", [4, 1, 0, 3, 2]],
