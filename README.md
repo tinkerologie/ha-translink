@@ -187,7 +187,7 @@ data only shows that no notice was issued. [Routing research](docs/routing-optio
 | **Fare** | `sensor` (`monetary`, `AUD`) | Go Card transit fare (e.g. `$0.50` under Queensland 50c fares). Attributes: `fares_breakdown`. |
 | **Delay** | `sensor` (`duration`, `min`) | Signed boarding delay in minutes. `unknown` when an applicable prediction is missing. |
 | **Walking Distance** | `sensor` (`distance`, `m`) | Total walking distance in meters across journey legs. |
-| **Disruptions** | `sensor` (`diagnostic`) | Active disruption notices count. Attributes: `disruptions` details. |
+| **Disruptions** | `sensor` (`diagnostic`) | Count of planner notices, including during `no_service`. Each notice in `disruptions` has `leg` scope if referenced by the selected itinerary or `request` scope if returned as a top-level fallback. Notices expire at their timezone-aware end time. |
 | **Itinerary** | `sensor` (`diagnostic`) | Journey legs, available timed calling stops with explicit schedule/prediction provenance, and route polyline. |
 | **Live Vehicle** | `device_tracker` (`gps`) | Live vehicle GPS position, bearing, speed, and vehicle ID from GTFS Realtime feeds. |
 

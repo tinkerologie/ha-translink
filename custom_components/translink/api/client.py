@@ -1056,7 +1056,9 @@ class _DisruptionFields(TypedDict):
     latest_disruption_description: str | None
 
 
-def _notice_expired(ends_utc: str | None, now: datetime) -> bool:
+def _notice_expired(
+    ends_utc: str | None, now: datetime, *, end_inclusive: bool
+) -> bool:
     """Treat missing, malformed and timezone-naive end times as unknown."""
     if not ends_utc:
         return False
@@ -1064,7 +1066,9 @@ def _notice_expired(ends_utc: str | None, now: datetime) -> bool:
         ends_at = datetime.fromisoformat(ends_utc)
     except ValueError:
         return False
-    return ends_at.tzinfo is not None and now > ends_at
+    return ends_at.tzinfo is not None and (
+        now > ends_at if end_inclusive else now >= ends_at
+    )
 
 
 def _collect_leg_notices(
@@ -1089,6 +1093,7 @@ def _collect_leg_notices(
                         "severity": notice.severity,
                         "starts_utc": detail.startsUtc if detail else None,
                         "ends_utc": detail.endsUtc if detail else None,
+                        "scope": "leg",
                         "leg": leg.travelMode,
                         "route": leg.legRoute.name if leg.legRoute else None,
                     }
@@ -1107,7 +1112,9 @@ def _collect_plan_notices(
         notice_id = str(notice.id) if notice.id is not None else None
         if notice_id and notice_id not in seen:
             seen.add(notice_id)
-            disruptions.append(_unscoped_notice(notice, "Informative"))
+            disruptions.append(
+                {**_unscoped_notice(notice, "Informative"), "scope": "request"}
+            )
     return disruptions
 
 
@@ -1122,7 +1129,7 @@ def _build_disruption_fields(
     if not disruptions:
         disruptions = _collect_plan_notices(notices, set())
 
-    return _format_disruptions(disruptions, now)
+    return _format_disruptions(disruptions, now, end_inclusive=False)
 
 
 def _unscoped_notice(notice: PlanNotice, severity: str | None) -> dict[str, Any]:
@@ -1163,15 +1170,19 @@ def stop_disruption_fields(
             notices.setdefault(
                 str(notice.id), _unscoped_notice(notice, notice.severity)
             )
-    return _format_disruptions(list(notices.values()), now)
+    return _format_disruptions(list(notices.values()), now, end_inclusive=True)
 
 
 def _format_disruptions(
-    disruptions: list[dict[str, Any]], now: datetime
+    disruptions: list[dict[str, Any]], now: datetime, *, end_inclusive: bool
 ) -> _DisruptionFields:
     """Apply expiry and format normalized notices for entities."""
     # Apply expiry after choosing the notice scope and winning detail.
-    disruptions = [d for d in disruptions if not _notice_expired(d["ends_utc"], now)]
+    disruptions = [
+        d
+        for d in disruptions
+        if not _notice_expired(d["ends_utc"], now, end_inclusive=end_inclusive)
+    ]
     titles = [str(d["title"]) for d in disruptions if d.get("title")]
     descriptions = [str(d["description"]) for d in disruptions if d.get("description")]
     disruptions_summary = "; ".join(titles) if titles else "Normal"

@@ -755,6 +755,7 @@ def test_build_journey_summary_empty_with_notice() -> None:
     assert summary.latest_disruption_title == "Line closure"
     assert summary.latest_disruption_description == "Buses replace trains."
     assert summary.disruptions[0]["severity"] == "Informative"
+    assert summary.disruptions[0]["scope"] == "request"
     assert summary.disruptions[0]["leg"] is None
     assert summary.disruptions[0]["route"] is None
 
@@ -1641,19 +1642,25 @@ def test_build_journey_summary_top_level_notices_fallback() -> None:
 
     assert summary.disruptions_count == 1
     assert summary.disruptions[0]["title"] == "General Alert"
+    assert summary.disruptions[0]["scope"] == "request"
     assert summary.disruptions_summary == "General Alert"
     assert summary.latest_disruption_title == "General Alert"
 
 
+@pytest.mark.parametrize(
+    "ends_utc",
+    ["2026-10-06T09:59:59+10:00", "2026-10-06T10:00:00+10:00"],
+    ids=["past-end", "exact-end"],
+)
 @pytest.mark.parametrize("leg_referenced", [False, True])
 def test_build_journey_summary_filters_expired_winning_notice(
-    leg_referenced: bool,
+    leg_referenced: bool, ends_utc: str
 ) -> None:
     """Use first fallback detail or last referenced detail before testing expiry."""
     expired = {
         "id": "101",
         "title": "Trackwork",
-        "endsUtc": "2026-10-06T09:59:59+10:00",
+        "endsUtc": ends_utc,
     }
     active = {"id": 101, "title": "Duplicate notice", "endsUtc": "2026-10-06T12:00:00Z"}
     unrelated = {"id": 102, "title": "Unreferenced notice"}
@@ -1679,12 +1686,11 @@ def test_build_journey_summary_filters_expired_winning_notice(
     ("starts_utc", "ends_utc"),
     [
         ("2026-10-07T00:00:00Z", "2026-10-08T00:00:00Z"),
-        (None, "2026-10-06T00:00:00Z"),
         (None, "not a date"),
         (None, "2026-10-05T23:59:59"),
         (None, None),
     ],
-    ids=["future", "inclusive-end", "malformed-end", "naive-end", "missing-end"],
+    ids=["future", "malformed-end", "naive-end", "missing-end"],
 )
 def test_build_journey_summary_preserves_current_or_unknown_notice_dates(
     starts_utc: str | None, ends_utc: str | None
@@ -1733,6 +1739,7 @@ def test_build_journey_summary_scopes_notices_to_usable_leg_references() -> None
     summary = build_journey_summary(plan)
 
     assert [notice["id"] for notice in summary.disruptions] == [101, 102]
+    assert [notice["scope"] for notice in summary.disruptions] == ["leg", "leg"]
     referenced, missing_detail = summary.disruptions
     assert referenced["title"] == "Line closure"
     assert referenced["severity"] == "Major"
