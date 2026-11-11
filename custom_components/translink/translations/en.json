@@ -207,6 +207,7 @@
       "window_date_required": "Select a date for the one-off window.",
       "window_date_expired": "Select a one-off window that ends in the future.",
       "window_weekdays_required": "Select at least one weekday.",
+      "invalid_window_weekdays": "Select weekdays from the available options.",
       "window_minute_precision_required": "Enter times to the minute."
     },
     "abort": {

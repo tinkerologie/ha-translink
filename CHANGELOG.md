@@ -6,6 +6,10 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject invalid weekdays in recurring commute windows and show a reconfiguration message when a saved schedule is invalid. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
+
 ## [2026.11.1] - 2026-11-11
 
 ### Added

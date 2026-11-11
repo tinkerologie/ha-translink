@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.event import async_track_point_in_utc_time
@@ -108,6 +109,13 @@ class WindowCoordinator(DataUpdateCoordinator[WindowData]):
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Set up a sleeping coordinator with per-entry persistent state."""
+        config = {**entry.data, **entry.options}
+        try:
+            self.schedule = WindowSchedule.from_config(config)
+        except (KeyError, TypeError, ValueError) as err:
+            raise ConfigEntryError(
+                "Invalid commute window schedule. Reconfigure the entry."
+            ) from err
         super().__init__(
             hass, _LOGGER, config_entry=entry, name=f"{DOMAIN}_{entry.entry_id}"
         )
@@ -120,8 +128,6 @@ class WindowCoordinator(DataUpdateCoordinator[WindowData]):
             entry_type=DeviceEntryType.SERVICE,
         )
         self.client = TranslinkClient(session=async_get_clientsession(hass))
-        config = {**entry.data, **entry.options}
-        self.schedule = WindowSchedule.from_config(config)
         self._options = {
             key: max(minimum, min(maximum, int(config.get(key, default))))
             for key, (default, minimum, maximum) in WINDOW_OPTION_LIMITS.items()

@@ -59,3 +59,16 @@ def test_start_and_end_have_whole_minute_precision() -> None:
                 "window_weekdays": ["0"],
             }
         )
+
+
+@pytest.mark.parametrize("weekdays", [["7"], ["0", "-1"]])
+def test_recurring_schedule_rejects_invalid_weekdays(weekdays: list[str]) -> None:
+    """Reject out-of-range weekdays even alongside a valid selection."""
+    with pytest.raises(ValueError, match="invalid_window_weekdays"):
+        WindowSchedule.from_config(
+            {
+                "window_start": "07:30",
+                "window_end": "08:00",
+                "window_weekdays": weekdays,
+            }
+        )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant.common import MockConfigEntry
 
@@ -13,7 +14,12 @@ from custom_components.translink import (
     async_unload_entry,
     async_update_options,
 )
-from custom_components.translink.const import CONF_MODE, DOMAIN, MODE_JOURNEY
+from custom_components.translink.const import (
+    CONF_MODE,
+    DOMAIN,
+    MODE_JOURNEY,
+    MODE_WINDOW,
+)
 
 
 async def test_async_setup_entry_success(hass: HomeAssistant) -> None:
@@ -41,6 +47,33 @@ async def test_async_setup_entry_success(hass: HomeAssistant) -> None:
     assert entry.runtime_data is not None
     assert hass.data[DOMAIN][entry.entry_id] == entry.runtime_data
     mock_forward.assert_awaited_once_with(entry, PLATFORMS)
+
+
+async def test_invalid_recurring_weekdays_fail_setup_before_polling(
+    hass: HomeAssistant,
+) -> None:
+    """A corrupt saved schedule fails with a reconfiguration message."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_MODE: MODE_WINDOW,
+            "start_location_id": "SI:100",
+            "end_location_id": "SI:101",
+            "window_start": "07:30",
+            "window_end": "08:00",
+            "window_weekdays": ["7"],
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.translink.client.TranslinkClient.plan_journey"
+    ) as plan:
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.reason == "Invalid commute window schedule. Reconfigure the entry."
+    plan.assert_not_awaited()
 
 
 async def test_async_update_options(hass: HomeAssistant) -> None:

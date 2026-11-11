@@ -47,6 +47,14 @@ class WindowSchedule:
     once: date | None
     weekdays: frozenset[int]
 
+    def __post_init__(self) -> None:
+        """Require valid weekdays for a recurring schedule."""
+        if self.once is None:
+            if not self.weekdays:
+                raise ValueError("window_weekdays_required")
+            if not self.weekdays.issubset(range(7)):
+                raise ValueError("invalid_window_weekdays")
+
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> WindowSchedule:
         """Parse a schedule and report invalid fields using flow error keys."""
@@ -73,8 +81,6 @@ class WindowSchedule:
             weekdays = frozenset(
                 int(day) for day in config.get(CONF_WINDOW_WEEKDAYS, ())
             )
-            if not weekdays:
-                raise ValueError("window_weekdays_required")
         lead = timedelta(
             minutes=config.get(
                 CONF_WINDOW_LEAD, WINDOW_OPTION_LIMITS[CONF_WINDOW_LEAD][0]
