@@ -4,6 +4,21 @@ export interface EntityState {
   attributes: Record<string, unknown>;
   last_updated?: string;
 }
+export interface VehicleTrackerAttributes {
+  active_leg_index?: number | null;
+  route_name?: string | null;
+  route_code?: string | null;
+  vehicle_type?: string | null;
+  vehicle_label?: string | null;
+  position_status?:
+    | "live"
+    | "stale"
+    | "ambiguous"
+    | "no_position"
+    | "no_active_leg"
+    | "disabled";
+  position_timestamp?: string | null;
+}
 export interface RegistryEntry {
   entity_id: string;
   platform?: string;
@@ -42,7 +57,19 @@ export interface CardConfig {
 export type Row = Record<string, unknown>;
 export interface Departure {
   tripId?: string;
+  visitId?: string;
   time?: string;
+  expectedTime?: string;
+  timeSource?: "scheduled" | "realtime";
+  cancelled?: boolean;
+  skipped?: boolean;
+  extra?: boolean;
+  platformChange?: {
+    platform?: string;
+    oldPlatform?: string;
+    isSource?: boolean;
+  };
+  boarding?: string;
   route: string;
   vehicle: string;
   headsign?: string;

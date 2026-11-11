@@ -20,6 +20,7 @@ async function journey(
   await card.updateComplete;
   return card;
 }
+const vehicleTracker = "device_tracker.renamed_train";
 const journeyDisruptions = "sensor.renamed_journey_disruptions";
 function emptyJourney(
   status = "no_service",
@@ -27,6 +28,7 @@ function emptyJourney(
   disruptionTitle: string | null = "Line closure",
 ): HomeAssistant {
   const hass = structuredClone(fixture) as HomeAssistant;
+  delete hass.states[vehicleTracker];
   const itinerary = "sensor.renamed_journey_itinerary";
   const statusEntity = "sensor.renamed_journey_status";
   hass.states[itinerary] = {
@@ -53,7 +55,9 @@ describe("card states and interactions", () => {
     });
   });
   it("renders scheduled journeys and toggles details, without fabricated tracking", async () => {
-    const card = await journey(fixture);
+    const hass = structuredClone(fixture) as HomeAssistant;
+    delete hass.states[vehicleTracker];
+    const card = await journey(hass);
     expect(card.shadowRoot?.textContent).toContain("Scheduled");
     expect(card.shadowRoot?.textContent).not.toContain("Live");
     const button =
@@ -332,9 +336,16 @@ it("limits departures, can hide platforms, and explains an empty board", async (
   expect(card.shadowRoot!.textContent).not.toContain("Platform 1");
   const empty = structuredClone(hass);
   empty.states[state.entity_id]!.attributes.departures = [];
+  const alerts = empty.states["sensor.renamed_stop_disruptions"]!;
+  alerts.state = "2";
+  alerts.attributes.latest_title = "Lift <img> maintenance";
   card.hass = empty;
   await card.updateComplete;
   expect(card.shadowRoot!.textContent).toContain("No services found");
+  expect(card.shadowRoot!.textContent).toMatch(
+    /2 service alerts\s*·\s*Lift <img> maintenance/,
+  );
+  expect(card.shadowRoot!.querySelector("img")).toBeNull();
 });
 
 it("limits alerts and distinguishes no disruptions from unavailable data", async () => {
@@ -415,6 +426,124 @@ it("keeps scheduled predictions, signed delays and missing-data relationships di
   expect(calls[4]!.textContent).toContain("Stop 600010");
   expect(calls[4]!.textContent).toContain("No prediction available");
   expect(calls[4]!.textContent).not.toContain("+2 min");
+});
+
+it("shows the active vehicle while scheduled and first-service information stay the same", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  const card = await journey(hass);
+  const root = card.shadowRoot!;
+  const firstService = root.querySelector(".chip")?.textContent;
+  const times = root.querySelector(".timing")?.textContent;
+  const activeVehicle = () => root.querySelector(".active-vehicle");
+
+  expect(firstService).toContain("T2 Springfield Central");
+  expect(times).toContain("5:46 pm");
+  expect(activeVehicle()?.textContent).toContain("Ferny Grove");
+  expect(activeVehicle()?.textContent).toContain("Train 103");
+  expect(
+    activeVehicle()?.querySelector('[role="status"]')?.textContent,
+  ).toMatch(/Live position · 5:48 pm/);
+  expect(root.textContent).not.toContain("153.2321");
+  root.querySelector<HTMLButtonElement>(".disclosure")!.click();
+  await card.updateComplete;
+  expect(root.querySelector(".leg[aria-current=step]")?.textContent).toContain(
+    "Active leg",
+  );
+
+  for (const [status, label] of [
+    ["stale", "Position stale"],
+    ["ambiguous", "Multiple matching vehicles"],
+    ["no_position", "No live position"],
+    ["no_active_leg", "No active vehicle"],
+    ["disabled", "Tracking disabled"],
+  ]) {
+    const next = structuredClone(hass);
+    next.states[vehicleTracker]!.state = "unknown";
+    next.states[vehicleTracker]!.attributes = {
+      ...next.states[vehicleTracker]!.attributes,
+      position_status: status,
+      active_leg_index: status === "no_active_leg" ? null : 0,
+    };
+    card.hass = next;
+    await card.updateComplete;
+    expect(
+      activeVehicle()?.querySelector('[role="status"]')?.textContent?.trim(),
+    ).toBe(label);
+    expect(activeVehicle()?.textContent).not.toContain("Train 103");
+    expect(root.querySelector(".chip")?.textContent).toBe(firstService);
+    expect(root.querySelector(".timing")?.textContent).toBe(times);
+  }
+
+  const unavailable = structuredClone(hass);
+  unavailable.states[vehicleTracker]!.state = "unavailable";
+  card.hass = unavailable;
+  await card.updateComplete;
+  expect(activeVehicle()).toBeNull();
+  expect(root.querySelector(".leg[aria-current]")).toBeNull();
+  const absent = structuredClone(hass);
+  delete absent.states[vehicleTracker];
+  card.hass = absent;
+  await card.updateComplete;
+  expect(activeVehicle()).toBeNull();
+  expect(root.querySelector(".chip")?.textContent).toBe(firstService);
+  expect(root.querySelector(".timing")?.textContent).toBe(times);
+});
+
+it("shows stop timetable times and upstream visit statuses separately", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  const entity = "sensor.renamed_stop_departures_board";
+  hass.states[entity]!.attributes.departures = [
+    {
+      route: "T2",
+      visit_id: "one",
+      boarding: "Boarding",
+      scheduled_departure_time: "2026-10-26T07:46:00Z",
+      expected_departure_time: "2026-10-26T07:52:00Z",
+      time_source: "realtime",
+      is_cancelled: true,
+      is_extra: true,
+      is_skipped: false,
+      platform_change: { old_platform: "1", platform: "<script>2</script>" },
+    },
+    {
+      route: "T3",
+      visit_id: "two",
+      scheduled_departure_time: "2026-10-26T07:48:00Z",
+      time_source: "scheduled",
+      is_skipped: true,
+      is_cancelled: "true",
+    },
+  ];
+  const card = document.createElement(
+    "translink-departures-card",
+  ) as DeparturesCard;
+  card.setConfig({ type: "custom:translink-departures-card", entity });
+  card.hass = hass;
+  document.body.append(card);
+  await card.updateComplete;
+
+  expect(card.shadowRoot!.textContent).toContain("Stop timetable");
+  const [realtime, scheduled] = card.shadowRoot!.querySelectorAll(".departure");
+  expect(realtime!.textContent).toContain("Scheduled");
+  expect(realtime!.textContent).toContain("Expected");
+  expect(
+    [...realtime!.querySelectorAll("time")].map((time) =>
+      time.getAttribute("datetime"),
+    ),
+  ).toEqual(["2026-10-26T07:46:00Z", "2026-10-26T07:52:00Z"]);
+  expect(realtime!.textContent).toContain("Cancelled");
+  expect(realtime!.textContent).toContain("Boarding only");
+  expect(realtime!.textContent).toContain("Extra service");
+  expect(realtime!.textContent).not.toContain("Skipped");
+  expect(realtime!.textContent).toMatch(
+    /Platform change: 1 →\s*<script>2<\/script>/,
+  );
+  expect(realtime!.querySelector("script")).toBeNull();
+  expect(scheduled!.textContent).toContain("Scheduled");
+  expect(scheduled!.textContent).toContain("Skipped");
+  expect(scheduled!.textContent).not.toMatch(
+    /Expected|Live|Cancelled|Boarding only/,
+  );
 });
 
 it("calls the planner once with Brisbane inputs when Plan is submitted", async () => {

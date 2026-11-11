@@ -26,6 +26,8 @@ class VehiclePositionRecord:
     bearing: float | None = None
     speed: float | None = None
     timestamp: int | None = None
+    start_date: str | None = None
+    start_time: str | None = None
 
 
 @dataclass(slots=True)
@@ -177,9 +179,11 @@ def extract_base_trip_id(trip_id: str | None) -> str | None:
     return base or None
 
 
-def parse_vehicle_positions(raw_bytes: bytes) -> dict[str, VehiclePositionRecord]:
-    """Parse GTFS-RT VehiclePositions binary payload into a lookup dict."""
-    result: dict[str, VehiclePositionRecord] = {}
+def parse_vehicle_position_records(
+    raw_bytes: bytes,
+) -> tuple[VehiclePositionRecord, ...]:
+    """Decode vehicle positions in feed order, preserving trip ID collisions."""
+    records: list[VehiclePositionRecord] = []
     top_fields = _parse_fields(raw_bytes)
     for field_num, _, ent_bytes in top_fields:
         if field_num != 2 or not isinstance(ent_bytes, bytes):
@@ -201,6 +205,8 @@ def parse_vehicle_positions(raw_bytes: bytes) -> dict[str, VehiclePositionRecord
         v_fields = _parse_fields(veh_bytes)
         trip_id: str | None = None
         route_id: str | None = None
+        start_date: str | None = None
+        start_time: str | None = None
         veh_id: str | None = None
         veh_label: str | None = None
         lat: float | None = None
@@ -215,6 +221,10 @@ def parse_vehicle_positions(raw_bytes: bytes) -> dict[str, VehiclePositionRecord
                 for tf_num, _, tf_val in trip_fields:
                     if tf_num == 1:
                         trip_id = _decode_string(tf_val)
+                    elif tf_num == 2:
+                        start_time = _decode_string(tf_val)
+                    elif tf_num == 3:
+                        start_date = _decode_string(tf_val)
                     elif tf_num == 5:
                         route_id = _decode_string(tf_val)
             elif vf_num == 2 and isinstance(vf_val, bytes):  # Position
@@ -239,26 +249,38 @@ def parse_vehicle_positions(raw_bytes: bytes) -> dict[str, VehiclePositionRecord
                         veh_label = _decode_string(vdf_val)
 
         if lat is not None and lng is not None:
-            record = VehiclePositionRecord(
-                entity_id=entity_id,
-                vehicle_id=veh_id,
-                vehicle_label=veh_label,
-                trip_id=trip_id,
-                route_id=route_id,
-                latitude=round(lat, 6),
-                longitude=round(lng, 6),
-                bearing=round(bearing, 1) if bearing is not None else None,
-                speed=round(speed, 2) if speed is not None else None,
-                timestamp=timestamp,
+            records.append(
+                VehiclePositionRecord(
+                    entity_id=entity_id,
+                    vehicle_id=veh_id,
+                    vehicle_label=veh_label,
+                    trip_id=trip_id,
+                    route_id=route_id,
+                    latitude=round(lat, 6),
+                    longitude=round(lng, 6),
+                    bearing=round(bearing, 1) if bearing is not None else None,
+                    speed=round(speed, 2) if speed is not None else None,
+                    timestamp=timestamp,
+                    start_date=start_date,
+                    start_time=start_time,
+                )
             )
-            if trip_id:
-                result[trip_id] = record
-                base_id = extract_base_trip_id(trip_id)
-                if base_id and base_id not in result:
-                    result[base_id] = record
-            if veh_id:
-                result[veh_id] = record
-            result[entity_id] = record
+
+    return tuple(records)
+
+
+def parse_vehicle_positions(raw_bytes: bytes) -> dict[str, VehiclePositionRecord]:
+    """Parse positions with the legacy lookup aliases."""
+    result: dict[str, VehiclePositionRecord] = {}
+    for record in parse_vehicle_position_records(raw_bytes):
+        if record.trip_id:
+            result[record.trip_id] = record
+            base_id = extract_base_trip_id(record.trip_id)
+            if base_id:
+                result.setdefault(base_id, record)
+        if record.vehicle_id:
+            result[record.vehicle_id] = record
+        result[record.entity_id] = record
 
     return result
 

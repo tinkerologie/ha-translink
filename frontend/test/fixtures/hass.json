@@ -1,5 +1,19 @@
 {
   "states": {
+    "device_tracker.renamed_train": {
+      "entity_id": "device_tracker.renamed_train",
+      "state": "not_home",
+      "attributes": {
+        "active_leg_index": 0,
+        "route_name": "Ferny Grove",
+        "route_code": "FERN",
+        "vehicle_label": "Train 103",
+        "position_status": "live",
+        "position_timestamp": "2026-10-26T07:48:00+00:00",
+        "latitude": -27.6123,
+        "longitude": 153.2321
+      }
+    },
     "sensor.renamed_journey_next_departure": {
       "entity_id": "sensor.renamed_journey_next_departure",
       "state": "2026-10-26T07:46:00+00:00",
@@ -475,17 +489,29 @@
       "attributes": {
         "departures": [
           {
+            "trip_id": "train-loop",
+            "visit_id": "train-loop-1",
+            "boarding": "Boarding",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
             "headsign": "Springfield Central",
             "departure_time": "2026-10-26T07:46:00Z",
-            "platform": "5"
+            "scheduled_departure_time": "2026-10-26T07:46:00Z",
+            "expected_departure_time": "2026-10-26T07:48:00Z",
+            "time_source": "realtime",
+            "platform": "5",
+            "is_extra": true,
+            "platform_change": { "old_platform": "5", "platform": "6" }
           },
           {
+            "trip_id": "train-loop",
+            "visit_id": "train-loop-2",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
             "headsign": "Springfield Central",
-            "departure_time": "2026-10-26T07:46:00Z",
+            "departure_time": "2026-10-26T08:46:00Z",
+            "scheduled_departure_time": "2026-10-26T08:46:00Z",
+            "time_source": "scheduled",
             "platform": "5"
           }
         ]
@@ -493,6 +519,12 @@
     }
   },
   "entities": {
+    "device_tracker.renamed_train": {
+      "entity_id": "device_tracker.renamed_train",
+      "device_id": "journey",
+      "platform": "translink",
+      "translation_key": "vehicle_tracker"
+    },
     "sensor.renamed_journey_next_departure": {
       "entity_id": "sensor.renamed_journey_next_departure",
       "device_id": "journey",

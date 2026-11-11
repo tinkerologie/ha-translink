@@ -94,24 +94,53 @@ export function stub(
   );
   return entry ? { entity: entry.entity_id } : {};
 }
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
 export function normalizeDepartures(value: unknown): Departure[] {
   const seen = new Set<string>();
   return rows(value)
-    .map((row) => ({
-      tripId: text(row.trip_id ?? row.tripId),
-      time: validTime(row.departure_time ?? row.departureTimeUtc),
-      route: text(row.route) ?? text(row.routeCode) ?? "Transit",
-      vehicle: text(row.vehicle) ?? text(row.travelMode) ?? "Transit",
-      headsign: text(row.headsign) ?? text(row.destination),
-      platform: text(row.platform) ?? text(row.originPlatform),
-      color: text(row.routeColor),
-    }))
-    .filter((row) => {
-      // Planner alternatives can share the exact same first departure.
-      const key = JSON.stringify(row);
-      if (seen.has(key)) return false;
+    .flatMap((row) => {
+      const departure = {
+        tripId: text(row.trip_id ?? row.tripId),
+        time: validTime(
+          row.scheduled_departure_time ??
+            row.departure_time ??
+            row.departureTimeUtc,
+        ),
+        route: text(row.route) ?? text(row.routeCode) ?? "Transit",
+        vehicle: text(row.vehicle) ?? text(row.travelMode) ?? "Transit",
+        headsign: text(row.headsign) ?? text(row.destination),
+        platform: text(row.platform) ?? text(row.originPlatform),
+        color: text(row.route_color ?? row.routeColor),
+      };
+      const visitId = text(row.visit_id);
+      // Preserve the seven-field key used by legacy planner departures.
+      const key = visitId ? `visit:${visitId}` : JSON.stringify(departure);
+      if (seen.has(key)) return [];
       seen.add(key);
-      return true;
+      const change = rows([row.platform_change])[0];
+      const source = row.time_source;
+      return [
+        {
+          ...departure,
+          visitId,
+          expectedTime: validTime(row.expected_departure_time),
+          timeSource:
+            source === "scheduled" || source === "realtime"
+              ? source
+              : undefined,
+          cancelled: optionalBoolean(row.is_cancelled),
+          skipped: optionalBoolean(row.is_skipped),
+          extra: optionalBoolean(row.is_extra),
+          platformChange: change && {
+            platform: text(change.platform),
+            oldPlatform: text(change.old_platform),
+            isSource: optionalBoolean(change.is_source),
+          },
+          boarding: text(row.boarding),
+        } satisfies Departure,
+      ];
     })
     .sort(
       (a, b) =>

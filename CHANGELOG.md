@@ -12,12 +12,14 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Changed
 
+- **Behaviour change:** The Live Vehicle tracker follows the active transit leg and exposes the fix provenance. Stale, ambiguous, and missing positions leave the tracker available with an `unknown` state. The Journey card marks the active leg, and diagnostics and recorder history exclude vehicle coordinates. [#51](https://github.com/tinkerologie/ha-translink/issues/51)
 - **Behaviour change:** Delay now reports signed boarding offsets and shows `unknown` when no applicable prediction is available. Journey Status distinguishes scheduled, early, cancelled, and skipped boarding services. Departure and arrival sensors keep their scheduled states and expose predicted times as attributes. [#48](https://github.com/tinkerologie/ha-translink/issues/48)
 - Documented the limits of via stops, transfer preferences, and accessibility routing. Added exact planner request tests and an opt-in developer capture. Home Assistant routing behaviour is unchanged. [#54](https://github.com/tinkerologie/ha-translink/issues/54)
 
 ### Fixed
 
-- Journey and stop disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notices with a confirmed end time drop out once that time has passed. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
+- Departure boards use the selected station or platform timetable across routes and directions, with scheduled and expected times shown separately. Stop notices remain visible when there are no departures. [#47](https://github.com/tinkerologie/ha-translink/issues/47)
+- Journey disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notices with a confirmed end time drop out once that time has passed. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
 - Setup and reconfiguration ask you to confirm ambiguous location matches. Departure boards accept only stations and stops, and reconfiguration keeps unchanged locations. [#50](https://github.com/tinkerologie/ha-translink/issues/50)
 
 ## [2026.11.0] - 2026-11-11

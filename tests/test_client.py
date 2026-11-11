@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -890,7 +891,7 @@ async def test_fetch_vehicle_positions(sample_vehicle_positions_bytes: bytes) ->
     client = TranslinkClient(session=mock_session)
     vp = await client.fetch_vehicle_positions()
     assert len(vp) > 0
-    first_rec = next(iter(vp.values()))
+    first_rec = vp[0]
     assert first_rec.timestamp is not None
 
 
@@ -962,6 +963,7 @@ def test_build_journey_summary_with_delay_and_vehicle(
             longitude=153.028,
             bearing=180.0,
             speed=15.0,
+            timestamp=int(datetime(2026, 10, 5, 23, 0, 0, tzinfo=UTC).timestamp()),
         )
     }
 
@@ -1072,6 +1074,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
             trip_delay_seconds=180,
         )
     }
+    now = datetime(2026, 10, 5, 23, tzinfo=UTC)
     vehicle_positions = {
         "39040630": VehiclePositionRecord(
             entity_id="vp_base",
@@ -1083,6 +1086,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
             longitude=153.0228,
             speed=18.5,
             bearing=90.0,
+            timestamp=int(now.timestamp()),
         )
     }
 
@@ -1090,7 +1094,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
         plan,
         trip_updates=trip_updates,
         vehicle_positions=vehicle_positions,
-        now=BEFORE_DEPARTURE,
+        now=now,
     )
     assert summary.delay_mins == 3
     assert summary.vehicle_id == "DY37"
@@ -1105,7 +1109,7 @@ def test_build_journey_summary_with_base_trip_id_correlation(
         plan,
         trip_updates=trip_updates,
         vehicle_positions=vehicle_positions,
-        now=BEFORE_DEPARTURE,
+        now=now,
     )
     assert summary_mismatch.delay_mins is None
     assert summary_mismatch.vehicle_tracked is False
@@ -1225,12 +1229,12 @@ async def test_gtfs_fetch_errors_and_non_200() -> None:
     mock_session.closed = False
     c = TranslinkClient(session=mock_session)
 
-    assert await c.fetch_vehicle_positions() == {}
+    assert await c.fetch_vehicle_positions() == ()
     assert await c.fetch_trip_updates() == {}
     assert await c.fetch_alerts() == []
 
     mock_session.get.side_effect = aiohttp.ClientError("Network drop")
-    assert await c.fetch_vehicle_positions() == {}
+    assert await c.fetch_vehicle_positions() == ()
     assert await c.fetch_trip_updates() == {}
     assert await c.fetch_alerts() == []
 
@@ -1277,8 +1281,9 @@ def test_build_journey_summary_edge_cases(plan_response_data: dict[str, Any]) ->
     )
     assert walk_summary.next_service_name == "Walk"
     assert walk_summary.fare_price == 4.50
-    assert walk_summary.vehicle_latitude == -27.46
-    assert walk_summary.vehicle_longitude == 153.02
+    assert walk_summary.vehicle_latitude is None
+    assert walk_summary.vehicle_longitude is None
+    assert walk_summary.vehicle_position_status == "no_active_leg"
 
     # Concession fare
     concession_summary = build_journey_summary(
@@ -1610,9 +1615,133 @@ async def test_gtfs_feeds_degrade_on_timeout(where: str) -> None:
         mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
     c = TranslinkClient(session=mock_session)
 
-    assert await c.fetch_vehicle_positions() == {}
+    assert await c.fetch_vehicle_positions() == ()
     assert await c.fetch_trip_updates() == {}
     assert await c.fetch_alerts() == []
+
+
+def stop_timetable_session(
+    body: bytes, *, status: int = 200, content_length: int | None = None
+) -> MagicMock:
+    """Supply a mock HTTP response with a streaming body."""
+    session = MagicMock(closed=False)
+    response = session.get.return_value.__aenter__.return_value
+    response.status = status
+    response.content_length = content_length
+
+    async def chunks(size: int):
+        for offset in range(0, len(body), size):
+            yield body[offset : offset + size]
+
+    response.content.iter_chunked = chunks
+    return session
+
+
+@pytest.mark.parametrize(
+    ("location_id", "encoded_id", "fixture"),
+    [
+        ("ST:synthetic_hub", "ST%3Asynthetic_hub", "hub"),
+        ("SI:10001/branch", "SI%3A10001%2Fbranch", "platform"),
+    ],
+)
+async def test_fetch_stop_timetable_encodes_the_complete_id(
+    location_id: str, encoded_id: str, fixture: str, stop_timetable_fixture
+) -> None:
+    """Send the stored station or platform ID as one encoded segment."""
+    board = stop_timetable_fixture(fixture)
+    session = stop_timetable_session(json.dumps(board).encode())
+    timetable = await TranslinkClient(session=session).fetch_stop_timetable(location_id)
+
+    assert timetable.name == board["name"]
+    assert session.get.call_args.args[0].raw_path == f"/api/stop/timetable/{encoded_id}"
+    assert session.get.call_args.kwargs["timeout"].total == 10
+    if fixture == "platform":
+        assert timetable.station is not None
+        assert timetable.station.id == "ST:synthetic_hub"
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "content_length", "error"),
+    [
+        (b'{"error":"Private server details"}', 404, None, "failed with status 404"),
+        (b'{"name":"Missing fields"}', 200, None, "Invalid stop timetable response"),
+        (b"{", 200, None, "Invalid stop timetable response"),
+        (b"", 200, 1024 * 1024 + 1, "exceeds size bound"),
+        (b" " * (1024 * 1024 + 1), 200, 1024, "exceeds size bound"),
+    ],
+)
+async def test_fetch_stop_timetable_rejects_invalid_responses(
+    body: bytes, status: int, content_length: int | None, error: str
+) -> None:
+    """Report safe errors for non-200, invalid and oversized responses."""
+    session = stop_timetable_session(body, status=status, content_length=content_length)
+    with pytest.raises(TranslinkResponseError, match=error):
+        await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+
+async def test_fetch_stop_timetable_reports_timeout() -> None:
+    """A timeout maps to the connection exception used by the config flow."""
+    session = MagicMock(closed=False)
+    session.get.side_effect = TimeoutError
+    with pytest.raises(
+        TranslinkConnectionError, match="Unable to fetch stop timetable"
+    ):
+        await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+
+async def test_fetch_stop_timetable_skips_only_bad_visits(
+    stop_timetable_fixture,
+) -> None:
+    """A malformed UTC time or empty visit cannot invalidate the whole board."""
+    board = stop_timetable_fixture("platform")
+    board["departures"] = [
+        {"id": "valid", "scheduledDepartureUtc": "2099-01-01T08:46:00+00:00"},
+        {"id": "local", "scheduledDepartureUtc": "2099-01-01T08:46:00"},
+        {
+            "id": "offset",
+            "realtime": {"expectedDepartureUtc": "2099-01-01T08:46:00+10:00"},
+        },
+        {"id": "malformed-flag", "realtime": {"isCancelled": "true"}},
+        {},
+        "invalid",
+    ]
+    session = stop_timetable_session(json.dumps(board).encode())
+    timetable = await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+    assert [departure.id for departure in timetable.departures] == ["valid"]
+    assert timetable.departures[0].scheduledDepartureUtc == "2099-01-01T08:46:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ("current", [1234]),
+        ("upcoming_only", []),
+        ("empty", []),
+        ("malformed", None),
+        ("missing", None),
+        ("missing_current", None),
+        ("null", None),
+    ],
+)
+async def test_fetch_stop_timetable_preserves_alert_availability(
+    section: str, expected: list[int] | None, stop_timetable_fixture
+) -> None:
+    """A valid empty current list and unavailable data have distinct meanings."""
+    board = stop_timetable_fixture("platform")
+    if section == "missing":
+        del board["serviceAlerts"]
+    elif section != "current":
+        board["serviceAlerts"] = stop_timetable_fixture("alert_sections")[section]
+    session = stop_timetable_session(json.dumps(board).encode())
+
+    timetable = await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+    if expected is None:
+        assert timetable.serviceAlerts is None
+    else:
+        assert timetable.serviceAlerts is not None
+        assert [notice.id for notice in timetable.serviceAlerts.current] == expected
 
 
 def test_journey_alternatives_sort_before_limiting(

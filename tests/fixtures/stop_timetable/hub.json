@@ -1,0 +1,205 @@
+{
+  "id": "synthetic_hub",
+  "name": "Example Hub",
+  "stops": [
+    {
+      "id": "SI:10001",
+      "name": "Example Hub platform 1"
+    },
+    {
+      "id": "SI:10002",
+      "name": "Example Hub platform 2"
+    }
+  ],
+  "routes": [
+    {
+      "id": "T:Train:LOOP",
+      "shortName": "Harbour Loop",
+      "code": "LOOP",
+      "name": "Harbour Loop",
+      "direction": "Outbound",
+      "routeHexColor": "#abcdef",
+      "lines": [
+        {
+          "vehicleType": "Train"
+        }
+      ]
+    },
+    {
+      "id": "T:Train:LOOP",
+      "shortName": null,
+      "code": "LOOP",
+      "name": "Harbour Loop",
+      "direction": "Outbound",
+      "routeHexColor": "#abcdef",
+      "lines": [
+        {
+          "vehicleType": "Train"
+        }
+      ]
+    },
+    {
+      "id": "T:Train:LOOP",
+      "shortName": "City Loop",
+      "code": "LOOP",
+      "name": "Harbour Loop",
+      "direction": "Inbound",
+      "routeHexColor": "#123456",
+      "lines": [
+        {
+          "vehicleType": "Train"
+        }
+      ]
+    },
+    {
+      "id": "T:Bus:42",
+      "direction": "Outbound",
+      "code": "42"
+    }
+  ],
+  "departures": [
+    {
+      "id": "loop",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:12:00Z",
+      "departurePlatform": "3",
+      "canBoardDebark": "Both"
+    },
+    {
+      "id": "loop",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:10:00Z",
+      "departurePlatform": "1",
+      "canBoardDebark": "Both"
+    },
+    {
+      "id": "alighting",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:02:00Z",
+      "departurePlatform": "1",
+      "canBoardDebark": "Alighting"
+    },
+    {
+      "id": "loop",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:10:00Z",
+      "departurePlatform": "1",
+      "canBoardDebark": "Both",
+      "realtime": {
+        "expectedDepartureUtc": "2099-01-01T02:13:30Z",
+        "isCancelled": false,
+        "isSkipped": false,
+        "isExtra": true,
+        "platformChange": {
+          "platform": "2",
+          "oldPlatform": "1",
+          "isSource": true
+        }
+      }
+    },
+    {
+      "id": "loop",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:10:00Z",
+      "departurePlatform": "2",
+      "canBoardDebark": "Both",
+      "realtime": {
+        "expectedDepartureUtc": "2099-01-01T02:13:30Z",
+        "platformChange": {
+          "platform": "2",
+          "oldPlatform": "1",
+          "isSource": false
+        }
+      }
+    },
+    {
+      "id": "inbound",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Inbound",
+      "scheduledDepartureUtc": "2099-01-01T02:19:00Z",
+      "departurePlatform": "3",
+      "canBoardDebark": "Both"
+    },
+    {
+      "id": "cancelled",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:03:00Z",
+      "departurePlatform": "4",
+      "canBoardDebark": "Both",
+      "realtime": {
+        "isCancelled": true
+      }
+    },
+    {
+      "id": "skipped",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:04:00Z",
+      "departurePlatform": "5",
+      "canBoardDebark": "Both",
+      "realtime": {
+        "isSkipped": true
+      }
+    },
+    {
+      "id": "bus",
+      "routeId": "T:Bus:42",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:20:00Z",
+      "departurePlatform": "B",
+      "canBoardDebark": "Both"
+    },
+    {
+      "id": "unresolved",
+      "routeId": "local-route",
+      "headsign": "Harbour Terminus",
+      "direction": "Outbound",
+      "scheduledDepartureUtc": "2099-01-01T02:22:00Z",
+      "departurePlatform": "A",
+      "canBoardDebark": "Other"
+    }
+  ],
+  "serviceAlerts": {
+    "current": [
+      {
+        "id": 1234,
+        "title": "Lift maintenance",
+        "description": "Use the other lift.",
+        "cause": "MAINTENANCE",
+        "effect": "ACCESSIBILITY_ISSUE",
+        "severity": "Informative",
+        "startsUtc": "2025-01-01T00:00:00Z",
+        "endsUtc": "2099-01-01T23:00:00Z"
+      },
+      {
+        "title": "Missing ID"
+      },
+      {
+        "id": 9999,
+        "title": "Expired notice",
+        "endsUtc": "2024-01-01T00:00:00Z"
+      }
+    ],
+    "upcoming": [
+      {
+        "id": 4567,
+        "title": "Weekend construction"
+      }
+    ]
+  }
+}

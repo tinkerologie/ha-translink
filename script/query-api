@@ -108,8 +108,8 @@ async def run_query(args: argparse.Namespace) -> int:
 
         if args.vehicles:
             print("# Fetching GTFS-RT Vehicle Positions")
-            vp = await client.fetch_vehicle_positions()
-            print(f"Records: {len(vp)}")
+            positions = await client.fetch_vehicle_positions()
+            print(f"Vehicle position records: {len(positions)}")
 
         return 0
     except Exception as err:

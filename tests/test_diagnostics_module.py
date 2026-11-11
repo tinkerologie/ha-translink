@@ -34,6 +34,8 @@ class FakeCoordinator:
             status="on_time",
             duration_mins=41,
             origin_name="Central station",
+            vehicle_latitude=-27.46,
+            vehicle_longitude=153.03,
             destination_name="Springfield Central",
         )
 
@@ -57,3 +59,5 @@ async def test_diagnostics_output() -> None:
     assert diagnostics["entry"]["origin_longitude"] == "**REDACTED**"
     assert diagnostics["data"]["duration_mins"] == 41
     assert diagnostics["data"]["status"] == "on_time"
+    assert diagnostics["data"]["vehicle_latitude"] == "**REDACTED**"
+    assert diagnostics["data"]["vehicle_longitude"] == "**REDACTED**"

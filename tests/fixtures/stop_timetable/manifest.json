@@ -1,0 +1,15 @@
+{
+  "hub.json": {
+    "provenance": "synthetic",
+    "purpose": "Multi-direction hub with a loop, alighting-only visit, exact duplicate, platform-change pair, and scheduled and realtime rows."
+  },
+  "platform.json": {
+    "provenance": "synthetic",
+    "purpose": "Selected platform with a parent station and a scoped notice alongside an empty board."
+  },
+  "alert_sections.json": {
+    "provenance": "synthetic",
+    "purpose": "Available and unavailable alert section variants. The missing section is tested by omitting the key."
+  },
+  "observations": "Modelled on the public station and platform response shapes. Early investigation used unverified TLS. Later spot checks used certificate verification. The fixtures contain invented identifiers, times and text."
+}

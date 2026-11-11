@@ -11,6 +11,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant.common import MockConfigEntry
 
+from custom_components.translink.api.models import StopTimetable
 from custom_components.translink.client import (
     JourneyPlanResult,
     TranslinkClient,
@@ -208,32 +209,91 @@ async def test_journey_closure_clears_when_its_end_time_passes(
     )
 
 
-async def test_stop_closure_survives_an_empty_departure_board(
+async def test_stop_notice_survives_empty_board_and_unavailable_alerts(
     hass: HomeAssistant,
-    planner: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    stop_timetable_fixture,
     trigger: MagicMock,
 ) -> None:
-    """Keep the notice visible on a stop entry even when departures disappear."""
+    """Keep scoped notices through a missing section and clear on valid empty data."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
             CONF_MODE: MODE_STOP,
-            CONF_NAME: "Roma Street",
-            CONF_STOP_LOCATION_ID: "ST:place_romsta",
-            CONF_STOP_NAME: "Roma Street station",
+            CONF_NAME: "Example Hub",
+            CONF_STOP_LOCATION_ID: "SI:10001",
+            CONF_STOP_NAME: "Example Hub platform 1",
         },
     )
     entry.add_to_hass(hass)
-    planner.side_effect = [closure_plan(populated=True), closure_plan()]
+    hub = stop_timetable_fixture("hub")
+    platform = stop_timetable_fixture("platform")
+    sections = stop_timetable_fixture("alert_sections")
+    changed_alert = {"id": 1234, "title": "Lift replacement", "severity": "Major"}
+    missing = {key: value for key, value in platform.items() if key != "serviceAlerts"}
+    fetch_timetable = AsyncMock(
+        side_effect=[
+            StopTimetable.model_validate({**platform, "departures": hub["departures"]}),
+            StopTimetable.model_validate(platform),
+            StopTimetable.model_validate(missing),
+            StopTimetable.model_validate(
+                {**platform, "serviceAlerts": sections["malformed"]}
+            ),
+            StopTimetable.model_validate(
+                {**platform, "serviceAlerts": {"current": [changed_alert]}}
+            ),
+            TranslinkConnectionError("Network timeout"),
+            StopTimetable.model_validate(
+                {**platform, "serviceAlerts": sections["upcoming_only"]}
+            ),
+        ]
+    )
+    monkeypatch.setattr(TranslinkClient, "fetch_stop_timetable", fetch_timetable)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+
     assert trigger.call_count == 1
-    assert trigger.call_args.args[1] == "disruption"
-    assert sensor_state(hass, entry, "departures_board").state == "1 departures"
+    _, event_type, payload = trigger.call_args.args
+    assert event_type == "disruption"
+    assert payload["disruptions"][0]["id"] == 1234
+    assert payload["title"] == "Lift maintenance"
+    assert payload["severity"] == "Informative"
+
+    departures = sensor_state(hass, entry, "departures_board")
+    assert departures.state == "8 departures"
+    assert (
+        departures.attributes["departures"][2]["departure_time"]
+        == "2099-01-01T02:10:00Z"
+    )
+    assert (
+        departures.attributes["departures"][2]["expected_departure_time"]
+        == "2099-01-01T02:13:30Z"
+    )
+
+    for _ in range(3):
+        await entry.runtime_data.async_refresh()
+        departures = sensor_state(hass, entry, "departures_board")
+        assert departures.state == "0 departures"
+        assert departures.attributes["departures"] == []
+        disruptions = sensor_state(hass, entry, "disruptions")
+        assert disruptions.state == "1"
+        assert disruptions.attributes["latest_title"] == "Lift maintenance"
+        assert disruptions.attributes["latest_description"] == "Use the other lift."
+        assert trigger.call_count == 1
 
     await entry.runtime_data.async_refresh()
-    assert_closure_sensors(hass, entry)
-    departures = sensor_state(hass, entry, "departures_board")
-    assert departures.state == "0 departures"
-    assert departures.attributes["departures"] == []
+    assert (
+        sensor_state(hass, entry, "disruptions").attributes["latest_title"]
+        == "Lift replacement"
+    )
     assert trigger.call_count == 1
+
+    await entry.runtime_data.async_refresh()
+    assert isinstance(entry.runtime_data.last_exception, UpdateFailed)
+    assert trigger.call_count == 1
+
+    await entry.runtime_data.async_refresh()
+    assert sensor_state(hass, entry, "disruptions").state == "0"
+    assert trigger.call_count == 2
+    assert trigger.call_args.args[1] == "cleared"
+    assert all(call.args == ("SI:10001",) for call in fetch_timetable.await_args_list)
