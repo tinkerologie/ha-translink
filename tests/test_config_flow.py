@@ -1916,3 +1916,169 @@ async def test_loaded_notice_reconfigure_uses_entry_reload_listener(
     await hass.async_block_till_done()
     reload.assert_awaited_once_with(hass, entry)
     assert entry.unique_id == "notices_CNS_network"
+
+
+async def test_window_creation_validates_schedule_before_resolving_route(
+    hass: HomeAssistant,
+) -> None:
+    """Resolve public endpoints and save an opt-in window without a test plan."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    flow_id = result["flow_id"]
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {CONF_MODE: "window"}
+    )
+    assert result["step_id"] == "window"
+    window = {
+        CONF_NAME: "Evening commute",
+        CONF_START_NAME: "Roma Street",
+        CONF_END_NAME: "Central",
+        "window_kind": "recurring",
+        "window_start": "23:00:00",
+        "window_end": "01:00:00",
+    }
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            side_effect=[
+                [LocationSearchResult(LocationId="ST:roma", Description="Roma Street")],
+                [LocationSearchResult(LocationId="ST:central", Description="Central")],
+            ],
+        ) as locations,
+        patch(
+            "custom_components.translink.client.TranslinkClient.plan_journey"
+        ) as plan,
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(flow_id, window)
+        assert result["errors"] == {"base": "window_weekdays_required"}
+        locations.assert_not_awaited()
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {**window, "window_weekdays": ["4", "0"]}
+        )
+        plan.assert_not_awaited()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert (
+        result["result"].unique_id == "window_ST:roma_ST:central_recurring_17_2300_0100"
+    )
+    assert result["data"]["window_weekdays"] == ["4", "0"]
+    assert result["data"][CONF_MODE] == "window"
+
+
+async def test_window_ambiguous_selection_options_and_reconfiguration(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Confirm endpoints, retain window options, and update schedule identity."""
+    freezer.move_to("2026-11-10T12:00:00Z")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {CONF_MODE: "window"})
+    window = {
+        CONF_NAME: "Tomorrow's commute",
+        CONF_START_NAME: "Roma Street",
+        CONF_END_NAME: "Central",
+        "window_kind": "once",
+        "window_start": "07:00:00",
+        "window_end": "08:00:00",
+    }
+    with (
+        patch(
+            "custom_components.translink.client.TranslinkClient.search_locations",
+            side_effect=[
+                [
+                    LocationSearchResult(
+                        LocationId="ST:roma", Description="Roma Street"
+                    ),
+                    LocationSearchResult(
+                        LocationId="PL:roma", Description="Roma Street Parkland"
+                    ),
+                ],
+                [LocationSearchResult(LocationId="ST:central", Description="Central")],
+            ],
+        ) as locations,
+        patch("custom_components.translink.async_setup_entry", return_value=True),
+        patch("custom_components.translink.async_unload_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(flow_id, window)
+        assert result["errors"] == {"base": "window_date_required"}
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {**window, "window_date": "2026-11-10"}
+        )
+        assert result["errors"] == {"window_date": "window_date_expired"}
+        locations.assert_not_awaited()
+
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {**window, "window_date": "2026-11-11"}
+        )
+        assert result["step_id"] == "window_select"
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {CONF_START_LOCATION_ID: "ST:roma"}
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        entry = result["result"]
+        assert entry.unique_id == "window_ST:roma_ST:central_once_2026-11-11_0700_0800"
+        assert entry.data["window_weekdays"] == []
+
+        options = await hass.config_entries.options.async_init(entry.entry_id)
+        assert options["step_id"] == "window_options"
+        options = await hass.config_entries.options.async_configure(
+            options["flow_id"], {CONF_SCAN_INTERVAL: 30.5}
+        )
+        assert options["errors"] == {CONF_SCAN_INTERVAL: "window_whole_number_required"}
+        options = await hass.config_entries.options.async_configure(
+            options["flow_id"], {CONF_SCAN_INTERVAL: 30, "window_lead_minutes": 0}
+        )
+        assert options["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_SCAN_INTERVAL] == 30
+        assert entry.options["window_lead_minutes"] == 0
+
+        reconfigure = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "reconfigure", "entry_id": entry.entry_id}
+        )
+        assert reconfigure["step_id"] == "window_reconfigure"
+        reconfigure = await hass.config_entries.flow.async_configure(
+            reconfigure["flow_id"],
+            {
+                CONF_START_NAME: "Roma Street",
+                CONF_END_NAME: "Central",
+                "window_kind": "once",
+                "window_date": "2026-11-12",
+            },
+        )
+        assert reconfigure["type"] is FlowResultType.ABORT
+        assert reconfigure["reason"] == "reconfigure_successful"
+        assert entry.unique_id == "window_ST:roma_ST:central_once_2026-11-12_0700_0800"
+        assert entry.options[CONF_SCAN_INTERVAL] == 30
+        assert locations.await_count == 2
+
+
+async def test_window_location_search_failure_keeps_the_form(
+    hass: HomeAssistant,
+) -> None:
+    """Show a route error without creating an entry or calling the planner."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    flow_id = result["flow_id"]
+    await hass.config_entries.flow.async_configure(flow_id, {CONF_MODE: "window"})
+    with patch(
+        "custom_components.translink.client.TranslinkClient.search_locations",
+        return_value=[],
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {
+                CONF_START_NAME: "Missing origin",
+                CONF_END_NAME: "Missing destination",
+                "window_weekdays": ["1"],
+            },
+        )
+    assert result["step_id"] == "window"
+    assert result["errors"] == {
+        CONF_START_NAME: "location_not_found",
+        CONF_END_NAME: "location_not_found",
+    }

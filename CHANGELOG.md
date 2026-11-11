@@ -8,6 +8,8 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Added
 
+- Added opt-in one-off and recurring commute windows with scheduled polling, tracked trips, and Home Assistant events for confirmed delays, recovery, cancellations, and disruptions. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
+
 - Journey entries can select the Cairns or South East Queensland live feed, or use scheduled times only. Cairns predictions and positions require verified service identity. Stop boards use the timetable for their selected stop. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
 
 - Service Notices entries show active and upcoming Translink GTFS-RT alerts for South East Queensland and Cairns, with optional route or mode filtering. The Alerts card shows affected entities, active periods and the last successful fetch. [#60](https://github.com/tinkerologie/ha-translink/issues/60)

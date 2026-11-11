@@ -15,17 +15,20 @@ CONF_MODE: Final = "mode"
 MODE_JOURNEY: Final = "journey"
 MODE_STOP: Final = "stop"
 MODE_NOTICES: Final = "notices"
+MODE_WINDOW: Final = "window"
 
 DEVICE_MODELS: Final = {
     MODE_JOURNEY: "Public Transport Journey",
     MODE_STOP: "Station Departure Board",
     MODE_NOTICES: "Service Notices",
+    MODE_WINDOW: "Commute Window",
 }
 
 CONF_NOTICE_NETWORK: Final = "notice_network"
 CONF_NOTICE_SCOPE: Final = "notice_scope"
 CONF_NOTICE_ROUTE_ID: Final = "notice_route_id"
 CONF_NOTICE_ROUTE_MODE: Final = "notice_route_mode"
+
 SETUP_NEARBY_STOP: Final = "nearby_stop"
 
 CONF_NAME: Final = "name"
@@ -45,6 +48,16 @@ CONF_TRACK_VEHICLE: Final = "track_vehicle"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_REALTIME_REGION: Final = "realtime_region"
 
+CONF_WINDOW_KIND: Final = "window_kind"
+CONF_WINDOW_DATE: Final = "window_date"
+CONF_WINDOW_WEEKDAYS: Final = "window_weekdays"
+CONF_WINDOW_START: Final = "window_start"
+CONF_WINDOW_END: Final = "window_end"
+CONF_WINDOW_LEAD: Final = "window_lead_minutes"
+CONF_WINDOW_DELAY_THRESHOLD: Final = "window_delay_threshold_minutes"
+CONF_WINDOW_DELAY_STEP: Final = "window_delay_step_minutes"
+CONF_WINDOW_TRIP_LIMIT: Final = "window_trip_limit"
+
 # Defaults
 DEFAULT_MODE: Final = MODE_JOURNEY
 DEFAULT_TRANSPORT_MODES: Final = ["Bus", "Ferry", "Train", "Tram"]
@@ -55,6 +68,30 @@ DEFAULT_FARE_PREFERENCE: Final = "Adult"
 DEFAULT_TRACK_VEHICLE: Final = True
 DEFAULT_SCAN_INTERVAL: Final = 60  # seconds
 MIN_SCAN_INTERVAL: Final = 30  # seconds
+
+WINDOW_ONCE: Final = "once"
+WINDOW_RECURRING: Final = "recurring"
+WINDOW_OPTION_LIMITS: Final = {
+    CONF_SCAN_INTERVAL: (DEFAULT_SCAN_INTERVAL, MIN_SCAN_INTERVAL, 600),
+    CONF_WINDOW_LEAD: (15, 0, 120),
+    CONF_WINDOW_DELAY_THRESHOLD: (3, 1, 60),
+    CONF_WINDOW_DELAY_STEP: (5, 1, 30),
+    CONF_WINDOW_TRIP_LIMIT: (6, 1, 10),
+}
+WINDOW_MAX_DURATION_HOURS: Final = 12
+WINDOW_GRACE_MINUTES: Final = 60
+WINDOW_RECOVERY_HYSTERESIS_MINUTES: Final = 2
+WINDOW_STORAGE_KEY_PREFIX: Final = f"{DOMAIN}.window"
+EVENT_TRIP_DELAYED: Final = "trip_delayed"
+EVENT_TRIP_CANCELLED: Final = "trip_cancelled"
+EVENT_TRIP_DISRUPTION: Final = "trip_disruption"
+EVENT_TRIP_RECOVERED: Final = "trip_recovered"
+WINDOW_EVENT_TYPES: Final = (
+    EVENT_TRIP_DELAYED,
+    EVENT_TRIP_CANCELLED,
+    EVENT_TRIP_DISRUPTION,
+    EVENT_TRIP_RECOVERED,
+)
 
 # On-demand journey planner response bounds
 DEFAULT_ALTERNATIVES_LIMIT: Final = 5

@@ -10,8 +10,16 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_NAME, DEVICE_MODELS, DOMAIN, MODE_NOTICES, MODE_STOP
+from .const import (
+    CONF_NAME,
+    DEVICE_MODELS,
+    DOMAIN,
+    MODE_NOTICES,
+    MODE_STOP,
+    WINDOW_EVENT_TYPES,
+)
 from .coordinator import TranslinkCoordinator
+from .window_coordinator import WindowCoordinator, WindowData
 
 if TYPE_CHECKING:
     from . import TranslinkConfigEntry
@@ -28,10 +36,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Translink disruption event entities from a config entry."""
-    coordinator: TranslinkCoordinator = (
+    coordinator: TranslinkCoordinator | WindowCoordinator = (
         getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
     )
-    async_add_entities([TranslinkDisruptionEvent(coordinator, entry)])
+    if isinstance(coordinator, WindowCoordinator):
+        async_add_entities([TranslinkWindowEvent(coordinator)])
+    else:
+        async_add_entities([TranslinkDisruptionEvent(coordinator, entry)])
 
 
 class TranslinkDisruptionEvent(
@@ -128,3 +139,53 @@ class TranslinkDisruptionEvent(
                 },
             )
             self._last_disruption_ids = set()
+
+
+class TranslinkWindowEvent(CoordinatorEntity[WindowCoordinator], EventEntity):
+    """Publish confirmed commute changes for user-defined automations."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "window_trip"
+
+    def __init__(self, coordinator: WindowCoordinator) -> None:
+        """Initialize the event entity for this commute window."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_window_trip"
+        self._attr_device_info = coordinator.device_info
+        self._attr_event_types = list(WINDOW_EVENT_TYPES)
+        self._last_data: WindowData | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Publish the initial refresh after the event entity is available."""
+        await super().async_added_to_hass()
+        # EntityPlatform writes the initial state after this method returns.
+        # Publish afterwards so each event has an observable state transition.
+        pending = self.hass.loop.call_soon(self._emit_alerts)
+        self.async_on_remove(pending.cancel)
+
+    @property
+    def available(self) -> bool:
+        """Keep the event endpoint available through a failed refresh."""
+        return True
+
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Retain the event state on in-place entity renames."""
+        if (hook := getattr(super(), "async_entity_id_changed", None)) is not None:
+            hook(old_entity_id)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Publish all changes and update entity availability."""
+        self._emit_alerts()
+        self.async_write_ha_state()
+
+    @callback
+    def _emit_alerts(self) -> None:
+        data = self.coordinator.data
+        if data is self._last_data:
+            return
+        self._last_data = data
+        for event_type, attributes in data.alerts:
+            self._trigger_event(event_type, attributes)
+            self.async_write_ha_state()

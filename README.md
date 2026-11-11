@@ -89,7 +89,7 @@ After the first zip release, choosing an older release (one without the zip) in 
 
 ### Initial Setup (`Settings > Devices & Services > Add Integration > Translink`)
 
-When adding the integration, select **Journey**, **Stop**, **Nearby stop** or **Service Notices**.
+When adding the integration, choose **Journey**, **Commute window**, **Stop / Station**, **Nearby stop**, or **Service Notices**.
 
 #### 1. Journey Mode (Commute Tracking)
 
@@ -142,6 +142,10 @@ When the Alerts feed fails, the notice sensors and disruption event become
 unavailable. The **Last Successful Fetch** diagnostic sensor keeps the last
 successful refresh time. Its `feed_timestamp` attribute comes from Translink's
 feed header.
+
+#### 5. Commute window
+
+Choose **Commute window**, enter the origin and destination, and select a one-off date or recurring weekdays. Enter the start and end times in Brisbane local time. In **Configure**, you can change the lead time, refresh interval, alert thresholds, and number of tracked trips. The device adds **Window status**, **Next window start**, **Tracked trips**, and a **Trip changes** event entity. See [Commute window semantics](docs/commute-windows.md) for the polling schedule, trip matching, and live-data coverage.
 
 ### Reconfigure an entry
 
@@ -541,6 +545,34 @@ automation:
 ```
 
 ---
+
+### 3. Alert on a commute window change
+
+Translink exposes confirmed changes through the **Trip changes** event entity. You choose the notification target in your automation. Replace the event entity ID and notify action with your own.
+
+```yaml
+alias: Commute window changes
+triggers:
+  - trigger: event.received
+    target:
+      entity_id: event.morning_commute_trip_changes
+    options:
+      event_type:
+        - trip_delayed
+        - trip_cancelled
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      title: Commute update
+      message: >-
+        {{ trigger.to_state.attributes.route }}
+        {% if trigger.to_state.attributes.event_type == 'trip_cancelled' %}
+          was cancelled.
+        {% else %}
+          is delayed by {{ trigger.to_state.attributes.delay_minutes }} minutes.
+        {% endif %}
+mode: queued
+```
 
 ## Troubleshooting & Diagnostics
 
