@@ -551,4 +551,28 @@ export const cardStyles = css`
       transition: none !important;
     }
   }
+  .progress-legs {
+    list-style: none;
+    margin: 12px 0;
+    padding: 0;
+  }
+  .progress-leg {
+    border-inline-start: 3px solid var(--divider-color);
+    padding: 8px 10px;
+    overflow-wrap: anywhere;
+  }
+  .progress-leg[aria-current="step"] {
+    border-inline-start-color: var(--primary-color);
+    background: var(--secondary-background-color);
+  }
+  .progress-leg > div {
+    margin-top: 4px;
+  }
+  .progress-action {
+    display: grid;
+    gap: 4px;
+    border-top: 1px solid var(--divider-color);
+    padding-top: 12px;
+    overflow-wrap: anywhere;
+  }
 `;

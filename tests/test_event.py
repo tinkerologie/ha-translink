@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
+from custom_components.translink.api.models import JourneyProgress, ProgressTransition
 from custom_components.translink.client import JourneySummary, StopSummary
 from custom_components.translink.const import (
     CONF_MODE,
@@ -40,8 +41,11 @@ class FakeEntry:
 class FakeCoordinator:
     """Fake coordinator for event tests."""
 
-    def __init__(self, mode: str = MODE_JOURNEY, data: Any = None) -> None:
+    def __init__(
+        self, mode: str = MODE_JOURNEY, data: Any = None, *, track_vehicle: bool = False
+    ) -> None:
         self.mode = mode
+        self.track_vehicle = track_vehicle
         self.data = data
         self.entry = FakeEntry(mode=mode)
         self._listeners: list[Any] = []
@@ -303,3 +307,121 @@ def test_window_event_keeps_state_on_entity_id_change(
     entity = TranslinkWindowEvent(MagicMock())
     entity.async_entity_id_changed("event.old_window")
     assert hook.call_count == int(parent_has_hook)
+
+
+async def test_transition_event_only_fires_new_confirmations() -> None:
+    """Historical transitions are ignored on setup and updates fire once."""
+    now = datetime(2026, 10, 6, 0, 0, tzinfo=UTC)
+    transfer = ProgressTransition(
+        type="transfer_stop_reached",
+        dedup_key="journey:0:transfer_stop_reached",
+        leg_index=0,
+        stop_id="SI:600321",
+        observed_at=now,
+        next_leg_route="RPSP",
+        next_leg_platform="1",
+        next_leg_scheduled_departure=now,
+    )
+    progress = JourneyProgress(journey_id="journey", transitions=[transfer])
+    coordinator = FakeCoordinator(
+        data=JourneySummary(progress=progress), track_vehicle=True
+    )
+    entry = coordinator.entry
+    entry.runtime_data = coordinator
+    entities = []
+    await async_setup_entry(MagicMock(), entry, entities.extend)
+
+    entity = next(
+        item
+        for item in entities
+        if item.unique_id == "test_entry_id_journey_transition"
+    )
+    entity._trigger_event = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+    await entity.async_added_to_hass()
+    for listener in coordinator._listeners[1:]:
+        listener()
+    entity._trigger_event.assert_not_called()
+
+    alighting = ProgressTransition(
+        type="alighting_stop_reached",
+        dedup_key="journey:1:alighting_stop_reached",
+        leg_index=1,
+        stop_id="SI:600089",
+        observed_at=now,
+    )
+    progress.transitions = [alighting]
+    entity._handle_coordinator_update()
+    entity._handle_coordinator_update()
+    entity._trigger_event.assert_called_once_with(
+        "alighting_stop_reached",
+        {
+            "journey_id": "journey",
+            "leg_index": 1,
+            "stop_id": "SI:600089",
+            "stop_name": None,
+            "observed_at": "2026-10-06T00:00:00Z",
+        },
+    )
+
+
+async def test_transition_update_ignores_missing_data_and_tracks_a_new_journey(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transfer payload reports its next service after the journey changes."""
+    from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+    from custom_components.translink.event import TranslinkJourneyTransitionEvent
+
+    delegate_rename = MagicMock()
+    monkeypatch.setattr(
+        CoordinatorEntity, "async_entity_id_changed", delegate_rename, raising=False
+    )
+    coordinator = FakeCoordinator(data=None, track_vehicle=True)
+    entity = TranslinkJourneyTransitionEvent(coordinator, coordinator.entry)
+    entity._trigger_event = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+    entity.async_entity_id_changed("event.old_journey_transition")
+    delegate_rename.assert_called_once_with("event.old_journey_transition")
+    await entity.async_added_to_hass()
+    entity._handle_coordinator_update()
+    entity._trigger_event.assert_not_called()
+
+    now = datetime(2026, 10, 6, 0, 0, tzinfo=UTC)
+    coordinator.data = JourneySummary(
+        progress=JourneyProgress(
+            journey_id="later",
+            transitions=[
+                ProgressTransition(
+                    type="transfer_stop_reached",
+                    dedup_key="later:0:transfer_stop_reached",
+                    leg_index=0,
+                    stop_id="SI:600321",
+                    stop_name="Darra",
+                    observed_at=now,
+                    next_leg_route="RPSP",
+                    next_leg_platform="1",
+                    next_leg_scheduled_departure=now,
+                    next_leg_predicted_departure=now,
+                )
+            ],
+        )
+    )
+    entity._handle_coordinator_update()
+    entity._trigger_event.assert_called_once_with(
+        "transfer_stop_reached",
+        {
+            "journey_id": "later",
+            "leg_index": 0,
+            "stop_id": "SI:600321",
+            "stop_name": "Darra",
+            "observed_at": "2026-10-06T00:00:00Z",
+            "next_leg_route": "RPSP",
+            "next_leg_platform": "1",
+            "next_leg_scheduled_departure": "2026-10-06T00:00:00Z",
+            "next_leg_predicted_departure": "2026-10-06T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(CoordinatorEntity, "async_entity_id_changed", None)
+    entity.async_entity_id_changed("event.old_journey_transition")
+    delegate_rename.assert_called_once()

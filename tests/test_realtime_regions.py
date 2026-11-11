@@ -482,3 +482,55 @@ async def test_cairns_positions_and_alerts_require_fresh_feed(
     assert len(alerts) == alerts_count
     if alerts:
         assert alerts[0].header_text == "Cairns alert"
+
+
+@pytest.mark.parametrize(
+    "mode", ["confirmed", "wrong_region", "missing_boarding", "wrong_vehicle"]
+)
+def test_cairns_progress_uses_the_same_regional_identity_guard(
+    cairns_plan: JourneyPlanResult,
+    cairns_update: TripUpdateRecord,
+    cairns_position: VehiclePositionRecord,
+    mode: str,
+) -> None:
+    from custom_components.translink.api.progress import (
+        ProgressFeeds,
+        evaluate_progress,
+        snapshot_itinerary,
+    )
+
+    itinerary = cairns_plan.itineraries[0]
+    itinerary.legs[0].origin.stopType = "Bus"
+    itinerary.legs[0].destination.stopType = "Bus"
+    itinerary = snapshot_itinerary(itinerary)
+    later = CNS_ARRIVAL + timedelta(minutes=8)
+    earlier = later - timedelta(seconds=25)
+    cairns_update.timestamp = int(earlier.timestamp())
+    cairns_position.timestamp = int(earlier.timestamp())
+    cairns_position.current_stop_sequence = 1
+    cairns_position.current_status = "IN_TRANSIT_TO"
+    cairns_position.stop_id = "750441"
+    feeds = ProgressFeeds(
+        trip_updates={CNS_FEED_TRIP: cairns_update},
+        vehicle_positions=(cairns_position,),
+        realtime_region="SEQ" if mode == "wrong_region" else "CNS",
+    )
+    before = evaluate_progress(itinerary, planned_at=earlier, now=earlier, feeds=feeds)
+    cairns_update.timestamp = int(later.timestamp())
+    cairns_position.timestamp = int(later.timestamp())
+    cairns_position.current_stop_sequence = 2
+    cairns_position.current_status = "STOPPED_AT"
+    cairns_position.stop_id = "750360"
+    if mode == "missing_boarding":
+        cairns_update.stop_time_updates = cairns_update.stop_time_updates[1:]
+    elif mode == "wrong_vehicle":
+        cairns_position.vehicle_id = "cns-bus-2"
+    after = evaluate_progress(
+        itinerary, planned_at=earlier, now=later, feeds=feeds, memory=before.memory
+    ).progress
+    if mode == "confirmed":
+        assert [event.type for event in after.transitions] == ["alighting_stop_reached"]
+        assert after.vehicle_observation.stop_name == "James Cook University"
+    else:
+        assert not after.transitions
+        assert after.vehicle_observation is None

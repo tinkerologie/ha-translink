@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -17,6 +18,7 @@ from homeassistant.util import dt as dt_util
 
 from .api.client import stop_disruption_fields
 from .api.models import (
+    JourneyItinerary,
     NoticeSummary,
     StopDepartureItem,
     StopDeparturePlatformChange,
@@ -25,6 +27,12 @@ from .api.models import (
     TimetableRoute,
 )
 from .api.notices import build_notice_summary
+from .api.progress import (
+    ProgressFeeds,
+    ProgressMemory,
+    evaluate_progress,
+    snapshot_itinerary,
+)
 from .client import (
     JourneyPlanResult,
     JourneySummary,
@@ -64,6 +72,7 @@ from .const import (
     DEFAULT_TRANSPORT_MODES,
     DEFAULT_WALKING_SPEED,
     DOMAIN,
+    JOURNEY_PROGRESS_GRACE_SECONDS,
     MIN_SCAN_INTERVAL,
     MODE_JOURNEY,
     MODE_NOTICES,
@@ -215,6 +224,22 @@ def _stop_board_rows(
     return departures, arrivals
 
 
+@dataclass(frozen=True)
+class _FollowedJourney:
+    """One sanitized itinerary and its in-memory progress evidence."""
+
+    itinerary: JourneyItinerary
+    planned_at: datetime
+    memory: ProgressMemory
+
+    def has_departed(self, now: datetime) -> bool:
+        """Pin only journeys with a scheduled start and end."""
+        legs = self.itinerary.legs
+        start = parse_iso_datetime(legs[0].departureTimeUtc)
+        end = parse_iso_datetime(legs[-1].arrivalTimeUtc)
+        return start is not None and end is not None and start <= now
+
+
 class TranslinkCoordinator(
     DataUpdateCoordinator[JourneySummary | StopSummary | NoticeSummary]
 ):
@@ -246,6 +271,7 @@ class TranslinkCoordinator(
         session = async_get_clientsession(hass)
         self.client = TranslinkClient(session=session)
         self._trip_cache: dict[str, tuple[float, TripTimetable | None]] = {}
+        self._followed_journey: _FollowedJourney | None = None
 
     @property
     def start_location_id(self) -> str:
@@ -412,7 +438,54 @@ class TranslinkCoordinator(
         if not isinstance(plan_res, JourneyPlanResult):
             plan_res = JourneyPlanResult()
 
-        timetables = await self._async_get_trip_timetables(plan_res)
+        now = datetime.now(UTC)
+        followed = self._followed_journey
+        pinned = (
+            followed if followed is not None and followed.has_departed(now) else None
+        )
+        timetables = await self._async_get_trip_timetables(
+            plan_res, pinned.itinerary if pinned is not None else None
+        )
+        trip_updates = tu_res if isinstance(tu_res, dict) else {}
+        feeds = ProgressFeeds(
+            trip_updates=trip_updates,
+            vehicle_positions=vp_res if isinstance(vp_res, (tuple, list)) else (),
+            timetables=timetables,
+            realtime_region=self.realtime_region,
+            region_confirmed=self.region_confirmed,
+        )
+        planned_at = pinned.planned_at if pinned is not None else now
+        itinerary = (
+            pinned.itinerary
+            if pinned is not None
+            else snapshot_itinerary(plan_res.itineraries[0])
+            if plan_res.itineraries
+            else None
+        )
+        progress = evaluate_progress(
+            itinerary,
+            planned_at=planned_at,
+            now=now,
+            tracking_basis="pinned_itinerary" if pinned else "planner_first_itinerary",
+            feeds=feeds,
+            memory=followed.memory if followed is not None else None,
+        )
+        grace = timedelta(seconds=JOURNEY_PROGRESS_GRACE_SECONDS)
+        if (
+            pinned is not None
+            and progress.progress.state != "cancelled"
+            and progress.final_arrival is not None
+            and now > progress.final_arrival + grace
+        ):
+            planned_at = now
+            itinerary = (
+                snapshot_itinerary(plan_res.itineraries[0])
+                if plan_res.itineraries
+                else None
+            )
+            progress = evaluate_progress(
+                itinerary, planned_at=planned_at, now=now, feeds=feeds
+            )
         summary = build_journey_summary(
             plan=plan_res,
             trip_timetables=timetables,
@@ -420,23 +493,36 @@ class TranslinkCoordinator(
             track_vehicle=self.track_vehicle,
             realtime_region=self.realtime_region,
             region_confirmed=self.region_confirmed,
-            trip_updates=tu_res if isinstance(tu_res, dict) else {},
+            trip_updates=trip_updates,
+            now=now,
             fare_preference=self.fare_preference,
             origin_name_fallback=self.start_name,
             destination_name_fallback=self.end_name,
         )
 
+        summary.progress = progress.progress
+        self._followed_journey = (
+            _FollowedJourney(itinerary, planned_at, progress.memory)
+            if itinerary is not None
+            and itinerary.legs
+            and progress.progress.state != "cancelled"
+            and (
+                progress.final_arrival is None or now <= progress.final_arrival + grace
+            )
+            else None
+        )
         return summary
 
     async def _async_get_trip_timetables(
-        self, plan: JourneyPlanResult
+        self, plan: JourneyPlanResult, pinned: JourneyItinerary | None = None
     ) -> dict[str, TripTimetable]:
         """Cache bounded optional enrichment without affecting core availability."""
         now = time.monotonic()
         self._trip_cache = {
             key: value for key, value in self._trip_cache.items() if value[0] > now
         }
-        legs = plan.itineraries[0].legs if plan.itineraries else []
+        current_legs = plan.itineraries[0].legs if plan.itineraries else []
+        legs = [*(pinned.legs if pinned is not None else ()), *current_legs]
         ids = list(
             dict.fromkeys(
                 leg.tripId

@@ -160,3 +160,36 @@ export interface JourneyAlternatives {
   alternatives: JourneyAlternative[];
   plan_notices: PlannerNotice[];
 }
+
+export interface ProgressLegAttributes extends Row {
+  index: number;
+  mode: string;
+  route?: string | null;
+  color?: string | null;
+  origin?: { name?: string | null } | null;
+  destination?: { name?: string | null } | null;
+}
+export interface ProgressActionAttributes extends Row {
+  type: "board" | "transfer" | "alight";
+  stop_name?: string | null;
+  stop_id?: string | null;
+  scheduled_time?: string | null;
+  predicted_time?: string | null;
+  time_source: "scheduled" | "realtime" | "unknown";
+  skipped?: boolean;
+  next_leg_route?: string | null;
+  next_leg_platform?: string | null;
+}
+export interface ProgressAttributes extends Row {
+  journey_id?: string | null;
+  active_leg_index?: number | null;
+  active_leg_source?: "vehicle" | "realtime_schedule" | "schedule" | "unknown";
+  next_action?: ProgressActionAttributes | null;
+  progress_legs?: ProgressLegAttributes[];
+  vehicle_observation?: {
+    fresh: boolean;
+    status?: string | null;
+    stop_name?: string | null;
+    stop_id?: string | null;
+  } | null;
+}

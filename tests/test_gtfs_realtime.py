@@ -527,6 +527,55 @@ def test_vehicle_feed_preserves_colliding_trips_and_service_context() -> None:
     assert parse_vehicle_positions(entity(4, " "))[" "] == unknown
 
 
+def test_vehicle_stop_progress_retains_presence() -> None:
+    """Explicit zero-valued sequence and status differ from missing fields."""
+    position = _encode_field(1, 5, -27.47) + _encode_field(2, 5, 153.02)
+    vehicle = _encode_field(2, 2, position)
+    observed = (
+        vehicle
+        + _encode_field(3, 0, 0)
+        + _encode_field(4, 0, 0)
+        + _encode_field(7, 2, "600321")
+    )
+
+    assert (
+        parse_vehicle_positions(_encode_field(2, 2, _encode_field(4, 2, vehicle)))[
+            ""
+        ].current_stop_sequence
+        is None
+    )
+    record = parse_vehicle_positions(
+        _encode_field(2, 2, _encode_field(4, 2, observed))
+    )[""]
+    assert record.current_stop_sequence == 0
+    assert record.current_status == "INCOMING_AT"
+    assert record.stop_id == "600321"
+
+
+def test_captured_vehicle_progress_keeps_both_candidates(
+    sample_vehicle_positions_bytes: bytes,
+) -> None:
+    """The exact trip ID in the captured feed has two distinct stop observations."""
+    from custom_components.translink.api.gtfs_realtime import (
+        parse_vehicle_position_records,
+    )
+    from custom_components.translink.api.progress import vehicle_candidates_for_trip
+
+    candidates = vehicle_candidates_for_trip(
+        parse_vehicle_position_records(sample_vehicle_positions_bytes),
+        "39084222-BT 26_27-44213",
+    )
+    assert [
+        (
+            record.current_stop_sequence,
+            record.current_status,
+            record.stop_id,
+            record.start_date,
+        )
+        for record in candidates
+    ] == [(30, "IN_TRANSIT_TO", "82", None), (1, "STOPPED_AT", "16510", None)]
+
+
 def test_parse_alert_feed_preserves_windows_selectors_and_language() -> None:
     """Strict parsing preserves scope and the distinction between absent and zero."""
     from custom_components.translink.api.gtfs_realtime import parse_alert_feed

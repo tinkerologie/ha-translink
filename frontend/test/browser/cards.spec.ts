@@ -28,6 +28,20 @@ for (const width of [320, 768, 1440]) {
       await expect(
         page.getByRole("heading", { name: "Service alerts" }),
       ).toBeVisible();
+      const progress = page.locator("translink-progress-card");
+      await expect(
+        progress.getByRole("heading", { name: "Journey progress" }),
+      ).toBeVisible();
+      await expect(progress.locator('[aria-current="step"]')).toContainText(
+        "CAIP",
+      );
+      await expect(
+        progress.getByText("Transfer at Darra station"),
+      ).toBeVisible();
+      await expect(progress.getByText("Live prediction")).toBeVisible();
+      await expect(
+        progress.getByText("Vehicle heading to Darra station"),
+      ).toBeVisible();
       const notices = page.locator("translink-alerts-card");
       await expect(
         notices.getByText("Cairns · Route RPSP", { exact: true }),
@@ -189,7 +203,7 @@ for (const width of [320, 768, 1440]) {
       ).toBe(true);
       const overflows = await page
         .locator(
-          "translink-journey-card,translink-departures-card,translink-alerts-card",
+          "translink-journey-card,translink-departures-card,translink-alerts-card,translink-progress-card",
         )
         .evaluateAll((cards) =>
           cards.some((card) => card.scrollWidth > card.clientWidth),
