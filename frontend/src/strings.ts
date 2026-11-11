@@ -18,6 +18,13 @@ export const strings = {
   },
   noAlerts: "No active disruptions reported",
   scheduled: "Scheduled",
+  expected: "Expected",
+  stopTimetable: "Stop timetable",
+  cancelled: "Cancelled",
+  skipped: "Skipped",
+  extraService: "Extra service",
+  boardingOnly: "Boarding only",
+  platformChange: "Platform change",
   moreInfo: "Open entity details",
   journey: "Your journey",
   share: {

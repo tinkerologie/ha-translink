@@ -36,6 +36,18 @@ for (const width of [320, 768, 1440]) {
           (element) => element.scrollWidth <= element.clientWidth,
         ),
       ).toBe(true);
+      const board = page.locator("translink-departures-card");
+      await expect(
+        board.getByText("Stop timetable", { exact: true }),
+      ).toBeVisible();
+      await expect(board.getByText("Expected", { exact: true })).toHaveCount(1);
+      await expect(
+        board.getByText("Extra service", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        board.getByText("Boarding only", { exact: true }),
+      ).toBeVisible();
+      await expect(board.getByText("Platform change: 5 → 6")).toBeVisible();
       const toggle = page.getByRole("button", { name: /Journey details/ });
       await toggle.focus();
       await page.keyboard.press("Enter");

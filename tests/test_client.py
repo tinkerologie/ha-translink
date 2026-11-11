@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -66,11 +67,19 @@ def test_location_search_result_kind(
 
 
 def test_calculate_plan_hash() -> None:
-    """Test 32-bit signed string hash computation."""
+    """Match the request ID in the retained public planner capture."""
+    body = (
+        "searchDate=2026-10-26&searchTime=5%3A21pm"
+        "&startLocationId=ST%3Aplace_kprsta&start=Kippa-Ring+station"
+        "&endLocationId=ST%3Aplace_forsta&end=Fortitude+Valley+station"
+        "&timeSearchMode=LeaveAfter&maximumWalkingDistance=4000&walkingSpeed=Normal"
+        "&transportModes=Train"
+        "&serviceTypes=Express&serviceTypes=NightLink"
+        "&serviceTypes=Regular&serviceTypes=School"
+        "&fareTypes=Free&fareTypes=Prepaid&fareTypes=Standard"
+    )
     assert calculate_plan_hash("") == 0
-    h1 = calculate_plan_hash("searchDate=2026-10-06&searchTime=9%3A30am")
-    assert isinstance(h1, int)
-    assert -0x80000000 <= h1 <= 0x7FFFFFFF
+    assert calculate_plan_hash(body) == 1149538989
 
 
 DEPARTURE = datetime(2026, 10, 6, 5, tzinfo=UTC)
@@ -827,7 +836,7 @@ async def test_search_locations_error() -> None:
 
 @pytest.mark.asyncio
 async def test_plan_journey_success(plan_response_data: dict[str, Any]) -> None:
-    """Test plan_journey with mock response."""
+    """Post only verified fields in their exact order and validate the response."""
     mock_response = MagicMock()
     mock_response.status = 200
     mock_response.json = AsyncMock(return_value=plan_response_data)
@@ -841,10 +850,49 @@ async def test_plan_journey_success(plan_response_data: dict[str, Any]) -> None:
     plan = await client.plan_journey(
         start_location_id="ST:place_censta",
         start_name="Central station",
-        end_location_id="ST:place_spcsta",
-        end_name="Springfield Central",
+        end_location_id="ST:place_kprsta",
+        end_name="Kippa-Ring station",
+        transport_modes=["Train", "Ferry"],
+        time_search_mode="ArriveBefore",
+        max_walking_distance=1200,
+        walking_speed="Fast",
+        target_datetime=datetime(2026, 11, 11, 3, tzinfo=UTC),
     )
 
+    mock_session.post.assert_called_once()
+    (url,) = mock_session.post.call_args.args
+    assert url == "https://jp.translink.com.au/api/plan?id=-1204777920"
+    body = mock_session.post.call_args.kwargs["data"]
+    assert body == (
+        "searchDate=2026-11-11&searchTime=1%3A00pm"
+        "&startLocationId=ST%3Aplace_censta&start=Central+station"
+        "&endLocationId=ST%3Aplace_kprsta&end=Kippa-Ring+station"
+        "&timeSearchMode=ArriveBefore&maximumWalkingDistance=1200&walkingSpeed=Fast"
+        "&transportModes=Train&transportModes=Ferry"
+        "&serviceTypes=Express&serviceTypes=NightLink"
+        "&serviceTypes=Regular&serviceTypes=School"
+        "&fareTypes=Free&fareTypes=Prepaid&fareTypes=Standard"
+    )
+    assert set(parse_qs(body)) == {
+        "searchDate",
+        "searchTime",
+        "startLocationId",
+        "start",
+        "endLocationId",
+        "end",
+        "timeSearchMode",
+        "maximumWalkingDistance",
+        "walkingSpeed",
+        "transportModes",
+        "serviceTypes",
+        "fareTypes",
+    }
+    assert mock_session.post.call_args.kwargs["headers"] == {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://jp.translink.com.au",
+        "Referer": "https://jp.translink.com.au/plan-your-journey/journey-planner",
+    }
     assert len(plan.itineraries) == 2
     assert plan.itineraries[0].durationMins == 41
 
@@ -1625,6 +1673,130 @@ async def test_gtfs_feeds_degrade_on_timeout(where: str) -> None:
     assert await c.fetch_vehicle_positions() == ()
     assert await c.fetch_trip_updates() == {}
     assert await c.fetch_alerts() == []
+
+
+def stop_timetable_session(
+    body: bytes, *, status: int = 200, content_length: int | None = None
+) -> MagicMock:
+    """Supply a mock HTTP response with a streaming body."""
+    session = MagicMock(closed=False)
+    response = session.get.return_value.__aenter__.return_value
+    response.status = status
+    response.content_length = content_length
+
+    async def chunks(size: int):
+        for offset in range(0, len(body), size):
+            yield body[offset : offset + size]
+
+    response.content.iter_chunked = chunks
+    return session
+
+
+@pytest.mark.parametrize(
+    ("location_id", "encoded_id", "fixture"),
+    [
+        ("ST:synthetic_hub", "ST%3Asynthetic_hub", "hub"),
+        ("SI:10001/branch", "SI%3A10001%2Fbranch", "platform"),
+    ],
+)
+async def test_fetch_stop_timetable_encodes_the_complete_id(
+    location_id: str, encoded_id: str, fixture: str, stop_timetable_fixture
+) -> None:
+    """Send the stored station or platform ID as one encoded segment."""
+    board = stop_timetable_fixture(fixture)
+    session = stop_timetable_session(json.dumps(board).encode())
+    timetable = await TranslinkClient(session=session).fetch_stop_timetable(location_id)
+
+    assert timetable.name == board["name"]
+    assert session.get.call_args.args[0].raw_path == f"/api/stop/timetable/{encoded_id}"
+    assert session.get.call_args.kwargs["timeout"].total == 10
+    if fixture == "platform":
+        assert timetable.station is not None
+        assert timetable.station.id == "ST:synthetic_hub"
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "content_length", "error"),
+    [
+        (b'{"error":"Private server details"}', 404, None, "failed with status 404"),
+        (b'{"name":"Missing fields"}', 200, None, "Invalid stop timetable response"),
+        (b"{", 200, None, "Invalid stop timetable response"),
+        (b"", 200, 1024 * 1024 + 1, "exceeds size bound"),
+        (b" " * (1024 * 1024 + 1), 200, 1024, "exceeds size bound"),
+    ],
+)
+async def test_fetch_stop_timetable_rejects_invalid_responses(
+    body: bytes, status: int, content_length: int | None, error: str
+) -> None:
+    """Report safe errors for non-200, invalid and oversized responses."""
+    session = stop_timetable_session(body, status=status, content_length=content_length)
+    with pytest.raises(TranslinkResponseError, match=error):
+        await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+
+async def test_fetch_stop_timetable_reports_timeout() -> None:
+    """A timeout maps to the connection exception used by the config flow."""
+    session = MagicMock(closed=False)
+    session.get.side_effect = TimeoutError
+    with pytest.raises(
+        TranslinkConnectionError, match="Unable to fetch stop timetable"
+    ):
+        await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+
+async def test_fetch_stop_timetable_skips_only_bad_visits(
+    stop_timetable_fixture,
+) -> None:
+    """A malformed UTC time or empty visit cannot invalidate the whole board."""
+    board = stop_timetable_fixture("platform")
+    board["departures"] = [
+        {"id": "valid", "scheduledDepartureUtc": "2099-01-01T08:46:00+00:00"},
+        {"id": "local", "scheduledDepartureUtc": "2099-01-01T08:46:00"},
+        {
+            "id": "offset",
+            "realtime": {"expectedDepartureUtc": "2099-01-01T08:46:00+10:00"},
+        },
+        {"id": "malformed-flag", "realtime": {"isCancelled": "true"}},
+        {},
+        "invalid",
+    ]
+    session = stop_timetable_session(json.dumps(board).encode())
+    timetable = await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+    assert [departure.id for departure in timetable.departures] == ["valid"]
+    assert timetable.departures[0].scheduledDepartureUtc == "2099-01-01T08:46:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ("current", [1234]),
+        ("upcoming_only", []),
+        ("empty", []),
+        ("malformed", None),
+        ("missing", None),
+        ("missing_current", None),
+        ("null", None),
+    ],
+)
+async def test_fetch_stop_timetable_preserves_alert_availability(
+    section: str, expected: list[int] | None, stop_timetable_fixture
+) -> None:
+    """A valid empty current list and unavailable data have distinct meanings."""
+    board = stop_timetable_fixture("platform")
+    if section == "missing":
+        del board["serviceAlerts"]
+    elif section != "current":
+        board["serviceAlerts"] = stop_timetable_fixture("alert_sections")[section]
+    session = stop_timetable_session(json.dumps(board).encode())
+
+    timetable = await TranslinkClient(session=session).fetch_stop_timetable("SI:10001")
+
+    if expected is None:
+        assert timetable.serviceAlerts is None
+    else:
+        assert timetable.serviceAlerts is not None
+        assert [notice.id for notice in timetable.serviceAlerts.current] == expected
 
 
 def test_journey_alternatives_sort_before_limiting(

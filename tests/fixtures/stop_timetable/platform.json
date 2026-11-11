@@ -1,0 +1,25 @@
+{
+  "id": "SI:10001",
+  "name": "Example Hub platform 1",
+  "station": {
+    "id": "ST:synthetic_hub",
+    "name": "Example Hub"
+  },
+  "routes": [],
+  "departures": [],
+  "serviceAlerts": {
+    "current": [
+      {
+        "id": 1234,
+        "title": "Lift maintenance",
+        "description": "Use the other lift.",
+        "cause": "MAINTENANCE",
+        "effect": "ACCESSIBILITY_ISSUE",
+        "severity": "Informative",
+        "startsUtc": "2025-01-01T00:00:00Z",
+        "endsUtc": "2099-01-01T23:00:00Z"
+      }
+    ],
+    "upcoming": []
+  }
+}

@@ -21,6 +21,7 @@ from ..const import (
     ENDPOINT_LOCATION_SEARCH,
     ENDPOINT_PLAN,
     ENDPOINT_STOP_BY_GEOLOCATION,
+    ENDPOINT_STOP_TIMETABLE,
     ENDPOINT_TRIP_PAGE,
     GTFS_FEED_ALERTS,
     GTFS_FEED_TRIP_UPDATES,
@@ -33,6 +34,7 @@ from ..const import (
     PUBLIC_TRIP_TIMETABLE_BASE_URL,
     REALTIME_MAX_AGE_SECONDS,
     REALTIME_MAX_FUTURE_SKEW_SECONDS,
+    STOP_TIMETABLE_MAX_BYTES,
     TRIP_PAGE_CONCURRENCY,
     TRIP_PAGE_MAX_BYTES,
     TRIP_PAGE_TIMEOUT,
@@ -65,6 +67,9 @@ from .models import (
     RealtimeStatus,
     StopInfo,
     StopRelationship,
+    StopSummary,
+    StopTimetable,
+    TimetableServiceAlerts,
     TripTimetable,
     VehiclePositionStatus,
 )
@@ -98,6 +103,16 @@ def calculate_plan_hash(query_string: str) -> int:
         if h >= 0x80000000:
             h -= 0x100000000
     return h
+
+
+@dataclass(frozen=True)
+class JourneyPlanRequest:
+    """Encoded request sent to the public journey planner."""
+
+    url: str
+    body: str
+    request_id: int
+    headers: dict[str, str]
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:
@@ -226,6 +241,40 @@ class TranslinkClient:
         except UnicodeDecodeError as err:
             raise TranslinkResponseError("Invalid trip page encoding") from err
 
+    async def fetch_stop_timetable(self, location_id: str) -> StopTimetable:
+        """Fetch the timetable for the complete stored station or platform ID."""
+        path = urllib.parse.quote(location_id, safe="")
+        url = URL(f"{self._jp_base_url}{ENDPOINT_STOP_TIMETABLE}{path}", encoded=True)
+        session = await self._get_session()
+        try:
+            async with session.get(
+                url,
+                headers={"Accept": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+            ) as response:
+                if response.status != 200:
+                    raise TranslinkResponseError(
+                        f"Stop timetable failed with status {response.status}"
+                    )
+                if (
+                    response.content_length is not None
+                    and response.content_length > STOP_TIMETABLE_MAX_BYTES
+                ):
+                    raise TranslinkResponseError("Stop timetable exceeds size bound")
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    body.extend(chunk)
+                    if len(body) > STOP_TIMETABLE_MAX_BYTES:
+                        raise TranslinkResponseError(
+                            "Stop timetable exceeds size bound"
+                        )
+                return StopTimetable.model_validate_json(body)
+        except ValidationError as err:
+            raise TranslinkResponseError("Invalid stop timetable response") from err
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise TranslinkConnectionError("Unable to fetch stop timetable") from err
+
     async def search_locations(self, query: str) -> list[LocationSearchResult]:
         """Search for stops, stations, and locations matching the query."""
         if not query or len(query.strip()) < 2:
@@ -300,7 +349,7 @@ class TranslinkClient:
                 f"Error connecting to Translink geolocation stop search: {err}"
             ) from err
 
-    async def plan_journey(
+    def build_plan_request(
         self,
         start_location_id: str,
         start_name: str,
@@ -311,10 +360,8 @@ class TranslinkClient:
         max_walking_distance: int = 4000,
         walking_speed: str = "Normal",
         target_datetime: datetime | None = None,
-    ) -> JourneyPlanResult:
-        """Plan journey between starting point and destination."""
-        session = await self._get_session()
-
+    ) -> JourneyPlanRequest:
+        """Build the request used by the integration and raw CLI capture."""
         tz = ZoneInfo(BRISBANE_TZ)
         now_brisbane = (target_datetime or datetime.now(tz)).astimezone(tz)
         search_date = now_brisbane.strftime("%Y-%m-%d")
@@ -352,12 +399,38 @@ class TranslinkClient:
             "Origin": self._jp_base_url,
             "Referer": f"{self._jp_base_url}/plan-your-journey/journey-planner",
         }
+        return JourneyPlanRequest(url, body_string, plan_id, headers)
 
+    async def plan_journey(
+        self,
+        start_location_id: str,
+        start_name: str,
+        end_location_id: str,
+        end_name: str = "",
+        transport_modes: list[str] | None = None,
+        time_search_mode: str = "LeaveAfter",
+        max_walking_distance: int = 4000,
+        walking_speed: str = "Normal",
+        target_datetime: datetime | None = None,
+    ) -> JourneyPlanResult:
+        """Plan journey between starting point and destination."""
+        session = await self._get_session()
+        request = self.build_plan_request(
+            start_location_id,
+            start_name,
+            end_location_id,
+            end_name,
+            transport_modes,
+            time_search_mode,
+            max_walking_distance,
+            walking_speed,
+            target_datetime,
+        )
         try:
             async with session.post(
-                url,
-                data=body_string,
-                headers=headers,
+                request.url,
+                data=request.body,
+                headers=request.headers,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 if response.status != 200:
@@ -809,20 +882,7 @@ def _collect_plan_notices(
         notice_id = str(notice.id) if notice.id is not None else None
         if notice_id and notice_id not in seen:
             seen.add(notice_id)
-            disruptions.append(
-                {
-                    "id": notice.id,
-                    "title": notice.title,
-                    "description": notice.description,
-                    "cause": notice.cause,
-                    "effect": notice.effect,
-                    "severity": "Informative",
-                    "starts_utc": notice.startsUtc,
-                    "ends_utc": notice.endsUtc,
-                    "leg": None,
-                    "route": None,
-                }
-            )
+            disruptions.append(_unscoped_notice(notice, "Informative"))
     return disruptions
 
 
@@ -837,6 +897,54 @@ def _build_disruption_fields(
     if not disruptions:
         disruptions = _collect_plan_notices(notices, set())
 
+    return _format_disruptions(disruptions, now)
+
+
+def _unscoped_notice(notice: PlanNotice, severity: str | None) -> dict[str, Any]:
+    """Build the common notice shape when no leg supplies additional detail."""
+    return {
+        "id": notice.id,
+        "title": notice.title,
+        "description": notice.description,
+        "cause": notice.cause,
+        "effect": notice.effect,
+        "severity": severity,
+        "starts_utc": notice.startsUtc,
+        "ends_utc": notice.endsUtc,
+        "leg": None,
+        "route": None,
+    }
+
+
+def stop_disruption_fields(
+    alerts: TimetableServiceAlerts | None,
+    previous: StopSummary | None,
+    now: datetime,
+) -> _DisruptionFields:
+    """Format current stop alerts or retain the previous unavailable result."""
+    if alerts is None and previous is not None:
+        return {
+            "disruptions_count": previous.disruptions_count,
+            "disruptions": previous.disruptions,
+            "disruptions_description": previous.disruptions_description,
+            "disruptions_summary": previous.disruptions_summary,
+            "latest_disruption_title": previous.latest_disruption_title,
+            "latest_disruption_description": previous.latest_disruption_description,
+        }
+
+    notices: dict[str, dict[str, Any]] = {}
+    for notice in alerts.current if alerts is not None else ():
+        if notice.id is not None and notice.id != "":
+            notices.setdefault(
+                str(notice.id), _unscoped_notice(notice, notice.severity)
+            )
+    return _format_disruptions(list(notices.values()), now)
+
+
+def _format_disruptions(
+    disruptions: list[dict[str, Any]], now: datetime
+) -> _DisruptionFields:
+    """Apply expiry and format normalized notices for entities."""
     # Apply expiry after choosing the notice scope and winning detail.
     disruptions = [d for d in disruptions if not _notice_expired(d["ends_utc"], now)]
     titles = [str(d["title"]) for d in disruptions if d.get("title")]

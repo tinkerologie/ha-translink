@@ -442,3 +442,15 @@ def sample_trip_updates_bytes() -> bytes:
     """Load sample GTFS-RT TripUpdates protobuf payload."""
     with open(FIXTURES_DIR / "sample_trip_updates.pb", "rb") as f:
         return f.read()
+
+
+@pytest.fixture
+def stop_timetable_fixture():
+    """Read a synthetic stop timetable or alert-section fixture."""
+
+    def load(name: str) -> dict[str, Any]:
+        return json.loads(
+            (FIXTURES_DIR / "stop_timetable" / f"{name}.json").read_text()
+        )
+
+    return load
