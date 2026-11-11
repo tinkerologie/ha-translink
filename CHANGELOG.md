@@ -6,10 +6,6 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
-### Fixed
-
-- Reject invalid weekdays in recurring commute windows and show a reconfiguration message when a saved schedule is invalid. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
-
 ## [2026.11.1] - 2026-11-11
 
 ### Added
@@ -43,6 +39,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 - Reconfiguring a loaded entry uses its existing Home Assistant reload listener.
 - Journey alternatives honour the planner's transfer count. The planner action requires read access to its itinerary sensor. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
 - Commute windows reset their saved trips when transport modes change and require fresh predictions for all transit legs before reporting recovery. Duplicate live trip updates cannot confirm a commute alert or journey delay. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
+- Reject invalid weekdays in recurring commute windows and show a reconfiguration message when a saved schedule is invalid. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
 - Journey progress handles late arrivals into walking legs, through-services and same-sequence vehicle arrivals. Vehicle observations expire after 90 seconds between refreshes. [#57](https://github.com/tinkerologie/ha-translink/issues/57)
 - Cairns vehicle fixes with contradictory routes or service dates are discarded. Route-scoped Service Notices require both route identifiers to match when the feed supplies both. [#59](https://github.com/tinkerologie/ha-translink/issues/59), [#60](https://github.com/tinkerologie/ha-translink/issues/60)
 
