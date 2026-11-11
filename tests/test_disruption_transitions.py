@@ -275,6 +275,7 @@ async def test_stop_notice_survives_empty_board_and_unavailable_alerts(
         departures = sensor_state(hass, entry, "departures_board")
         assert departures.state == "0 departures"
         assert departures.attributes["departures"] == []
+        assert departures.attributes["arrivals"] == []
         disruptions = sensor_state(hass, entry, "disruptions")
         assert disruptions.state == "1"
         assert disruptions.attributes["latest_title"] == "Lift maintenance"

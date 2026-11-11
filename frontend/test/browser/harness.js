@@ -35,6 +35,9 @@ for (const [type, entity] of [
     type: `custom:translink-${type}-card`,
     entity,
     ...(type === "journey" ? { show_planner: true } : {}),
+    ...(type === "departures"
+      ? { show_arrivals: true, show_filters: true }
+      : {}),
   });
   card.hass = hass;
   document.querySelector("main").append(card);

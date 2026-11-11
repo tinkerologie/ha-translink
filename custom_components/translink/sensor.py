@@ -297,6 +297,7 @@ STOP_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         value_fn=lambda data: f"{len(data.departures)} departures",
         attributes_fn=lambda data: {
             "departures": data.departures,
+            "arrivals": data.arrivals,
         },
     ),
 )
@@ -332,7 +333,7 @@ class TranslinkSensor(
 
     entity_description: TranslinkSensorEntityDescription
     _attr_has_entity_name = True
-    _unrecorded_attributes = frozenset({"legs", "departures"})
+    _unrecorded_attributes = frozenset({"legs", "departures", "arrivals"})
 
     def __init__(
         self,

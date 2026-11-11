@@ -92,6 +92,7 @@ def sample_stop_summary() -> StopSummary:
         next_platform="3",
         delay_mins=2,
         departures=[{"route": "T1"}],
+        arrivals=[{"route": "T2", "boarding": "Alighting"}],
         disruptions_count=1,
     )
 
@@ -248,7 +249,15 @@ def test_stop_sensor_properties(sample_stop_summary: StopSummary) -> None:
     }
 
     assert sensors["platform"].native_value == "3"
-    assert "departures" in sensors["departures_board"]._unrecorded_attributes
+    board = sensors["departures_board"]
+    assert board.unique_id == "test_entry_id_departures_board"
+    assert board.translation_key == "departures_board"
+    assert board.native_value == "1 departures"
+    assert board.extra_state_attributes == {
+        "departures": [{"route": "T1"}],
+        "arrivals": [{"route": "T2", "boarding": "Alighting"}],
+    }
+    assert {"departures", "arrivals"} <= board._unrecorded_attributes
     assert sensors["platform"].icon == "mdi:bus-stop-uncovered"
     assert sensors["disruptions"].native_value == 1
     assert sensors["disruption_description"].native_value == "Lift Maintenance"

@@ -8,6 +8,7 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ### Added
 
+- The Departures card offers an opt-in Arrivals view for drop-off-only stop visits and optional route, direction, and order controls. Scheduled and expected stop times are shown separately. [#52](https://github.com/tinkerologie/ha-translink/issues/52)
 - Added the response-only `translink.plan_journey` action and an opt-in Journey card planner for comparing scheduled alternatives at a selected Brisbane date and time. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
 
 ### Changed

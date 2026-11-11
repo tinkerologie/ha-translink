@@ -49,6 +49,8 @@ export interface CardConfig {
   legs_expanded?: boolean;
   show_disruptions?: boolean;
   show_platform?: boolean;
+  show_arrivals?: boolean;
+  show_filters?: boolean;
   max_departures?: number;
   max_alerts?: number;
   show_planner?: boolean;
@@ -71,10 +73,19 @@ export interface Departure {
   };
   boarding?: string;
   route: string;
+  routeId?: string;
+  direction?: string;
   vehicle: string;
   headsign?: string;
   platform?: string;
   color?: string;
+}
+
+export type BoardView = "departures" | "arrivals";
+export type BoardOrder = "scheduled" | "route";
+export interface BoardFilterOption {
+  value: string;
+  label: string;
 }
 
 export type JourneySort = "departure" | "arrival" | "duration";

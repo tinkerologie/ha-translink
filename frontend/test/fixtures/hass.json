@@ -491,6 +491,8 @@
           {
             "trip_id": "train-loop",
             "visit_id": "train-loop-1",
+            "route_id": "T:Train:RPSP",
+            "direction": "Inbound",
             "boarding": "Boarding",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
@@ -506,6 +508,8 @@
           {
             "trip_id": "train-loop",
             "visit_id": "train-loop-2",
+            "route_id": "T:Train:RPSP",
+            "direction": "Outbound",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
             "headsign": "Springfield Central",
@@ -513,6 +517,28 @@
             "scheduled_departure_time": "2026-10-26T08:46:00Z",
             "time_source": "scheduled",
             "platform": "5"
+          }
+        ],
+        "arrivals": [
+          {
+            "visit_id": "train-loop-3",
+            "route_id": "T:Train:RPSP",
+            "direction": "Inbound",
+            "route": "T2 Springfield Central",
+            "headsign": "Drop-off terminal",
+            "boarding": "Alighting",
+            "scheduled_departure_time": "2026-10-26T09:46:00Z",
+            "expected_departure_time": "2026-10-26T09:50:00Z"
+          },
+          {
+            "visit_id": "train-loop-4",
+            "route_id": "T:Train:RPSP",
+            "direction": "Outbound",
+            "route": "T2 Springfield Central",
+            "headsign": "Return terminal",
+            "boarding": "Alighting",
+            "scheduled_departure_time": "2026-10-26T10:46:00Z",
+            "expected_departure_time": null
           }
         ]
       }

@@ -20,6 +20,23 @@ async function journey(
   await card.updateComplete;
   return card;
 }
+const stopBoard = "sensor.renamed_stop_departures_board";
+
+async function board(hass: HomeAssistant, config: Partial<CardConfig> = {}) {
+  const card = document.createElement(
+    "translink-departures-card",
+  ) as DeparturesCard;
+  card.setConfig({
+    type: "custom:translink-departures-card",
+    entity: stopBoard,
+    ...config,
+  });
+  card.hass = hass;
+  document.body.append(card);
+  await card.updateComplete;
+  return card;
+}
+
 const vehicleTracker = "device_tracker.renamed_train";
 const journeyDisruptions = "sensor.renamed_journey_disruptions";
 function emptyJourney(
@@ -50,6 +67,12 @@ describe("card states and interactions", () => {
     expect(JourneyCard.getConfigForm().schema[0]?.selector).toMatchObject({
       entity: { filter: { integration: "translink" } },
     });
+    expect(DeparturesCard.getConfigForm().schema).toEqual(
+      expect.arrayContaining([
+        { name: "show_arrivals", selector: { boolean: {} } },
+        { name: "show_filters", selector: { boolean: {} } },
+      ]),
+    );
     expect(JourneyCard.getStubConfig(fixture)).toEqual({
       entity: "sensor.renamed_journey_itinerary",
     });
@@ -295,6 +318,8 @@ it.each([
   ...["show_fare", "legs_expanded", "show_disruptions", "show_platform"].map(
     (key) => ({ [key]: "true" }),
   ),
+  { show_arrivals: "true" },
+  { show_filters: "true" },
   ...["max_departures", "max_alerts"].flatMap((key) =>
     [0, 21, 1.5, "2"].map((value) => ({ [key]: value })),
   ),
@@ -346,6 +371,143 @@ it("limits departures, can hide platforms, and explains an empty board", async (
     /2 service alerts\s*·\s*Lift <img> maintenance/,
   );
   expect(card.shadowRoot!.querySelector("img")).toBeNull();
+});
+
+it("shows drop-off visits only when the opt-in Arrivals view is selected", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  hass.states[stopBoard]!.attributes.arrivals = [
+    {
+      route: "T2",
+      visit_id: "alighting",
+      boarding: "Alighting",
+      headsign: "Drop-off terminal",
+      scheduled_departure_time: "2026-10-26T07:46:00Z",
+      expected_departure_time: null,
+      is_skipped: true,
+    },
+    {
+      route: "77",
+      visit_id: "alighting-live",
+      boarding: "Alighting",
+      scheduled_departure_time: "2026-10-26T07:51:00Z",
+      expected_departure_time: "2026-10-26T07:54:00Z",
+    },
+  ];
+  const defaultCard = await board(hass);
+  expect(defaultCard.shadowRoot!.querySelectorAll("button")).toHaveLength(1);
+  expect(defaultCard.shadowRoot!.querySelectorAll("select")).toHaveLength(0);
+  expect(defaultCard.shadowRoot!.textContent).not.toContain(
+    "Drop-off terminal",
+  );
+
+  const card = await board(hass, { show_arrivals: true });
+  const root = card.shadowRoot!;
+  const arrivals = root.querySelector<HTMLButtonElement>(
+    'button[value="arrivals"]',
+  )!;
+  expect(arrivals.getAttribute("aria-pressed")).toBe("false");
+  expect(root.textContent).not.toContain("Drop-off terminal");
+  arrivals.click();
+  await card.updateComplete;
+  expect(arrivals.getAttribute("aria-pressed")).toBe("true");
+  const [unknown, predicted] = root.querySelectorAll(".departure");
+  expect(unknown!.textContent).toContain("Drop-off terminal");
+  expect(unknown!.textContent).toContain("Scheduled stop time");
+  expect(unknown!.textContent).toContain("Skipped");
+  expect(unknown!.textContent).not.toContain("Expected stop time");
+  expect(predicted!.textContent).toContain("Expected stop time");
+  expect(
+    [...predicted!.querySelectorAll("time")].map((el) => el.dateTime),
+  ).toEqual(["2026-10-26T07:51:00Z", "2026-10-26T07:54:00Z"]);
+  expect(root.textContent).not.toContain("Springfield Central");
+  expect(root.textContent).not.toContain("Next service");
+  expect(root.querySelector("select")).toBeNull();
+
+  const refreshed = structuredClone(hass);
+  refreshed.states[stopBoard]!.attributes.arrivals = [];
+  card.hass = refreshed;
+  await card.updateComplete;
+  expect(arrivals.getAttribute("aria-pressed")).toBe("true");
+  expect(root.querySelector('[role="status"]')!.textContent).toContain(
+    "No arrivals found",
+  );
+});
+
+it("filters before limiting, keeps selections on refresh, and separates board states", async () => {
+  const hass = structuredClone(fixture) as HomeAssistant;
+  hass.states[stopBoard]!.attributes.departures = [
+    {
+      route: "Zeta",
+      headsign: "Park",
+      direction: "Outbound",
+      visit_id: "park",
+      scheduled_departure_time: "2026-10-26T07:46:00Z",
+    },
+    ...[
+      ["Inbound", "City"],
+      ["Inbound", "River"],
+      ["Outbound", "Beach"],
+    ].map(([direction, headsign], index) => ({
+      route: "T2",
+      route_id: "T:Train:T2",
+      direction,
+      headsign,
+      visit_id: headsign,
+      scheduled_departure_time: `2026-10-26T07:5${index}:00Z`,
+    })),
+  ];
+  const card = await board(hass, { show_filters: true, max_departures: 1 });
+  const root = card.shadowRoot!;
+  const field = (name: string) =>
+    root.querySelector<HTMLSelectElement>(`select[name="${name}"]`)!;
+  const choose = async (name: string, value: string) => {
+    const select = field(name);
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await card.updateComplete;
+  };
+  const visibleVisit = () => root.querySelector(".departure")?.textContent;
+  const status = () => root.querySelector('[role="status"]')?.textContent;
+  expect(visibleVisit()).toContain("Park");
+  await choose("order", "route");
+  expect(visibleVisit()).toContain("City");
+  await choose("route", "T:Train:T2");
+  await choose("direction", "Inbound");
+  expect(visibleVisit()).toContain("City");
+  expect(root.textContent).toContain("Showing 1 of 2 departures");
+
+  const refreshed = structuredClone(hass);
+  refreshed.states[stopBoard]!.attributes.departures = [
+    { route: "Zeta", direction: "Outbound", headsign: "Park" },
+  ];
+  card.hass = refreshed;
+  await card.updateComplete;
+  expect(field("route").value).toBe("T:Train:T2");
+  expect(field("route").selectedOptions[0]?.text).toBe("T2");
+  expect(field("direction").value).toBe("Inbound");
+  expect(field("order").value).toBe("route");
+  expect(visibleVisit()).toBeUndefined();
+  expect(status()).toContain("No services match the selected filters");
+  root.querySelector<HTMLButtonElement>(".clear-board-filters")!.click();
+  await card.updateComplete;
+  expect(field("route").value).toBe("");
+  expect(field("direction").value).toBe("");
+  expect(field("order").value).toBe("route");
+  expect(visibleVisit()).toContain("Park");
+
+  const empty = structuredClone(refreshed);
+  empty.states[stopBoard]!.attributes.departures = [];
+  card.hass = empty;
+  await card.updateComplete;
+  expect(status()).toContain("No services found");
+  expect(root.querySelector(".clear-board-filters")).toBeNull();
+
+  const unavailable = structuredClone(empty);
+  unavailable.states[stopBoard]!.state = "unavailable";
+  card.hass = unavailable;
+  await card.updateComplete;
+  expect(status()).toContain("Transport information is unavailable");
+  expect(root.querySelector("select")).toBeNull();
 });
 
 it("limits alerts and distinguishes no disruptions from unavailable data", async () => {

@@ -5,12 +5,16 @@ import {
   type PropertyValues,
   type TemplateResult,
 } from "lit";
+import { live } from "lit/directives/live.js";
 import {
   available,
+  boardFilterOptions,
   brisbaneInputDefaults,
+  filterDepartures,
   modeIcon,
   normalizeDepartures,
   number,
+  orderDepartures,
   routeColors,
   rows,
   siblings,
@@ -25,6 +29,9 @@ import {
 import { strings } from "./strings";
 import { cardStyles } from "./styles";
 import type {
+  BoardFilterOption,
+  BoardOrder,
+  BoardView,
   CardConfig,
   Departure,
   EntityState,
@@ -48,6 +55,8 @@ const labels: Record<string, string> = {
   show_disruptions: "Show service alerts",
   max_departures: "Maximum departures",
   show_platform: "Show platform",
+  show_arrivals: strings.showArrivals,
+  show_filters: strings.showFilters,
   max_alerts: "Maximum alerts",
   show_planner: "Show journey planner",
   alternatives_limit: "Maximum alternatives",
@@ -135,6 +144,8 @@ export abstract class TranslinkCard extends LitElement {
       "legs_expanded",
       "show_disruptions",
       "show_platform",
+      "show_arrivals",
+      "show_filters",
     ] as const) {
       if (config[key] !== undefined && typeof config[key] !== "boolean")
         throw new Error(`${key} must be a boolean`);
@@ -768,23 +779,182 @@ export class JourneyCard extends TranslinkCard {
 }
 
 export class DeparturesCard extends TranslinkCard {
+  static override properties = {
+    ...TranslinkCard.properties,
+    boardView: { state: true },
+    boardRoute: { state: true },
+    boardDirection: { state: true },
+    boardOrder: { state: true },
+  };
   static override role = "departures_board";
   static override title = strings.departures;
   static getConfigForm() {
-    return form(this.role, ["max_departures", "show_platform"]);
+    return form(this.role, [
+      "max_departures",
+      "show_platform",
+      "show_arrivals",
+      "show_filters",
+    ]);
   }
   protected entityRole = "departures_board";
   protected defaultTitle = strings.departures;
   protected icon = "mdi:train-bus";
+  declare private boardView: BoardView;
+  declare private boardRoute?: BoardFilterOption;
+  declare private boardDirection?: BoardFilterOption;
+  declare private boardOrder: BoardOrder;
+
+  constructor() {
+    super();
+    this.boardView = "departures";
+    this.boardOrder = "scheduled";
+  }
+
   protected renderContent(state: EntityState) {
-    const departures = normalizeDepartures(state.attributes.departures);
+    const view = this.config.show_arrivals ? this.boardView : "departures";
+    const visits = normalizeDepartures(state.attributes[view]);
+    const showFilters = this.config.show_filters === true;
+    const filtered = showFilters
+      ? filterDepartures(
+          visits,
+          this.boardRoute?.value,
+          this.boardDirection?.value,
+        )
+      : visits;
+    const ordered = orderDepartures(
+      filtered,
+      showFilters ? this.boardOrder : "scheduled",
+    );
+    return html`${this.config.show_arrivals
+      ? this.renderViewSwitch(view)
+      : nothing}
+    ${showFilters ? this.renderBoardFilters(visits) : nothing}
+    ${this.renderBoard(view, ordered, visits.length > 0)}`;
+  }
+
+  private renderViewSwitch(view: BoardView) {
+    const views = ["departures", "arrivals"] as const;
+    return html`<div
+      class="board-views"
+      role="group"
+      aria-label=${strings.boardView}
+    >
+      ${views.map(
+        (option) =>
+          html`<button
+            type="button"
+            value=${option}
+            aria-pressed=${String(view === option)}
+            @click=${() => {
+              this.boardView = option;
+            }}
+          >
+            ${strings[option]}
+          </button>`,
+      )}
+    </div>`;
+  }
+
+  private renderBoardFilters(visits: Departure[]) {
+    const routes = boardFilterOptions(visits, "route", this.boardRoute);
+    const directions = boardFilterOptions(
+      visits,
+      "direction",
+      this.boardDirection,
+    );
+    return html`<div class="board-filters">
+      ${this.renderBoardSelect(
+        "route",
+        [{ value: "", label: strings.allRoutes }, ...routes],
+        this.boardRoute?.value ?? "",
+        (value) => {
+          this.boardRoute = routes.find((option) => option.value === value);
+        },
+      )}
+      ${this.renderBoardSelect(
+        "direction",
+        [{ value: "", label: strings.allDirections }, ...directions],
+        this.boardDirection?.value ?? "",
+        (value) => {
+          this.boardDirection = directions.find(
+            (option) => option.value === value,
+          );
+        },
+      )}
+      ${this.renderBoardSelect(
+        "order",
+        [
+          { value: "scheduled", label: strings.scheduledOrder },
+          { value: "route", label: strings.route },
+        ],
+        this.boardOrder,
+        (value) => {
+          this.boardOrder = value === "route" ? "route" : "scheduled";
+        },
+      )}
+    </div>`;
+  }
+
+  private renderBoardSelect(
+    name: "route" | "direction" | "order",
+    options: BoardFilterOption[],
+    selected: string,
+    onChange: (value: string) => void,
+  ) {
+    return html`<label>
+      ${strings[name]}
+      <select
+        name=${name}
+        @change=${(event: Event) =>
+          onChange((event.target as HTMLSelectElement).value)}
+      >
+        ${options.map(
+          ({ value, label }) =>
+            html`<option value=${value} .selected=${live(value === selected)}>
+              ${label}
+            </option>`,
+        )}
+      </select>
+    </label>`;
+  }
+
+  private clearBoardFilters() {
+    this.boardRoute = undefined;
+    this.boardDirection = undefined;
+    this.renderRoot
+      .querySelector<HTMLSelectElement>('select[name="route"]')
+      ?.focus();
+  }
+
+  private renderBoard(
+    view: BoardView,
+    visits: Departure[],
+    hasVisits: boolean,
+  ) {
+    const arrivals = view === "arrivals";
     const related = this.related;
-    if (!departures.length)
+    if (!visits.length)
       return html`
-        <div class="state" role="status">${strings.noServices}</div>
+        <div class="state" role="status">
+          ${hasVisits
+            ? strings.noMatchingServices
+            : arrivals
+              ? strings.noArrivals
+              : strings.noServices}
+        </div>
+        ${hasVisits
+          ? html`<button
+              type="button"
+              class="clear-board-filters"
+              @click=${this.clearBoardFilters}
+            >
+              ${strings.clearFilters}
+            </button>`
+          : nothing}
         ${this.renderDisruptionStrip(related.disruptions)}
       `;
-    const delay = number(value(related.delay));
+    const delay = arrivals ? undefined : number(value(related.delay));
+    const limit = this.config.max_departures ?? 5;
     return html`<div class="secondary">${strings.stopTimetable}</div>
       ${delay !== undefined && delay !== 0
         ? html`<div class="alert-strip">
@@ -792,18 +962,18 @@ export class DeparturesCard extends TranslinkCard {
           </div>`
         : nothing}
       <ol class="departures">
-        ${departures
-          .slice(0, this.config.max_departures ?? 5)
-          .map((row) => this.renderDeparture(row))}
+        ${visits
+          .slice(0, limit)
+          .map((row) => this.renderDeparture(row, arrivals))}
       </ol>
-      ${departures.length > (this.config.max_departures ?? 5)
+      ${visits.length > limit
         ? html`<div class="note">
-            Showing ${this.config.max_departures ?? 5} of ${departures.length}
-            departures
+            ${strings.boardCount(limit, visits.length, arrivals)}
           </div>`
         : nothing}`;
   }
-  private renderDeparture(row: Departure) {
+
+  private renderDeparture(row: Departure, arrivals: boolean) {
     const showPlatform = this.config.show_platform !== false;
     const change = row.platformChange;
     const statuses = [
@@ -835,13 +1005,17 @@ export class DeparturesCard extends TranslinkCard {
       </div>
       <div class="when">
         <time datetime=${row.time ?? ""}>${this.formatTime(row.time)}</time>
-        <div class="secondary">${strings.scheduled}</div>
+        <div class="secondary">
+          ${arrivals ? strings.scheduledStopTime : strings.scheduled}
+        </div>
         ${row.expectedTime
           ? html`<div class="expected-time">
               <time datetime=${row.expectedTime}
                 >${this.formatTime(row.expectedTime)}</time
               >
-              <div class="secondary">${strings.expected}</div>
+              <div class="secondary">
+                ${arrivals ? strings.expectedStopTime : strings.expected}
+              </div>
             </div>`
           : nothing}
       </div>

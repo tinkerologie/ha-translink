@@ -172,6 +172,19 @@
       "scheduledDepartureUtc": "2099-01-01T02:22:00Z",
       "departurePlatform": "A",
       "canBoardDebark": "Other"
+    },
+    {
+      "id": "alighting",
+      "routeId": "T:Train:LOOP",
+      "headsign": "Harbour Terminus",
+      "direction": "Inbound",
+      "scheduledDepartureUtc": "2099-01-01T02:05:00Z",
+      "departurePlatform": "2",
+      "canBoardDebark": "Alighting",
+      "realtime": {
+        "expectedDepartureUtc": "2099-01-01T02:07:00Z",
+        "isSkipped": true
+      }
     }
   ],
   "serviceAlerts": {

@@ -207,6 +207,26 @@ async def test_coordinator_stop_timetable_keeps_distinct_boardable_visits(
     assert unresolved["vehicle"] is None
     assert unresolved["boarding"] == "Other"
 
+    first, repeat = summary.arrivals
+    assert [row["trip_id"] for row in summary.arrivals] == ["alighting", "alighting"]
+    assert first["visit_id"] != repeat["visit_id"]
+    assert [row["boarding"] for row in summary.arrivals] == ["Alighting", "Alighting"]
+    assert (first["route_id"], first["direction"], first["platform"]) == (
+        "T:Train:LOOP",
+        "Outbound",
+        "1",
+    )
+    assert first["scheduled_departure_time"] == "2099-01-01T02:02:00Z"
+    assert first["expected_departure_time"] is None
+    assert (repeat["route_id"], repeat["direction"], repeat["platform"]) == (
+        "T:Train:LOOP",
+        "Inbound",
+        "2",
+    )
+    assert repeat["scheduled_departure_time"] == "2099-01-01T02:05:00Z"
+    assert repeat["expected_departure_time"] == "2099-01-01T02:07:00Z"
+    assert repeat["is_skipped"] is True
+
     assert summary.next_departure_time == datetime(2099, 1, 1, 2, 10, tzinfo=UTC)
     assert (summary.next_route, summary.next_vehicle, summary.next_platform) == (
         "Harbour Loop",

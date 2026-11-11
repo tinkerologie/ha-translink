@@ -48,6 +48,49 @@ for (const width of [320, 768, 1440]) {
         board.getByText("Boarding only", { exact: true }),
       ).toBeVisible();
       await expect(board.getByText("Platform change: 5 → 6")).toBeVisible();
+      const boardViews = board.getByRole("group", { name: "Board view" });
+      const arrivals = boardViews.getByRole("button", { name: "Arrivals" });
+      const departures = boardViews.getByRole("button", { name: "Departures" });
+      await expect(departures).toHaveAttribute("aria-pressed", "true");
+      await arrivals.focus();
+      await page.keyboard.press("Enter");
+      await expect(arrivals).toHaveAttribute("aria-pressed", "true");
+      await expect(departures).toHaveAttribute("aria-pressed", "false");
+      await expect(board.getByText("Expected stop time")).toBeVisible();
+      await expect(board.getByText("Drop-off terminal")).toBeVisible();
+      expect(
+        await arrivals.evaluate(
+          (element) => getComputedStyle(element).outlineStyle,
+        ),
+      ).toBe("solid");
+
+      const direction = board.getByRole("combobox", {
+        name: "Direction",
+        exact: true,
+      });
+      await direction.focus();
+      await page.keyboard.press("o");
+      await expect(direction).toHaveValue("Outbound");
+      await expect(board.getByText("Return terminal")).toBeVisible();
+      await expect(board.getByText("Drop-off terminal")).toHaveCount(0);
+      await expect(board.getByText("Expected stop time")).toHaveCount(0);
+      expect(
+        await direction.evaluate(
+          (element) => getComputedStyle(element).outlineStyle,
+        ),
+      ).toBe("solid");
+      for (const controls of [board.locator(".board-filters"), boardViews]) {
+        expect(
+          await controls.evaluate(
+            (element) => element.scrollWidth <= element.clientWidth,
+          ),
+        ).toBe(true);
+      }
+      await departures.focus();
+      await page.keyboard.press("Space");
+      await expect(departures).toHaveAttribute("aria-pressed", "true");
+      await expect(arrivals).toHaveAttribute("aria-pressed", "false");
+      await expect(board.getByText("Return terminal")).toHaveCount(0);
       const toggle = page.getByRole("button", { name: /Journey details/ });
       await toggle.focus();
       await page.keyboard.press("Enter");
