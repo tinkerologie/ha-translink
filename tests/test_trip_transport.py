@@ -10,6 +10,11 @@ import aiohttp
 import pytest
 
 from custom_components.translink.api import client as client_module
+from custom_components.translink.api.client import (
+    build_journey_summary,
+    public_trip_timetable_url,
+)
+from custom_components.translink.api.models import JourneyPlanResult
 from custom_components.translink.client import (
     TranslinkClient,
     TranslinkConnectionError,
@@ -43,11 +48,11 @@ class Response:
             yield self.body[start : start + size]
 
 
-def _client(response=None):
+def _client(response=None, **kwargs):
     session = MagicMock()
     session.closed = False
     session.get.return_value = response or Response()
-    return TranslinkClient(session=session), session
+    return TranslinkClient(session=session, **kwargs), session
 
 
 async def test_authentic_transport_and_session_ownership():
@@ -65,6 +70,29 @@ async def test_authentic_transport_and_session_ownership():
     await client.async_get_trip_timetable("a /?#%")
     url = session.get.call_args.args[0]
     assert url.raw_path.endswith("a%20%2F%3F%23%25")
+
+
+@pytest.mark.parametrize(
+    "trip_id", [None, "", ".", "..", "a/b", "?", "#", "%", "a b", "x" * 129]
+)
+def test_public_trip_links_reject_invalid_id(trip_id):
+    assert public_trip_timetable_url(trip_id) is None
+
+
+async def test_public_trip_link_is_independent_of_fetch_origin():
+    client, session = _client(jp_base_url="https://example.invalid")
+    timetable = await client.async_get_trip_timetable(TRIP_ID)
+    assert session.get.call_args.args[0].host == "example.invalid"
+    plan = JourneyPlanResult.model_validate_json(
+        (
+            Path(__file__).parent / "fixtures/trip_page/plan_response_trip.json"
+        ).read_text()
+    )
+    result = build_journey_summary(plan, trip_timetables={TRIP_ID: timetable})
+    assert result.itinerary_legs[0]["timetableUrl"] == (
+        "https://jp.translink.com.au/plan-your-journey/timetables/trip/"
+        "s_T_RPSP_8_20261026_39766414"
+    )
 
 
 @pytest.mark.parametrize("trip_id", ["", "x" * 129, "bad\nID"])

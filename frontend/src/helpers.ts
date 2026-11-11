@@ -28,13 +28,7 @@ export const validTime = (value: unknown): string | undefined => {
   const result = text(value);
   return result && Number.isFinite(Date.parse(result)) ? result : undefined;
 };
-export function time(
-  value: unknown,
-  hass?: HomeAssistant,
-  date = false,
-): string {
-  const iso = validTime(value);
-  if (!iso) return "—";
+function clockFormatter(hass?: HomeAssistant, date = false) {
   const preference = hass?.locale?.time_format;
   const language = hass?.locale?.language ?? hass?.language ?? "en-AU";
   const hour12 =
@@ -54,13 +48,24 @@ export function time(
     return new Intl.DateTimeFormat(
       preference === "system" ? undefined : language,
       options,
-    ).format(new Date(iso));
+    );
   } catch {
     return new Intl.DateTimeFormat("en-AU", {
       ...options,
       timeZone: "Australia/Brisbane",
-    }).format(new Date(iso));
+    });
   }
+}
+export function time(
+  value: unknown,
+  hass?: HomeAssistant,
+  date = false,
+): string {
+  const iso = validTime(value);
+  return iso ? clockFormatter(hass, date).format(new Date(iso)) : "—";
+}
+export function timeZoneLabel(hass?: HomeAssistant): string {
+  return clockFormatter(hass).resolvedOptions().timeZone;
 }
 export function siblings(
   hass: HomeAssistant | undefined,

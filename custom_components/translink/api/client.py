@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from ..const import (
     MAX_ALTERNATIVE_LEGS,
     MAX_ALTERNATIVE_NOTICES,
     MAX_ALTERNATIVES_LIMIT,
+    PUBLIC_TRIP_TIMETABLE_BASE_URL,
     REALTIME_MAX_AGE_SECONDS,
     REALTIME_MAX_FUTURE_SKEW_SECONDS,
     TRIP_PAGE_CONCURRENCY,
@@ -61,6 +63,7 @@ from .models import (
     LocationSearchResult,
     PlanNotice,
     RealtimeStatus,
+    StopInfo,
     StopRelationship,
     TripTimetable,
     VehiclePositionStatus,
@@ -140,6 +143,21 @@ def redact_sensitive(data: Any) -> Any:
     if isinstance(data, list):
         return [redact_sensitive(item) for item in data]
     return data
+
+
+def public_trip_timetable_url(trip_id: str | None) -> str | None:
+    """Build a link using the public origin and a single safe trip ID."""
+    if trip_id is None or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", trip_id) is None:
+        return None
+    return f"{PUBLIC_TRIP_TIMETABLE_BASE_URL}{trip_id}"
+
+
+def _is_public_stop(stop: StopInfo | None) -> bool:
+    return bool(
+        stop is not None
+        and (stop.id or "").startswith("SI:")
+        and (stop.stopType or "").strip()
+    )
 
 
 class TranslinkClient:
@@ -1342,6 +1360,12 @@ def build_journey_summary(
                 "skippedStops": [s.name for s in leg.skippedStops],
                 "callingStops": [stop.model_dump() for stop in calls],
                 "callingStopsSource": source,
+                "timetableUrl": public_trip_timetable_url(leg.tripId)
+                if source in ("scheduled", "scheduled_with_realtime")
+                else None,
+                "originIsPublicStop": is_transit and _is_public_stop(leg.origin),
+                "destinationIsPublicStop": is_transit
+                and _is_public_stop(leg.destination),
                 "callingStopsRealtimeUpdatedAt": updated,
                 **(
                     {
