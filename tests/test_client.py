@@ -17,6 +17,7 @@ from custom_components.translink.api.gtfs_realtime import (
 from custom_components.translink.client import (
     JourneyPlanResult,
     JourneySummary,
+    LocationSearchResult,
     TranslinkClient,
     TranslinkConnectionError,
     TranslinkResponseError,
@@ -28,6 +29,26 @@ from custom_components.translink.client import (
     parse_vehicle_positions,
     redact_sensitive,
 )
+
+
+@pytest.mark.parametrize(
+    ("location_id", "kind", "is_board_candidate"),
+    [
+        ("ST:place_romsta", "station", True),
+        ("SI:600036", "stop", True),
+        ("PL:parkland", "place", False),
+        ("XX:other", "unknown", False),
+    ],
+)
+def test_location_search_result_kind(
+    location_id: str, kind: str, is_board_candidate: bool
+) -> None:
+    """Classify a location without requiring any additional API fields."""
+    result = LocationSearchResult(LocationId=location_id, Description="Roma Street")
+    assert result.id == location_id
+    assert result.name == "Roma Street"
+    assert result.kind == kind
+    assert result.is_board_candidate is is_board_candidate
 
 
 def test_calculate_plan_hash() -> None:

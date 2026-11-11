@@ -8,6 +8,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..const import LOCATION_PLACE_PREFIX, LOCATION_STATION_PREFIX, LOCATION_STOP_PREFIX
+
 type JourneyStatus = Literal[
     "scheduled",
     "on_time",
@@ -44,6 +46,22 @@ class LocationSearchResult(TranslinkApiModel):
     def name(self) -> str:
         """Alias for Description."""
         return self.Description
+
+    @property
+    def kind(self) -> Literal["station", "stop", "place", "unknown"]:
+        """Classify the public location ID by its prefix."""
+        if self.id.startswith(LOCATION_STATION_PREFIX):
+            return "station"
+        if self.id.startswith(LOCATION_STOP_PREFIX):
+            return "stop"
+        if self.id.startswith(LOCATION_PLACE_PREFIX):
+            return "place"
+        return "unknown"
+
+    @property
+    def is_board_candidate(self) -> bool:
+        """Return whether this location can be used for a departure board."""
+        return self.kind in ("station", "stop")
 
 
 class Position(TranslinkApiModel):

@@ -13,7 +13,7 @@ from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .client import TranslinkApiError, TranslinkClient
+from .client import LocationSearchResult, TranslinkApiError, TranslinkClient
 from .const import (
     AVAILABLE_FARE_PREFERENCES,
     AVAILABLE_TIME_SEARCH_MODES,
@@ -42,12 +42,74 @@ from .const import (
     DEFAULT_TRANSPORT_MODES,
     DEFAULT_WALKING_SPEED,
     DOMAIN,
+    LOCATION_STOP_PREFIX,
     MIN_SCAN_INTERVAL,
     MODE_JOURNEY,
     MODE_STOP,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_LOCATION_FIELDS = {
+    MODE_JOURNEY: (
+        (CONF_START_LOCATION_ID, CONF_START_NAME, "start_query"),
+        (CONF_END_LOCATION_ID, CONF_END_NAME, "end_query"),
+    ),
+    MODE_STOP: ((CONF_STOP_LOCATION_ID, CONF_STOP_NAME, "stop_query"),),
+}
+_RECONFIGURED_OPTIONS = {
+    CONF_START_LOCATION_ID,
+    CONF_START_NAME,
+    CONF_END_LOCATION_ID,
+    CONF_END_NAME,
+    CONF_TRANSPORT_MODES,
+}
+_LOCATION_LABELS = {
+    "station": "Station",
+    "place": "Place or address",
+    "unknown": "Location",
+}
+
+
+def _location_candidates(
+    results: list[LocationSearchResult], mode: str
+) -> dict[str, LocationSearchResult]:
+    """Keep the first occurrence of each eligible ID in API order."""
+    candidates: dict[str, LocationSearchResult] = {}
+    for result in results:
+        if mode != MODE_STOP or result.is_board_candidate:
+            candidates.setdefault(result.id, result)
+    return candidates
+
+
+def _location_option(result: LocationSearchResult) -> selector.SelectOptionDict:
+    """Describe a candidate while using its public ID as the value."""
+    kind = result.kind
+    suffix = (
+        f"Stop {result.id.removeprefix(LOCATION_STOP_PREFIX)}"
+        if kind == "stop"
+        else _LOCATION_LABELS[kind]
+    )
+    return selector.SelectOptionDict(value=result.id, label=f"{result.name} — {suffix}")
+
+
+def _location_selector(
+    id_field: str,
+    candidates: dict[str, LocationSearchResult],
+    stored_id: str | None,
+) -> tuple[vol.Required, selector.SelectSelector]:
+    """Build a required selector and use the saved ID when it is a match."""
+    field = (
+        vol.Required(id_field, default=stored_id)
+        if stored_id in candidates
+        else vol.Required(id_field)
+    )
+    return field, selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[_location_option(result) for result in candidates.values()],
+            mode=selector.SelectSelectorMode.LIST,
+        )
+    )
 
 
 class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCallIssue]
@@ -61,6 +123,9 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._reconfigure_entry: config_entries.ConfigEntry | None = None
+        self._pending_input: dict[str, Any] = {}
+        self._queries: dict[str, str] = {}
+        self._candidates: dict[str, dict[str, LocationSearchResult]] = {}
 
     @staticmethod
     @callback
@@ -107,71 +172,12 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         """Handle configuring a Journey between origin and destination."""
         errors: dict[str, str] = {}
 
-        if user_input is not None:
-            name = str(user_input.get(CONF_NAME, "")).strip() or "Translink Journey"
-            start_query = str(user_input.get(CONF_START_NAME, "")).strip()
-            end_query = str(user_input.get(CONF_END_NAME, "")).strip()
-            transport_modes = user_input.get(
-                CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
+        if user_input is not None and (
+            result := await self._async_search_locations(
+                MODE_JOURNEY, user_input, errors
             )
-            track_vehicle = bool(
-                user_input.get(CONF_TRACK_VEHICLE, DEFAULT_TRACK_VEHICLE)
-            )
-
-            session = async_get_clientsession(self.hass)
-            client = TranslinkClient(session=session)
-
-            try:
-                start_results = await client.search_locations(start_query)
-                if not start_results:
-                    errors[CONF_START_NAME] = "location_not_found"
-
-                end_results = await client.search_locations(end_query)
-                if not end_results:
-                    errors[CONF_END_NAME] = "location_not_found"
-
-                if not errors:
-                    start_loc = start_results[0]
-                    end_loc = end_results[0]
-
-                    # Test plan
-                    await client.plan_journey(
-                        start_location_id=start_loc.LocationId,
-                        start_name=start_loc.Description,
-                        end_location_id=end_loc.LocationId,
-                        end_name=end_loc.Description,
-                        transport_modes=transport_modes,
-                    )
-
-                    unique_id = f"journey_{start_loc.LocationId}_{end_loc.LocationId}"
-                    await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
-
-                    return self.async_create_entry(
-                        title=name,
-                        data={
-                            CONF_MODE: MODE_JOURNEY,
-                            CONF_NAME: name,
-                            CONF_START_LOCATION_ID: start_loc.LocationId,
-                            CONF_START_NAME: start_loc.Description,
-                            CONF_END_LOCATION_ID: end_loc.LocationId,
-                            CONF_END_NAME: end_loc.Description,
-                            CONF_TRANSPORT_MODES: transport_modes,
-                            CONF_TRACK_VEHICLE: track_vehicle,
-                            CONF_TIME_SEARCH_MODE: DEFAULT_TIME_SEARCH_MODE,
-                            CONF_MAX_WALKING_DISTANCE: DEFAULT_MAX_WALKING_DISTANCE,
-                            CONF_WALKING_SPEED: DEFAULT_WALKING_SPEED,
-                            CONF_FARE_PREFERENCE: DEFAULT_FARE_PREFERENCE,
-                            CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
-                        },
-                    )
-            except AbortFlow:
-                raise
-            except TranslinkApiError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error in journey config flow")
-                errors["base"] = "unknown"
+        ):
+            return result
 
         schema = vol.Schema(
             {
@@ -204,44 +210,10 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         """Handle configuring a Stop/Station departure board."""
         errors: dict[str, str] = {}
 
-        if user_input is not None:
-            name = str(user_input.get(CONF_NAME, "")).strip() or "Translink Stop"
-            stop_query = str(user_input.get(CONF_STOP_NAME, "")).strip()
-            transport_modes = user_input.get(
-                CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
-            )
-
-            session = async_get_clientsession(self.hass)
-            client = TranslinkClient(session=session)
-
-            try:
-                results = await client.search_locations(stop_query)
-                if not results:
-                    errors[CONF_STOP_NAME] = "location_not_found"
-                else:
-                    stop_loc = results[0]
-                    unique_id = f"stop_{stop_loc.LocationId}"
-                    await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
-
-                    return self.async_create_entry(
-                        title=name,
-                        data={
-                            CONF_MODE: MODE_STOP,
-                            CONF_NAME: name,
-                            CONF_STOP_LOCATION_ID: stop_loc.LocationId,
-                            CONF_STOP_NAME: stop_loc.Description,
-                            CONF_TRANSPORT_MODES: transport_modes,
-                            CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
-                        },
-                    )
-            except AbortFlow:
-                raise
-            except TranslinkApiError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error in stop config flow")
-                errors["base"] = "unknown"
+        if user_input is not None and (
+            result := await self._async_search_locations(MODE_STOP, user_input, errors)
+        ):
+            return result
 
         schema = vol.Schema(
             {
@@ -262,6 +234,203 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         )
         return self.async_show_form(step_id="stop", data_schema=schema, errors=errors)
 
+    async def _async_search_locations(
+        self, mode: str, user_input: dict[str, Any], errors: dict[str, str]
+    ) -> ConfigFlowResult | None:
+        """Search for each location and ask for a choice when needed."""
+        self._pending_input = user_input
+        self._queries = {}
+        self._candidates = {}
+
+        try:
+            client = TranslinkClient(session=async_get_clientsession(self.hass))
+            for id_field, name_field, placeholder in _LOCATION_FIELDS[mode]:
+                query = str(user_input.get(name_field, "")).strip()
+                self._queries[placeholder] = query
+                saved = self._saved_location(id_field, name_field, query, mode)
+                results = (
+                    [saved]
+                    if saved is not None
+                    else await client.search_locations(query)
+                )
+                candidates = _location_candidates(results, mode)
+                if not candidates:
+                    errors[name_field] = (
+                        "no_board_location" if results else "location_not_found"
+                    )
+                self._candidates[id_field] = candidates
+        except TranslinkApiError:
+            errors["base"] = "cannot_connect"
+        except Exception:
+            _LOGGER.exception("Unexpected error searching for Translink locations")
+            errors["base"] = "unknown"
+
+        if errors:
+            return None
+        if any(len(candidates) > 1 for candidates in self._candidates.values()):
+            return await self._async_step_location_selection(mode, None)
+        return await self._async_confirm_locations(mode, {}, errors)
+
+    def _saved_location(
+        self, id_field: str, name_field: str, query: str, mode: str
+    ) -> LocationSearchResult | None:
+        """Reuse an unchanged location if the stored ID still applies."""
+        if self._reconfigure_entry is None:
+            return None
+        current_data = self._reconfigure_entry.data
+        stored_id = current_data.get(id_field)
+        if not stored_id or query != current_data.get(name_field):
+            return None
+        result = LocationSearchResult(LocationId=stored_id, Description=query)
+        if mode == MODE_STOP and not result.is_board_candidate:
+            return None
+        return result
+
+    async def async_step_journey_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm the ambiguous journey endpoints."""
+        return await self._async_step_location_selection(MODE_JOURNEY, user_input)
+
+    async def async_step_stop_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm a stop or station from the search matches."""
+        return await self._async_step_location_selection(MODE_STOP, user_input)
+
+    async def _async_step_location_selection(
+        self, mode: str, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        """Validate the submitted locations and commit the confirmed results."""
+        errors: dict[str, str] = {}
+        if user_input is not None and (
+            result := await self._async_confirm_locations(mode, user_input, errors)
+        ):
+            return result
+        return self._show_location_selection(mode, errors)
+
+    def _show_location_selection(
+        self, mode: str, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Show selectors only for fields with several matches."""
+        saved_data = self._reconfigure_entry.data if self._reconfigure_entry else {}
+        fields = dict(
+            _location_selector(id_field, candidates, saved_data.get(id_field))
+            for id_field, candidates in self._candidates.items()
+            if len(candidates) > 1
+        )
+        return self.async_show_form(
+            step_id=f"{mode}_select",
+            data_schema=vol.Schema(fields),
+            errors=errors,
+            description_placeholders=self._queries,
+        )
+
+    async def _async_confirm_locations(
+        self,
+        mode: str,
+        selection: dict[str, Any],
+        errors: dict[str, str],
+    ) -> ConfigFlowResult | None:
+        """Resolve single matches and confirm selections before saving locations."""
+        locations: dict[str, LocationSearchResult] = {}
+        for id_field, candidates in self._candidates.items():
+            if len(candidates) == 1:
+                locations[id_field] = next(iter(candidates.values()))
+                continue
+            selected_id = selection.get(id_field)
+            if not isinstance(selected_id, str) or selected_id not in candidates:
+                errors["base"] = "invalid_location_selection"
+                return None
+            locations[id_field] = candidates[selected_id]
+
+        unique_id = "_".join((mode, *(result.id for result in locations.values())))
+        data = {
+            CONF_TRANSPORT_MODES: self._pending_input.get(
+                CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
+            ),
+        }
+        for id_field, name_field, _ in _LOCATION_FIELDS[mode]:
+            data[id_field] = locations[id_field].id
+            data[name_field] = locations[id_field].name
+
+        try:
+            if self.source == config_entries.SOURCE_RECONFIGURE:
+                return await self._async_finish_reconfigure(unique_id, data)
+            return await self._async_finish_setup(mode, unique_id, data)
+        except AbortFlow:
+            raise
+        except TranslinkApiError:
+            errors["base"] = "cannot_connect"
+        except Exception:
+            _LOGGER.exception("Unexpected error confirming Translink locations")
+            errors["base"] = "unknown"
+        await self.async_set_unique_id(None)
+        return None
+
+    async def _async_finish_setup(
+        self, mode: str, unique_id: str, data: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Create a config entry from the confirmed locations."""
+        await self.async_set_unique_id(unique_id)
+        self._abort_if_unique_id_configured()
+
+        default_name = "Translink Journey" if mode == MODE_JOURNEY else "Translink Stop"
+        name = str(self._pending_input.get(CONF_NAME, "")).strip() or default_name
+        data.update(
+            {
+                CONF_MODE: mode,
+                CONF_NAME: name,
+                CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+            }
+        )
+        if mode == MODE_JOURNEY:
+            client = TranslinkClient(session=async_get_clientsession(self.hass))
+            await client.plan_journey(
+                start_location_id=data[CONF_START_LOCATION_ID],
+                start_name=data[CONF_START_NAME],
+                end_location_id=data[CONF_END_LOCATION_ID],
+                end_name=data[CONF_END_NAME],
+                transport_modes=data[CONF_TRANSPORT_MODES],
+            )
+            data.update(
+                {
+                    CONF_TRACK_VEHICLE: bool(
+                        self._pending_input.get(
+                            CONF_TRACK_VEHICLE, DEFAULT_TRACK_VEHICLE
+                        )
+                    ),
+                    CONF_TIME_SEARCH_MODE: DEFAULT_TIME_SEARCH_MODE,
+                    CONF_MAX_WALKING_DISTANCE: DEFAULT_MAX_WALKING_DISTANCE,
+                    CONF_WALKING_SPEED: DEFAULT_WALKING_SPEED,
+                    CONF_FARE_PREFERENCE: DEFAULT_FARE_PREFERENCE,
+                }
+            )
+        return self.async_create_entry(title=name, data=data)
+
+    async def _async_finish_reconfigure(
+        self, unique_id: str, data_updates: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Commit confirmed data, options and unique ID together."""
+        entry = self._reconfigure_entry
+        assert entry is not None
+        if unique_id != entry.unique_id:
+            await self.async_set_unique_id(unique_id)
+            self._abort_if_unique_id_configured()
+
+        options = {
+            key: value
+            for key, value in entry.options.items()
+            if key not in _RECONFIGURED_OPTIONS
+        }
+        if options != entry.options:
+            return self.async_update_reload_and_abort(
+                entry, unique_id=unique_id, data_updates=data_updates, options=options
+            )
+        return self.async_update_reload_and_abort(
+            entry, unique_id=unique_id, data_updates=data_updates
+        )
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -270,133 +439,40 @@ class TranslinkConfigFlow(  # pyright: ignore[reportGeneralTypeIssues, reportCal
         if self._reconfigure_entry is None:
             return self.async_abort(reason="reconfigure_failed")
         current_data = self._reconfigure_entry.data
-        mode = current_data.get(CONF_MODE, MODE_JOURNEY)
+        mode = (
+            MODE_JOURNEY
+            if current_data.get(CONF_MODE, MODE_JOURNEY) == MODE_JOURNEY
+            else MODE_STOP
+        )
 
         errors: dict[str, str] = {}
+        if user_input is not None and (
+            result := await self._async_search_locations(mode, user_input, errors)
+        ):
+            return result
 
-        if user_input is not None:
-            if mode == MODE_JOURNEY:
-                start_query = str(user_input.get(CONF_START_NAME, "")).strip()
-                end_query = str(user_input.get(CONF_END_NAME, "")).strip()
-                session = async_get_clientsession(self.hass)
-                client = TranslinkClient(session=session)
-
-                try:
-                    start_res = await client.search_locations(start_query)
-                    end_res = await client.search_locations(end_query)
-                    if not start_res:
-                        errors[CONF_START_NAME] = "location_not_found"
-                    if not end_res:
-                        errors[CONF_END_NAME] = "location_not_found"
-
-                    if not errors:
-                        new_unique_id = (
-                            f"journey_{start_res[0].LocationId}_{end_res[0].LocationId}"
-                        )
-                        if new_unique_id != self._reconfigure_entry.unique_id:
-                            await self.async_set_unique_id(new_unique_id)
-                            self._abort_if_unique_id_configured()
-                        return self.async_update_reload_and_abort(
-                            self._reconfigure_entry,
-                            unique_id=new_unique_id,
-                            data={
-                                **current_data,
-                                CONF_START_LOCATION_ID: start_res[0].LocationId,
-                                CONF_START_NAME: start_res[0].Description,
-                                CONF_END_LOCATION_ID: end_res[0].LocationId,
-                                CONF_END_NAME: end_res[0].Description,
-                                CONF_TRANSPORT_MODES: user_input.get(
-                                    CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
-                                ),
-                            },
-                        )
-                except AbortFlow:
-                    raise
-                except TranslinkApiError:
-                    errors["base"] = "cannot_connect"
-                except Exception:
-                    _LOGGER.exception("Unexpected error during journey reconfiguration")
-                    errors["base"] = "unknown"
-            else:
-                stop_query = str(user_input.get(CONF_STOP_NAME, "")).strip()
-                session = async_get_clientsession(self.hass)
-                client = TranslinkClient(session=session)
-                try:
-                    res = await client.search_locations(stop_query)
-                    if not res:
-                        errors[CONF_STOP_NAME] = "location_not_found"
-                    else:
-                        new_unique_id = f"stop_{res[0].LocationId}"
-                        if new_unique_id != self._reconfigure_entry.unique_id:
-                            await self.async_set_unique_id(new_unique_id)
-                            self._abort_if_unique_id_configured()
-                        return self.async_update_reload_and_abort(
-                            self._reconfigure_entry,
-                            unique_id=new_unique_id,
-                            data={
-                                **current_data,
-                                CONF_STOP_LOCATION_ID: res[0].LocationId,
-                                CONF_STOP_NAME: res[0].Description,
-                                CONF_TRANSPORT_MODES: user_input.get(
-                                    CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
-                                ),
-                            },
-                        )
-                except AbortFlow:
-                    raise
-                except TranslinkApiError:
-                    errors["base"] = "cannot_connect"
-                except Exception:
-                    _LOGGER.exception("Unexpected error during stop reconfiguration")
-                    errors["base"] = "unknown"
-
-        if mode == MODE_JOURNEY:
-            schema = vol.Schema(
-                {
+        schema = vol.Schema(
+            {
+                **{
                     vol.Required(
-                        CONF_START_NAME,
-                        default=current_data.get(CONF_START_NAME, ""),
-                    ): selector.TextSelector(),
-                    vol.Required(
-                        CONF_END_NAME,
-                        default=current_data.get(CONF_END_NAME, ""),
-                    ): selector.TextSelector(),
-                    vol.Required(
-                        CONF_TRANSPORT_MODES,
-                        default=current_data.get(
-                            CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
-                        ),
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=AVAILABLE_TRANSPORT_MODES,
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
+                        name_field, default=current_data.get(name_field, "")
+                    ): selector.TextSelector()
+                    for _, name_field, _ in _LOCATION_FIELDS[mode]
+                },
+                vol.Required(
+                    CONF_TRANSPORT_MODES,
+                    default=current_data.get(
+                        CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
                     ),
-                }
-            )
-        else:
-            schema = vol.Schema(
-                {
-                    vol.Required(
-                        CONF_STOP_NAME,
-                        default=current_data.get(CONF_STOP_NAME, ""),
-                    ): selector.TextSelector(),
-                    vol.Required(
-                        CONF_TRANSPORT_MODES,
-                        default=current_data.get(
-                            CONF_TRANSPORT_MODES, DEFAULT_TRANSPORT_MODES
-                        ),
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=AVAILABLE_TRANSPORT_MODES,
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                }
-            )
-
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=AVAILABLE_TRANSPORT_MODES,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
         return self.async_show_form(
             step_id="reconfigure", data_schema=schema, errors=errors
         )

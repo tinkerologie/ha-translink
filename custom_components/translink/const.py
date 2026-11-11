@@ -51,6 +51,10 @@ AVAILABLE_FARE_PREFERENCES: Final = ["Adult", "Concession"]
 JP_API_BASE_URL: Final = "https://jp.translink.com.au"
 GTFSRT_API_BASE_URL: Final = "https://gtfsrt.api.translink.com.au"
 
+LOCATION_STATION_PREFIX: Final = "ST:"
+LOCATION_STOP_PREFIX: Final = "SI:"
+LOCATION_PLACE_PREFIX: Final = "PL:"
+
 ENDPOINT_LOCATION_SEARCH: Final = "/api/location/search"
 ENDPOINT_PLAN: Final = "/api/plan"
 ENDPOINT_STOP_BY_GEOLOCATION: Final = "/api/stop/bygeolocation"

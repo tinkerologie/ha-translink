@@ -77,18 +77,26 @@ When adding the integration, select whether you want to track a **Journey** or a
 | Field | Description | Example |
 | --- | --- | --- |
 | **Journey Name** | Friendly name for this journey device. | `Work Commute` |
-| **Starting Point (Origin)** | Station name, bus stop name, or address. Translink's location search automatically matches stops. | `Central station` |
-| **Destination** | Destination station name, bus stop name, or address. | `Springfield Central station` |
+| **Starting Point (Origin)** | Station name, bus stop name, landmark, or address. | `Central station` |
+| **Destination** | Destination station name, bus stop name, landmark, or address. | `Springfield Central station` |
 | **Transport Modes** | Public transport modes to include in journey routing. | `Bus`, `Ferry`, `Train`, `Tram` |
 | **Enable Live Vehicle Tracking** | Create a live GPS `device_tracker` entity for the active transit vehicle. | `Enabled` |
+
+When a search returns several matches, choose the intended location for each endpoint shown.
 
 #### 2. Stop Mode (Departure Board)
 
 | Field | Description | Example |
 | --- | --- | --- |
 | **Board Name** | Friendly name for the station or stop device. | `Roma Street Station` |
-| **Station or Stop Name** | Stop name or station search query. | `Roma Street station` |
+| **Station or Stop Name** | Station name, stop name, or stop number. | `Roma Street station` |
 | **Transport Modes** | Transport modes to monitor from this stop. | `Train`, `Bus` |
+
+Departure boards accept stations and stops. When several eligible matches appear, choose the station, stop, or platform you want to track.
+
+### Reconfigure an entry
+
+Choose **Reconfigure** from the Translink entry's menu to change locations or transport modes. Leave a location name as shown to keep its saved location. A departure board saved with a place or address searches again so you can choose a station or stop. A new search with several matches prompts you to choose a result.
 
 ### Integration Options (`Configure` button on the Translink entry)
 
