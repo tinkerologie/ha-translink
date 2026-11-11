@@ -118,50 +118,127 @@ jobs:
             echo "hassfest_ref=$revision"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Check out the resolved Core development commit
+        if: matrix.channel == 'dev'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: home-assistant/core
+          ref: ${{ steps.resolve.outputs.revision }}
+          path: .local/ha-next-core
+          persist-credentials: false
+
+      - name: Classify the official test plugin
+        id: classify
+        env:
+          CHANNEL: ${{ matrix.channel }}
+          HA_VERSION: ${{ steps.resolve.outputs.ha_version }}
+          CORE_REVISION: ${{ steps.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANNEL" == dev ]]; then
+            [[ "$(git -C .local/ha-next-core rev-parse HEAD)" == "$CORE_REVISION" ]]
+            if [[ -f .local/ha-next-core/packages/pytest-homeassistant/pyproject.toml ]]; then
+              echo "harness=supported" >> "$GITHUB_OUTPUT"
+              echo "reason=official plugin present at resolved Core commit" >> "$GITHUB_OUTPUT"
+            else
+              echo "harness=unsupported" >> "$GITHUB_OUTPUT"
+              echo "reason=plugin package absent at resolved Core commit" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          uv run --no-project --python 3.14.2 --with packaging python - <<'PYTHON'
+          import json
+          import os
+          import platform
+          from urllib.error import HTTPError
+          from urllib.request import urlopen
+
+          from packaging.requirements import Requirement
+          from packaging.specifiers import SpecifierSet
+          from packaging.utils import canonicalize_name
+          from packaging.version import Version
+
+          version = Version(os.environ["HA_VERSION"])
+          try:
+              with urlopen(f"https://pypi.org/pypi/pytest-homeassistant/{version}/json", timeout=30) as response:
+                  metadata = json.load(response)
+          except HTTPError as err:
+              if err.code != 404:
+                  raise
+              state, reason = "unsupported", "no matching pytest-homeassistant release"
+          else:
+              python = Version(platform.python_version())
+              files = metadata["urls"]
+              requirements = metadata["info"]["requires_dist"]
+              if not isinstance(files, list) or not isinstance(requirements, list):
+                  raise ValueError("Invalid plugin release metadata")
+              compatible = [
+                  file for file in files
+                  if python in SpecifierSet(file["requires_python"])
+                  and not file.get("yanked", False)
+              ]
+              ha_requirements = [
+                  req for value in requirements
+                  if canonicalize_name((req := Requirement(value)).name) == "homeassistant"
+              ]
+              if not ha_requirements:
+                  raise ValueError("Plugin metadata has no Home Assistant requirement")
+              state, reason = "supported", "matching official plugin release"
+              if not compatible:
+                  state, reason = "unsupported", "matching release is yanked or Python-incompatible"
+              elif not all(version in req.specifier for req in ha_requirements):
+                  state, reason = "unsupported", "release does not pin the selected Home Assistant version"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"harness={state}\nreason={reason}\n")
+          PYTHON
+
+      - name: Build the Core development test plugin
+        if: matrix.channel == 'dev' && steps.classify.outputs.harness == 'supported'
+        run: uv build .local/ha-next-core/packages/pytest-homeassistant --out-dir "$RUNNER_TEMP/ha-next-wheels"
+
       - name: Install Home Assistant and the test harness
         id: install
         env:
           CHANNEL: ${{ matrix.channel }}
           HA_VERSION: ${{ steps.resolve.outputs.ha_version }}
-          CORE_REVISION: ${{ steps.resolve.outputs.revision }}
           REQUIREMENT: ${{ steps.resolve.outputs.requirement }}
+          HARNESS: ${{ steps.classify.outputs.harness }}
         run: |
-          probe() {
-            curl -sS --retry 3 --max-time 30 -o /dev/null -w '%{http_code}' "$1"
-          }
-
-          plugin=""
-          if [[ "$CHANNEL" == release ]]; then
-            status=$(probe "https://pypi.org/pypi/pytest-homeassistant/$HA_VERSION/json")
-            case "$status" in
-              200) plugin="pytest-homeassistant==$HA_VERSION" ;;
-              404) ;; # Early 2026.11 betas only have the package in Core.
-              *) echo "::error::PyPI plugin probe returned HTTP $status"; exit 1 ;;
-            esac
+          set -euo pipefail
+          if [[ "$CHANNEL" == dev ]]; then
+            REQUIREMENT="$PWD/.local/ha-next-core"
           fi
-          if [[ -z "$plugin" ]]; then
-            for directory in pytest-homeassistant pytest-home-assistant; do
-              path="packages/$directory"
-              status=$(probe "https://raw.githubusercontent.com/home-assistant/core/$CORE_REVISION/$path/pyproject.toml")
-              case "$status" in
-                200)
-                  plugin="$directory @ https://github.com/home-assistant/core/archive/$CORE_REVISION.tar.gz#subdirectory=$path"
-                  break
-                  ;;
-                404) ;;
-                *) echo "::error::Core plugin probe returned HTTP $status"; exit 1 ;;
-              esac
-            done
-          fi
-
-          if [[ -n "$plugin" ]]; then
-            echo "harness=supported" >> "$GITHUB_OUTPUT"
+          if [[ "$HARNESS" == supported ]]; then
+            if [[ "$CHANNEL" == dev ]]; then
+              wheels=("$RUNNER_TEMP"/ha-next-wheels/*.whl)
+              [[ ${#wheels[@]} == 1 && -f "${wheels[0]}" ]]
+              plugin="${wheels[0]}"
+            else
+              plugin="pytest-homeassistant==$HA_VERSION"
+            fi
             uv pip install . "$REQUIREMENT" "$plugin" \
               "PyTurboJPEG>=2.2.0" "av>=16.1.0" "ha-ffmpeg>=3.2.2" \
               "segno==1.6.6" "pytest-cov>=4.0.0" "pytest-timeout>=2.0.0"
+            if uv pip show pytest-homeassistant-custom-component >/dev/null 2>&1; then
+              echo "::error::Both Home Assistant test plugins are installed"
+              exit 1
+            fi
+            if [[ "$CHANNEL" == dev ]]; then
+              python - <<'PYTHON'
+          import json
+          import os
+          from importlib.metadata import distribution
+          from pathlib import Path
+
+          core = Path(".local/ha-next-core").resolve().as_uri()
+          wheel, = (Path(os.environ["RUNNER_TEMP"]) / "ha-next-wheels").glob("*.whl")
+          for name, expected in (("homeassistant", core), ("pytest-homeassistant", wheel.resolve().as_uri())):
+              origin = json.loads(distribution(name).read_text("direct_url.json"))
+              if origin["url"] != expected:
+                  raise SystemExit(f"{name} was installed from an unexpected origin")
+          PYTHON
+            fi
           else
-            echo "::notice::No official pytest-homeassistant plugin is available for Core $CORE_REVISION"
-            echo "harness=unsupported" >> "$GITHUB_OUTPUT"
             uv pip install . "$REQUIREMENT"
           fi
           python -c "from homeassistant.const import __version__; print('Installed Home Assistant', __version__)"
@@ -173,7 +250,7 @@ jobs:
 
       - name: Run tests with deprecation checks
         id: tests
-        if: steps.install.outputs.harness == 'supported'
+        if: steps.classify.outputs.harness == 'supported'
         continue-on-error: true
         run: pytest --no-cov -q
 
@@ -191,7 +268,9 @@ jobs:
           CHANNEL: ${{ matrix.channel }}
           HA_VERSION: ${{ steps.resolve.outputs.ha_version }}
           INSTALL: ${{ steps.install.outcome }}
-          HARNESS: ${{ steps.install.outputs.harness }}
+          CLASSIFY: ${{ steps.classify.outcome }}
+          REASON: ${{ steps.classify.outputs.reason }}
+          HARNESS: ${{ steps.classify.outputs.harness }}
           SMOKE: ${{ steps.smoke.outcome }}
           TESTS: ${{ steps.tests.outcome }}
           HASSFEST: ${{ steps.hassfest.outcome }}
@@ -204,7 +283,7 @@ jobs:
           if [[ "$JOB_STATUS" != success ]]; then
             status=failure
           fi
-          for outcome in "$INSTALL" "$SMOKE" "$HASSFEST"; do
+          for outcome in "$CLASSIFY" "$INSTALL" "$SMOKE" "$HASSFEST"; do
             if [[ "$outcome" != success ]]; then
               status=failure
             fi
@@ -214,13 +293,18 @@ jobs:
           fi
           tests="$TESTS"
           if [[ "$HARNESS" == unsupported ]]; then
-            tests="skipped: official pytest-homeassistant plugin is absent at this Core revision"
+            tests="skipped: $REASON"
+            if [[ "$status" == success ]]; then
+              status=unsupported
+              echo "::notice::Unsupported test harness for $HA_VERSION: $REASON"
+            fi
           fi
           {
             echo "## Home Assistant ${HA_VERSION:-unresolved}"
             echo
             echo "| Check | Result |"
             echo "| --- | --- |"
+            echo "| Classify | ${CLASSIFY:-not run} (${REASON:-no result}) |"
             echo "| Install | ${INSTALL:-not run} |"
             echo "| Import smoke | ${SMOKE:-not run} |"
             echo "| Tests | ${tests:-not run} |"
@@ -229,7 +313,8 @@ jobs:
           mkdir -p ha-next-result
           jq -n --arg channel "$CHANNEL" --arg version "${HA_VERSION:-unresolved}" \
             --arg status "$status" --arg install "${INSTALL:-not run}" \
-            '{channel: $channel, version: $version, status: $status, install: $install}' > "ha-next-result/$CHANNEL.json"
+            --arg harness "$HARNESS" --arg reason "$REASON" \
+            '{channel: $channel, version: $version, status: $status, install: $install, harness: $harness, reason: $reason}' > "ha-next-result/$CHANNEL.json"
           if [[ "$status" == failure ]]; then
             echo "::error::HA Next checks failed for Home Assistant ${HA_VERSION:-unresolved}. See the run summary."
             exit 1
@@ -296,6 +381,10 @@ jobs:
               }
               const marker = `<!-- ha-next:${channel} -->`;
               const issue = open.find((item) => !item.pull_request && item.body?.includes(marker));
+
+              if (result.status === "unsupported") {
+                continue;
+              }
 
               if (result.status === "success") {
                 if (issue) {

@@ -29,10 +29,7 @@ cd "$SCRIPT_DIR/.."
 # Pin the official plugin to the same release as Home Assistant.
 TEST_PYTHON_VERSION="${TEST_PYTHON_VERSION:-3.14.2}"
 TEST_HOME_ASSISTANT_VERSION="${TEST_HOME_ASSISTANT_VERSION:-2026.11.1}"
-if [[ -n "${TEST_PLUGIN_VERSION:-}" ]]; then
-    echo "TEST_PLUGIN_VERSION is obsolete: set TEST_HOME_ASSISTANT_VERSION for both packages." >&2
-    exit 2
-fi
+TEST_PLUGIN_VERSION="${TEST_PLUGIN_VERSION:-$TEST_HOME_ASSISTANT_VERSION}"
 if [[ ! "$TEST_PYTHON_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "TEST_PYTHON_VERSION must specify an exact Python version (major.minor.patch)." >&2
     exit 2
@@ -90,7 +87,7 @@ log_info "Installing Home Assistant test dependencies"
 uv pip install \
     . \
     "homeassistant==${TEST_HOME_ASSISTANT_VERSION}" \
-    "pytest-homeassistant==${TEST_HOME_ASSISTANT_VERSION}" \
+    "pytest-homeassistant==${TEST_PLUGIN_VERSION}" \
     "PyTurboJPEG>=2.2.0" \
     "av>=16.1.0" \
     "ha-ffmpeg>=3.2.2" \

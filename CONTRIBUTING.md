@@ -186,4 +186,6 @@ Research and version-specific resource API assumptions are recorded in
 CI enforces 100% Python line and branch coverage. The Test job retains
 `coverage.xml` whenever pytest produces it, including when the gate fails.
 The separate Coverage job uploads passing reports without executing project
-code and uses OIDC on trusted runs.
+code and uses OIDC on trusted runs. Dependabot runs retain the report artifact
+and enforce the same coverage threshold. After review, maintainers can dispatch
+CI on the Dependabot branch to publish that exact head through OIDC.

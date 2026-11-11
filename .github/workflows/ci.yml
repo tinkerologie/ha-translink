@@ -65,7 +65,8 @@ jobs:
       contents: read
       id-token: write # Codecov OIDC; no repository credentials are required
     env:
-      CODECOV_OIDC: ${{ !(github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || github.event.pull_request.user.login == 'dependabot[bot]')) }}
+      CODECOV_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+      CODECOV_DEPENDABOT: ${{ github.actor == 'dependabot[bot]' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
     steps:
       # This job reads the report and file names without executing PR code.
       - name: Check out the repository
@@ -77,11 +78,14 @@ jobs:
         with:
           name: coverage
       - name: Publish coverage to Codecov
+        # Dependabot keeps the report artifact and the enforced Test coverage
+        # gate. A maintainer can dispatch CI on a reviewed head to upload it.
+        if: env.CODECOV_DEPENDABOT != 'true'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           slug: ${{ github.repository }}
           files: ./coverage.xml
-          use_oidc: ${{ env.CODECOV_OIDC == 'true' }}
+          use_oidc: ${{ env.CODECOV_FORK != 'true' }}
           fail_ci_if_error: true
 
   frontend:
