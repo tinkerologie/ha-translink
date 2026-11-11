@@ -67,11 +67,19 @@ def test_location_search_result_kind(
 
 
 def test_calculate_plan_hash() -> None:
-    """Test 32-bit signed string hash computation."""
+    """Match the request ID in the retained public planner capture."""
+    body = (
+        "searchDate=2026-10-26&searchTime=5%3A21pm"
+        "&startLocationId=ST%3Aplace_kprsta&start=Kippa-Ring+station"
+        "&endLocationId=ST%3Aplace_forsta&end=Fortitude+Valley+station"
+        "&timeSearchMode=LeaveAfter&maximumWalkingDistance=4000&walkingSpeed=Normal"
+        "&transportModes=Train"
+        "&serviceTypes=Express&serviceTypes=NightLink"
+        "&serviceTypes=Regular&serviceTypes=School"
+        "&fareTypes=Free&fareTypes=Prepaid&fareTypes=Standard"
+    )
     assert calculate_plan_hash("") == 0
-    h1 = calculate_plan_hash("searchDate=2026-10-06&searchTime=9%3A30am")
-    assert isinstance(h1, int)
-    assert -0x80000000 <= h1 <= 0x7FFFFFFF
+    assert calculate_plan_hash(body) == 1149538989
 
 
 DEPARTURE = datetime(2026, 10, 6, 5, tzinfo=UTC)
@@ -773,7 +781,7 @@ async def test_search_locations_error() -> None:
 
 @pytest.mark.asyncio
 async def test_plan_journey_success(plan_response_data: dict[str, Any]) -> None:
-    """Test plan_journey with mock response."""
+    """Post only verified fields in their exact order and validate the response."""
     mock_response = MagicMock()
     mock_response.status = 200
     mock_response.json = AsyncMock(return_value=plan_response_data)
@@ -787,10 +795,49 @@ async def test_plan_journey_success(plan_response_data: dict[str, Any]) -> None:
     plan = await client.plan_journey(
         start_location_id="ST:place_censta",
         start_name="Central station",
-        end_location_id="ST:place_spcsta",
-        end_name="Springfield Central",
+        end_location_id="ST:place_kprsta",
+        end_name="Kippa-Ring station",
+        transport_modes=["Train", "Ferry"],
+        time_search_mode="ArriveBefore",
+        max_walking_distance=1200,
+        walking_speed="Fast",
+        target_datetime=datetime(2026, 11, 11, 3, tzinfo=UTC),
     )
 
+    mock_session.post.assert_called_once()
+    (url,) = mock_session.post.call_args.args
+    assert url == "https://jp.translink.com.au/api/plan?id=-1204777920"
+    body = mock_session.post.call_args.kwargs["data"]
+    assert body == (
+        "searchDate=2026-11-11&searchTime=1%3A00pm"
+        "&startLocationId=ST%3Aplace_censta&start=Central+station"
+        "&endLocationId=ST%3Aplace_kprsta&end=Kippa-Ring+station"
+        "&timeSearchMode=ArriveBefore&maximumWalkingDistance=1200&walkingSpeed=Fast"
+        "&transportModes=Train&transportModes=Ferry"
+        "&serviceTypes=Express&serviceTypes=NightLink"
+        "&serviceTypes=Regular&serviceTypes=School"
+        "&fareTypes=Free&fareTypes=Prepaid&fareTypes=Standard"
+    )
+    assert set(parse_qs(body)) == {
+        "searchDate",
+        "searchTime",
+        "startLocationId",
+        "start",
+        "endLocationId",
+        "end",
+        "timeSearchMode",
+        "maximumWalkingDistance",
+        "walkingSpeed",
+        "transportModes",
+        "serviceTypes",
+        "fareTypes",
+    }
+    assert mock_session.post.call_args.kwargs["headers"] == {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://jp.translink.com.au",
+        "Referer": "https://jp.translink.com.au/plan-your-journey/journey-planner",
+    }
     assert len(plan.itineraries) == 2
     assert plan.itineraries[0].durationMins == 41
 

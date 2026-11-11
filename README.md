@@ -110,6 +110,15 @@ Choose **Reconfigure** from the Translink entry's menu to change locations or tr
 | **Fare Preference** | `Adult` | Preferred go card fare tier to display (`Adult` or `Concession`). |
 | **Enable Live Vehicle Tracking** | `true` | Toggle the live vehicle GPS device tracker entity. |
 
+#### Journey planner limitations
+
+Via stops, maximum transfers, and wheelchair or stroller routing are unavailable
+in this integration because their public request contracts are unverified. The
+Transfers sensor estimates vehicle changes from the returned legs, so a
+through-service split across legs can count as a transfer. Accessibility
+disruptions appear as notices. Step-free access is unknown when the available
+data only shows that no notice was issued. [Routing research](docs/routing-options-research.md)
+
 ---
 
 ## Provided Entities

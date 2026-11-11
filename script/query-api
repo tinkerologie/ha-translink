@@ -4,6 +4,7 @@
 Usage:
     ./script/query-api --search "Central"
     ./script/query-api --plan --start "Central" --end "Springfield"
+    ./script/query-api --raw-plan 2026-11-11T13:00 ST:place_censta ST:place_kprsta
     ./script/query-api --trip-updates
     ./script/query-api --vehicles
 """
@@ -14,10 +15,19 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+PUBLIC_CAPTURE_STATIONS = {
+    "ST:place_censta": "Central station",
+    "ST:place_kprsta": "Kippa-Ring station",
+    "ST:place_forsta": "Fortitude Valley station",
+    "ST:place_milsta": "Milton station",
+}
 
 
 def _compact(payload: Any) -> str:
@@ -26,6 +36,42 @@ def _compact(payload: Any) -> str:
     if hasattr(payload, "model_dump"):
         return json.dumps(payload.model_dump(mode="json"), indent=2, default=str)[:5000]
     return json.dumps(payload, indent=2, default=str)[:5000]
+
+
+async def capture_raw_plan(target: datetime, start_id: str, end_id: str) -> int:
+    """Capture a planner POST for fixed public stations without model validation."""
+    import aiohttp
+
+    from custom_components.translink.api.client import USER_AGENT, TranslinkClient
+
+    request = TranslinkClient().build_plan_request(
+        start_id,
+        PUBLIC_CAPTURE_STATIONS[start_id],
+        end_id,
+        PUBLIC_CAPTURE_STATIONS[end_id],
+        target_datetime=target,
+    )
+    try:
+        async with (
+            aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session,
+            session.post(
+                request.url,
+                data=request.body,
+                headers=request.headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+                allow_redirects=False,
+            ) as response,
+        ):
+            print(f"# Captured UTC: {datetime.now(UTC).isoformat()}")
+            print(f"# Request URL: {request.url}")
+            print(f"# Request ID: {request.request_id}")
+            print(f"# Request body: {request.body}")
+            print(f"# HTTP status: {response.status}")
+            print(await response.text())
+            return 0 if response.status == 200 else 1
+    except (aiohttp.ClientError, TimeoutError, UnicodeError) as err:
+        print(f"query-api failed: {err}", file=sys.stderr)
+        return 1
 
 
 async def run_query(args: argparse.Namespace) -> int:
@@ -66,7 +112,7 @@ async def run_query(args: argparse.Namespace) -> int:
             print(f"Vehicle position records: {len(positions)}")
 
         return 0
-    except Exception as err:  # noqa: BLE001 - CLI should print actionable error.
+    except Exception as err:
         print(f"query-api failed: {err}")
         return 1
     finally:
@@ -80,12 +126,53 @@ def main() -> int:
     parser.add_argument("--start", help="Journey starting location name")
     parser.add_argument("--end", help="Journey destination name")
     parser.add_argument(
+        "--raw-plan",
+        nargs=3,
+        metavar=("BRISBANE_DATETIME", "START_ID", "END_ID"),
+        help=(
+            "Capture raw planner data for a YYYY-MM-DDTHH:MM Brisbane time. "
+            f"Public station IDs: {', '.join(PUBLIC_CAPTURE_STATIONS)}"
+        ),
+    )
+    parser.add_argument(
         "--trip-updates", action="store_true", help="Fetch GTFS trip updates"
     )
     parser.add_argument(
         "--vehicles", action="store_true", help="Fetch GTFS vehicle positions"
     )
     args = parser.parse_args()
+
+    if args.raw_plan:
+        from custom_components.translink.const import BRISBANE_TZ
+
+        if any(
+            [
+                args.search,
+                args.plan,
+                args.start,
+                args.end,
+                args.trip_updates,
+                args.vehicles,
+            ]
+        ):
+            parser.error("--raw-plan must be used on its own")
+        target_text, start_id, end_id = args.raw_plan
+        if (
+            start_id not in PUBLIC_CAPTURE_STATIONS
+            or end_id not in PUBLIC_CAPTURE_STATIONS
+        ):
+            parser.error(
+                f"--raw-plan needs public station IDs from: {', '.join(PUBLIC_CAPTURE_STATIONS)}"
+            )
+        try:
+            target = datetime.strptime(target_text, "%Y-%m-%dT%H:%M").replace(
+                tzinfo=ZoneInfo(BRISBANE_TZ)
+            )
+        except ValueError:
+            parser.error(
+                "--raw-plan needs a Brisbane date and time in YYYY-MM-DDTHH:MM"
+            )
+        return asyncio.run(capture_raw_plan(target, start_id, end_id))
 
     if not any([args.search, args.plan, args.trip_updates, args.vehicles]):
         parser.print_help()
