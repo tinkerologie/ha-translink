@@ -1,5 +1,67 @@
 {
   "states": {
+    "sensor.renamed_journey_progress": {
+      "entity_id": "sensor.renamed_journey_progress",
+      "state": "in_progress",
+      "attributes": {
+        "journey_id": "fixture-progress",
+        "active_leg_index": 0,
+        "active_leg_source": "vehicle",
+        "progress_legs": [
+          {
+            "index": 0,
+            "mode": "Train",
+            "route": "CAIP",
+            "color": "#376ebb",
+            "origin": {
+              "name": "Central station"
+            },
+            "destination": {
+              "name": "Darra station"
+            }
+          },
+          {
+            "index": 1,
+            "mode": "Train",
+            "route": "RPSP",
+            "color": "#69469b",
+            "origin": {
+              "name": "Darra station"
+            },
+            "destination": {
+              "name": "Springfield Central station"
+            }
+          }
+        ],
+        "next_action": {
+          "type": "transfer",
+          "stop_name": "Darra station",
+          "time_source": "realtime",
+          "predicted_time": "2026-10-26T08:15:00Z",
+          "next_leg_route": "RPSP",
+          "next_leg_platform": "1"
+        },
+        "vehicle_observation": {
+          "fresh": true,
+          "status": "IN_TRANSIT_TO",
+          "stop_name": "Darra station"
+        }
+      }
+    },
+    "device_tracker.renamed_train": {
+      "entity_id": "device_tracker.renamed_train",
+      "state": "not_home",
+      "attributes": {
+        "active_leg_index": 1,
+        "route_name": "Ferny Grove",
+        "route_code": "FERN",
+        "vehicle_label": "Train 103",
+        "position_status": "live",
+        "position_timestamp": "2026-10-26T07:48:00+00:00",
+        "latitude": -27.6123,
+        "longitude": 153.2321
+      }
+    },
     "sensor.renamed_journey_next_departure": {
       "entity_id": "sensor.renamed_journey_next_departure",
       "state": "2026-10-26T07:46:00+00:00",
@@ -118,7 +180,7 @@
             "route": "T2 Springfield Central"
           }
         ],
-        "description": "\u2022 Reduced train timetables: On Monday 12 October, extra weekday services were added to the current timetable.",
+        "description": "• Reduced train timetables: On Monday 12 October, extra weekday services were added to the current timetable.",
         "summary": "Reduced train timetables",
         "latest_title": "Reduced train timetables",
         "latest_description": "On Monday 12 October, extra weekday services were added to the current timetable."
@@ -128,7 +190,7 @@
       "entity_id": "sensor.renamed_journey_disruption_description",
       "state": "Reduced train timetables",
       "attributes": {
-        "description": "\u2022 Reduced train timetables: On Monday 12 October, extra weekday services were added to the current timetable.",
+        "description": "• Reduced train timetables: On Monday 12 October, extra weekday services were added to the current timetable.",
         "count": 1,
         "disruptions": [
           {
@@ -148,9 +210,21 @@
     },
     "sensor.renamed_journey_itinerary": {
       "entity_id": "sensor.renamed_journey_itinerary",
-      "state": "1 legs",
+      "state": "2 legs",
       "attributes": {
         "legs": [
+          {
+            "travelMode": "Walk",
+            "durationMins": 7,
+            "distanceM": 450,
+            "departureTimeUtc": "2026-10-26T07:39:00Z",
+            "arrivalTimeUtc": "2026-10-26T07:46:00Z",
+            "origin": "14 Private Street",
+            "destination": "Kippa-Ring station",
+            "originIsPublicStop": false,
+            "destinationIsPublicStop": false,
+            "timetableUrl": null
+          },
           {
             "travelMode": "Train",
             "durationMins": 53,
@@ -389,7 +463,10 @@
               }
             ],
             "callingStopsSource": "scheduled",
-            "callingStopsRealtimeUpdatedAt": null
+            "callingStopsRealtimeUpdatedAt": null,
+            "timetableUrl": "https://jp.translink.com.au/plan-your-journey/timetables/trip/s_T_RPSP_8_20261026_39766414",
+            "originIsPublicStop": true,
+            "destinationIsPublicStop": true
           }
         ],
         "polyline": "bmdeDkyie\\TnBbCbQx@zFHnDMjEe@|CwFfPsDzKcE|LgCzJsBnOcA|FKlPFjIRdHdArM`@xCr@zC~ArGhD|IJTf@`@f@lAv@lBPr@JXdI`PzDzGvM~PxIjLbGpGxAnAj@PvAbA|AhA^l@~CtBxE`C`KtErUhK`KdE~IrFf@PdBbBhBfBVf@TTdAhAdDrFbEjK|Gl]pIpd@XhBVb@d@`Ch@pCC\\jDjQpCfMdI~V~AjEPHl@tCt@tDIVXjBfBjU^lKd@fGv@zHjB~LdEzHzGxENLfBl@lAd@dAZxF|@~CRtGAf@?vAHpBZvEbDp@d@PP`A~@tAdBrF`GdBfBJFlAh@hAX~APrABbB?dDU|Ga@|BOvEYvCYrCg@h@MbGgAlBs@lB_@tDs@~AIHC|GmAtDu@tPgDxS_ErQmDdOaDvD{@vCSbAALErAk@lA]vD{@|AM~Bg@vO}CzGqApFgAzGoAfB_@hGmAfA]p@MbCg@fAKrA_@fBq@tCuAvCqBjBgBzAgBnA_BvAeCp@aBj@qAl@qBp@sC`@qBnByHzAkGd@uBRsBNaChE_p@JcBb@qAd@uAZ_ALWl@sB\\c@zCgEfByA`AiA~AyAp@i@hPyGhVcK|QyHpB{@pBmAjBcAzOeLtN{J~K{HpE}CtFcEnCkBvA{@zB_AjBu@dA[nAq@^IvBc@|BI\\EhHgBnBo@rAg@pAiAjAoA`BkC|@iBz@wB`AaCvAoD~@iBlAwArDmA`AYxA_@lB_@rC]f@IhBq@rBo@PK`C_B`CiA|BwArXsSbAcAdBuB|FsKdCsEfBcEpBsD~@cBxBcDvG_LrCwD|GmIlImKLOfAcBdAwAtAeBfBaBjAyAhIkJ|CsCdDiCrFoDjAkAp@a@bBiAjBaAfFiD`\\aUtLeIVGLA`AGdBEh@C\\Al@Dh@F\\HnCf@zA`@jAn@xAdArAnAfAdAdKnPrChFzA|Bz@x@p@`@`AZfB`@zD^rBPxJdArDjAnG|ExAhAxFdElHhFvLxI`SrNrAlBPb@Pn@DbATnDMzBAr@AbAAr@?nBTxBVvAxAzEjAtEj@|Ap@pAz@bAv@d@`D`AxBh@`GfBzCz@zA^vDn@vQfB~Gb@fC^pAt@xA~@^b@fE`Ez@z@v@d@nA`@`BTfBDhBSfBa@jCg@nAa@|A[vAUpBWbCMjCD`BFjDf@pDh@~CvAhFzCrBx@pBlAXPjAp@nAXzA?nA@|FQFAfBG|DMNAxG[zGAbGfAzDjA~Bz@z@d@xBz@jBfAbF`ErBzBbChC"
@@ -475,24 +552,158 @@
       "attributes": {
         "departures": [
           {
+            "trip_id": "train-loop",
+            "visit_id": "train-loop-1",
+            "route_id": "T:Train:RPSP",
+            "direction": "Inbound",
+            "boarding": "Boarding",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
             "headsign": "Springfield Central",
             "departure_time": "2026-10-26T07:46:00Z",
-            "platform": "5"
+            "scheduled_departure_time": "2026-10-26T07:46:00Z",
+            "expected_departure_time": "2026-10-26T07:48:00Z",
+            "time_source": "realtime",
+            "platform": "5",
+            "is_extra": true,
+            "platform_change": {
+              "old_platform": "5",
+              "platform": "6"
+            }
           },
           {
+            "trip_id": "train-loop",
+            "visit_id": "train-loop-2",
+            "route_id": "T:Train:RPSP",
+            "direction": "Outbound",
             "route": "T2 Springfield Central",
             "vehicle": "Train",
             "headsign": "Springfield Central",
-            "departure_time": "2026-10-26T07:46:00Z",
+            "departure_time": "2026-10-26T08:46:00Z",
+            "scheduled_departure_time": "2026-10-26T08:46:00Z",
+            "time_source": "scheduled",
             "platform": "5"
           }
+        ],
+        "arrivals": [
+          {
+            "visit_id": "train-loop-3",
+            "route_id": "T:Train:RPSP",
+            "direction": "Inbound",
+            "route": "T2 Springfield Central",
+            "headsign": "Drop-off terminal",
+            "boarding": "Alighting",
+            "scheduled_departure_time": "2026-10-26T09:46:00Z",
+            "expected_departure_time": "2026-10-26T09:50:00Z"
+          },
+          {
+            "visit_id": "train-loop-4",
+            "route_id": "T:Train:RPSP",
+            "direction": "Outbound",
+            "route": "T2 Springfield Central",
+            "headsign": "Return terminal",
+            "boarding": "Alighting",
+            "scheduled_departure_time": "2026-10-26T10:46:00Z",
+            "expected_departure_time": null
+          }
         ]
+      }
+    },
+    "calendar.travel": {
+      "entity_id": "calendar.travel",
+      "state": "off",
+      "attributes": {
+        "supported_features": 1
+      }
+    },
+    "calendar.unavailable": {
+      "entity_id": "calendar.unavailable",
+      "state": "unavailable",
+      "attributes": {
+        "supported_features": 1
+      }
+    },
+    "sensor.renamed_cairns_notices": {
+      "entity_id": "sensor.renamed_cairns_notices",
+      "state": "22",
+      "attributes": {
+        "network": "CNS",
+        "scope_type": "route",
+        "scope_value": "RPSP",
+        "total_count": 22,
+        "disruptions": [
+          {
+            "id": "n-1",
+            "title": "Network maintenance",
+            "description": "Travel on replacement services.",
+            "status": "active",
+            "match": "network",
+            "informed_entities": [
+              {
+                "scope": "network",
+                "agency_id": "agency"
+              }
+            ],
+            "active_periods": [
+              {
+                "start": "2026-11-11T07:00:00Z",
+                "end": "2026-11-11T08:00:00Z"
+              },
+              {
+                "start": null,
+                "end": "2026-11-12T08:00:00Z"
+              }
+            ],
+            "active_periods_omitted": 2
+          },
+          {
+            "id": "n-2",
+            "title": "Platform works",
+            "status": "upcoming",
+            "match": "route",
+            "informed_entities": [
+              {
+                "scope": "stop",
+                "route_id": "RPSP-5154",
+                "stop_id": "600029",
+                "mode": "Train"
+              },
+              {
+                "scope": "unknown"
+              }
+            ],
+            "active_periods": [
+              {
+                "start": "2026-11-14T07:00:00Z",
+                "end": null
+              }
+            ],
+            "informed_entities_omitted": 3
+          }
+        ]
+      }
+    },
+    "sensor.renamed_cairns_freshness": {
+      "entity_id": "sensor.renamed_cairns_freshness",
+      "state": "2026-11-11T07:30:00Z",
+      "attributes": {
+        "last_update_success": true
       }
     }
   },
   "entities": {
+    "sensor.renamed_journey_progress": {
+      "entity_id": "sensor.renamed_journey_progress",
+      "device_id": "journey",
+      "platform": "translink",
+      "translation_key": "journey_progress"
+    },
+    "device_tracker.renamed_train": {
+      "entity_id": "device_tracker.renamed_train",
+      "device_id": "journey",
+      "platform": "translink",
+      "translation_key": "vehicle_tracker"
+    },
     "sensor.renamed_journey_next_departure": {
       "entity_id": "sensor.renamed_journey_next_departure",
       "device_id": "journey",
@@ -612,6 +823,18 @@
       "device_id": "stop",
       "platform": "translink",
       "translation_key": "departures_board"
+    },
+    "sensor.renamed_cairns_notices": {
+      "entity_id": "sensor.renamed_cairns_notices",
+      "platform": "translink",
+      "translation_key": "disruptions",
+      "device_id": "notice-device"
+    },
+    "sensor.renamed_cairns_freshness": {
+      "entity_id": "sensor.renamed_cairns_freshness",
+      "platform": "translink",
+      "translation_key": "last_successful_fetch",
+      "device_id": "notice-device"
     }
   },
   "devices": {
@@ -620,6 +843,9 @@
     },
     "stop": {
       "name": "Kippa-Ring station"
+    },
+    "notice-device": {
+      "name": "Cairns service notices"
     }
   },
   "locale": {

@@ -1,4 +1,4 @@
-"""Event platform for Translink Queensland service disruptions."""
+"""Event platform for service disruptions and confirmed vehicle transitions."""
 
 from __future__ import annotations
 
@@ -10,8 +10,18 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_NAME, DOMAIN, MODE_JOURNEY
+from .api.models import JourneyProgress, JourneySummary
+from .const import (
+    CONF_NAME,
+    DEVICE_MODELS,
+    DOMAIN,
+    MODE_JOURNEY,
+    MODE_NOTICES,
+    MODE_STOP,
+    WINDOW_EVENT_TYPES,
+)
 from .coordinator import TranslinkCoordinator
+from .window_coordinator import WindowCoordinator, WindowData
 
 if TYPE_CHECKING:
     from . import TranslinkConfigEntry
@@ -27,11 +37,18 @@ async def async_setup_entry(
     entry: TranslinkConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Translink disruption event entities from a config entry."""
-    coordinator: TranslinkCoordinator = (
+    """Set up the event entities supported by this config entry."""
+    coordinator: TranslinkCoordinator | WindowCoordinator = (
         getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
     )
-    async_add_entities([TranslinkDisruptionEvent(coordinator, entry)])
+    if isinstance(coordinator, WindowCoordinator):
+        async_add_entities([TranslinkWindowEvent(coordinator)])
+        return
+
+    entities: list[EventEntity] = [TranslinkDisruptionEvent(coordinator, entry)]
+    if coordinator.mode == MODE_JOURNEY and coordinator.track_vehicle:
+        entities.append(TranslinkJourneyTransitionEvent(coordinator, entry))
+    async_add_entities(entities)
 
 
 class TranslinkDisruptionEvent(
@@ -56,16 +73,11 @@ class TranslinkDisruptionEvent(
         self._last_disruption_ids: set[str] = set()
 
         name = entry.data.get(CONF_NAME, "Translink")
-        device_model = (
-            "Public Transport Journey"
-            if coordinator.mode == MODE_JOURNEY
-            else "Station Departure Board"
-        )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=name,
             manufacturer="Translink Queensland",
-            model=device_model,
+            model=DEVICE_MODELS.get(coordinator.mode, DEVICE_MODELS[MODE_STOP]),
             entry_type=DeviceEntryType.SERVICE,
         )
 
@@ -91,7 +103,10 @@ class TranslinkDisruptionEvent(
 
     def _process_disruptions(self) -> None:
         """Evaluate disruption changes and trigger events accordingly."""
-        if not self.coordinator.data:
+        if not self.coordinator.data or (
+            self.coordinator.mode == MODE_NOTICES
+            and not self.coordinator.last_update_success
+        ):
             return
 
         disruptions = getattr(self.coordinator.data, "disruptions", [])
@@ -130,3 +145,130 @@ class TranslinkDisruptionEvent(
                 },
             )
             self._last_disruption_ids = set()
+
+
+class TranslinkJourneyTransitionEvent(
+    CoordinatorEntity[TranslinkCoordinator],
+    EventEntity,
+):
+    """A vehicle reached the planned transfer or alighting stop."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "journey_transition"
+
+    def __init__(
+        self,
+        coordinator: TranslinkCoordinator,
+        entry: TranslinkConfigEntry,
+    ) -> None:
+        """Initialize the transition event entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_journey_transition"
+        self._attr_event_types = ["transfer_stop_reached", "alighting_stop_reached"]
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.data.get(CONF_NAME, "Translink"),
+            manufacturer="Translink Queensland",
+            model=DEVICE_MODELS[MODE_JOURNEY],
+            entry_type=DeviceEntryType.SERVICE,
+        )
+        self._journey_id: str | None = None
+        self._seen: set[str] = set()
+
+    def _progress(self) -> JourneyProgress | None:
+        summary = self.coordinator.data
+        return summary.progress if isinstance(summary, JourneySummary) else None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe after marking any existing transitions as historical."""
+        if (progress := self._progress()) is not None:
+            self._journey_id = progress.journey_id
+            self._seen.update(item.dedup_key for item in progress.transitions)
+        await super().async_added_to_hass()
+
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Allow the existing event entity to be renamed in place."""
+        if (hook := getattr(super(), "async_entity_id_changed", None)) is not None:
+            hook(old_entity_id)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Fire only fresh confirmations delivered by the coordinator."""
+        if (progress := self._progress()) is None:
+            return
+        if progress.journey_id != self._journey_id:
+            self._journey_id = progress.journey_id
+            self._seen.clear()
+        emitted = False
+        for transition in progress.transitions:
+            if transition.dedup_key in self._seen:
+                continue
+            self._seen.add(transition.dedup_key)
+            attributes = transition.model_dump(
+                mode="json", exclude={"type", "dedup_key"}
+            )
+            if transition.type == "alighting_stop_reached":
+                attributes = {
+                    key: value
+                    for key, value in attributes.items()
+                    if not key.startswith("next_leg_")
+                }
+            self._trigger_event(
+                transition.type, {"journey_id": progress.journey_id, **attributes}
+            )
+            self.async_write_ha_state()
+            emitted = True
+        if not emitted:
+            self.async_write_ha_state()
+
+
+class TranslinkWindowEvent(CoordinatorEntity[WindowCoordinator], EventEntity):
+    """Publish confirmed commute changes for user-defined automations."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "window_trip"
+
+    def __init__(self, coordinator: WindowCoordinator) -> None:
+        """Initialize the event entity for this commute window."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_window_trip"
+        self._attr_device_info = coordinator.device_info
+        self._attr_event_types = list(WINDOW_EVENT_TYPES)
+        self._last_data: WindowData | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Publish the initial refresh after the event entity is available."""
+        await super().async_added_to_hass()
+        # EntityPlatform writes the initial state after this method returns.
+        # Publish afterwards so each event has an observable state transition.
+        pending = self.hass.loop.call_soon(self._emit_alerts)
+        self.async_on_remove(pending.cancel)
+
+    @property
+    def available(self) -> bool:
+        """Keep the event endpoint available through a failed refresh."""
+        return True
+
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Retain the event state on in-place entity renames."""
+        if (hook := getattr(super(), "async_entity_id_changed", None)) is not None:
+            hook(old_entity_id)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Publish all changes and update entity availability."""
+        if not self._emit_alerts():
+            self.async_write_ha_state()
+
+    @callback
+    def _emit_alerts(self) -> bool:
+        data = self.coordinator.data
+        if data is self._last_data:
+            return False
+        self._last_data = data
+        for event_type, attributes in data.alerts:
+            self._trigger_event(event_type, attributes)
+            self.async_write_ha_state()
+        return bool(data.alerts)

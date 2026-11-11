@@ -92,6 +92,7 @@ def sample_stop_summary() -> StopSummary:
         next_platform="3",
         delay_mins=2,
         departures=[{"route": "T1"}],
+        arrivals=[{"route": "T2", "boarding": "Alighting"}],
         disruptions_count=1,
     )
 
@@ -179,6 +180,53 @@ def test_journey_sensor_properties(sample_journey_summary: JourneySummary) -> No
     assert attrs_none["readable_time"] is None
 
 
+def test_journey_sensors_expose_predictions_and_signed_delay(
+    sample_journey_summary: JourneySummary,
+) -> None:
+    """Scheduled sensor states remain stable while real-time evidence is exposed."""
+    predicted_departure = datetime(2026, 10, 6, 9, 28, tzinfo=UTC)
+    predicted_arrival = datetime(2026, 10, 6, 10, 15, tzinfo=UTC)
+    sample_journey_summary.predicted_departure_time = predicted_departure
+    sample_journey_summary.predicted_arrival_time = predicted_arrival
+    sample_journey_summary.delay_mins = -2
+    sample_journey_summary.departure_delay_seconds = -120
+    sample_journey_summary.arrival_delay_seconds = 240
+    sample_journey_summary.realtime_status = "live"
+    sample_journey_summary.delay_source = "stop_event"
+    sample_journey_summary.realtime_updated_at = predicted_departure
+    coordinator = FakeCoordinator(data=sample_journey_summary)
+    entry = FakeEntry()
+    sensors = {
+        desc.key: TranslinkSensor(coordinator, desc, entry)  # type: ignore[arg-type]
+        for desc in JOURNEY_SENSORS
+    }
+    assert {"early", "cancelled", "boarding_skipped"} <= set(sensors["status"].options)
+    assert sensors["delay"].native_value == -2
+    assert sensors["delay"].extra_state_attributes == {
+        "delay_seconds": -120,
+        "arrival_delay_seconds": 240,
+        "realtime_status": "live",
+        "delay_source": "stop_event",
+        "realtime_updated_at": predicted_departure.isoformat(),
+    }
+    departure = sensors["next_departure"]
+    arrival = sensors["arrival_time"]
+    assert departure.native_value == sample_journey_summary.departure_time
+    assert arrival.native_value == sample_journey_summary.arrival_time
+    assert (
+        departure.extra_state_attributes["predicted_time"]
+        == predicted_departure.isoformat()
+    )
+    assert departure.extra_state_attributes["predicted_readable_time"] == "07:28 PM"
+    assert (
+        arrival.extra_state_attributes["predicted_time"]
+        == predicted_arrival.isoformat()
+    )
+    assert arrival.extra_state_attributes["predicted_readable_time"] == "08:15 PM"
+    sample_journey_summary.delay_mins = None
+    assert sensors["delay"].native_value is None
+
+
 def test_stop_sensor_properties(sample_stop_summary: StopSummary) -> None:
     """Test values and attributes for stop departure sensors."""
     sample_stop_summary.disruptions_count = 1
@@ -201,9 +249,25 @@ def test_stop_sensor_properties(sample_stop_summary: StopSummary) -> None:
     }
 
     assert sensors["platform"].native_value == "3"
+    board = sensors["departures_board"]
+    assert board.unique_id == "test_entry_id_departures_board"
+    assert board.translation_key == "departures_board"
+    assert board.native_value == "1 departures"
+    assert board.extra_state_attributes == {
+        "departures": [{"route": "T1"}],
+        "arrivals": [{"route": "T2", "boarding": "Alighting"}],
+    }
+    assert {"departures", "arrivals"} <= board._unrecorded_attributes
     assert sensors["platform"].icon == "mdi:bus-stop-uncovered"
     assert sensors["disruptions"].native_value == 1
     assert sensors["disruption_description"].native_value == "Lift Maintenance"
+
+    sample_stop_summary.delay_mins = -2
+    sample_stop_summary.departure_delay_seconds = -120
+    assert sensors["delay"].native_value == -2
+    assert sensors["delay"].extra_state_attributes["delay_seconds"] == -120
+    sample_stop_summary.delay_mins = None
+    assert sensors["delay"].native_value is None
 
     disruption_attrs = sensors["disruptions"].extra_state_attributes
     assert disruption_attrs["summary"] == "Lift Maintenance"
@@ -343,3 +407,137 @@ async def test_itinerary_calling_stops_contract(
     )
     assert "legs" not in recorded
     assert "polyline" in recorded
+
+
+def test_progress_sensor_preserves_attributes_when_unknown() -> None:
+    """An unresolved active leg uses HA's unknown state and keeps the itinerary."""
+    from custom_components.translink.api.models import JourneyProgress
+
+    entry = FakeEntry(mode=MODE_JOURNEY)
+    coordinator = FakeCoordinator(mode=MODE_JOURNEY, data=JourneySummary())
+    description = next(
+        item for item in JOURNEY_SENSORS if item.key == "journey_progress"
+    )
+    sensor = TranslinkSensor(coordinator, description, entry)
+
+    assert sensor.unique_id == f"{entry.entry_id}_journey_progress"
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes == {}
+    coordinator.data.progress = JourneyProgress(journey_id="itinerary")
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes["journey_id"] == "itinerary"
+    assert sensor.extra_state_attributes["active_leg_source"] == "unknown"
+    coordinator.data.progress.state = "in_progress"
+    assert sensor.native_value == "in_progress"
+
+
+async def test_notice_recorder_exclusion_and_initial_freshness_availability() -> None:
+    """Only notice sensors exclude their detailed notices from recorded history."""
+    from custom_components.translink.const import MODE_NOTICES
+
+    for mode in (MODE_NOTICES, MODE_JOURNEY, MODE_STOP):
+        entry = FakeEntry(mode=mode)
+        coordinator = FakeCoordinator(mode=mode)
+        entry.runtime_data = coordinator
+        entities: list[TranslinkSensor] = []
+        await async_setup_entry(MagicMock(), entry, entities.extend)
+        sensors = {entity.translation_key: entity for entity in entities}
+        for key in ("disruptions", "disruption_description"):
+            assert ("disruptions" in sensors[key]._unrecorded_attributes) == (
+                mode == MODE_NOTICES
+            )
+        if mode == MODE_NOTICES:
+            freshness = sensors["last_successful_fetch"]
+            assert not freshness.available
+            assert freshness.native_value is None
+            assert freshness.extra_state_attributes == {}
+            assert "disruptions" not in freshness._unrecorded_attributes
+
+
+async def test_progress_vehicle_observation_expires_without_refresh(
+    hass, freezer, plan_response_data: dict[str, Any]
+) -> None:
+    """A replacement fix has its own expiry, and no transition is repeated."""
+    from datetime import timedelta
+    from unittest.mock import patch
+
+    from homeassistant.helpers import entity_registry as er
+    from pytest_homeassistant.common import (
+        MockConfigEntry,
+        async_fire_time_changed_exact,
+    )
+
+    from custom_components.translink.api.client import VEHICLE_POSITION_MAX_AGE_SECONDS
+    from custom_components.translink.api.models import JourneyPlanResult
+    from custom_components.translink.api.progress import evaluate_progress
+    from tests.test_progress import _transfer_feed
+
+    now = datetime(2026, 10, 5, 23, 55, 35, tzinfo=UTC)
+    freezer.move_to(now)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_MODE: MODE_JOURNEY, CONF_NAME: "My Journey", "track_vehicle": True},
+        pref_disable_polling=True,
+    )
+    entry.add_to_hass(hass)
+    itinerary = JourneyPlanResult.model_validate(plan_response_data).itineraries[1]
+    first = evaluate_progress(
+        itinerary,
+        planned_at=now,
+        now=now,
+        feeds=_transfer_feed(itinerary, now, stopped=False),
+    )
+    with patch(
+        "custom_components.translink.TranslinkCoordinator._async_update_data",
+        return_value=JourneySummary(progress=first.progress),
+    ) as refresh:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}_journey_progress"
+        )
+        event_id = registry.async_get_entity_id(
+            "event", DOMAIN, f"{entry.entry_id}_journey_transition"
+        )
+        assert entity_id and event_id
+        assert hass.states.get(entity_id).attributes["vehicle_observation"]["fresh"]
+
+        stopped_at = now + timedelta(seconds=25)
+        freezer.move_to(stopped_at)
+        stopped = evaluate_progress(
+            itinerary,
+            planned_at=now,
+            now=stopped_at,
+            feeds=_transfer_feed(itinerary, stopped_at, stopped=True),
+            memory=first.memory,
+        )
+        coordinator = entry.runtime_data
+        coordinator.async_set_updated_data(JourneySummary(progress=stopped.progress))
+        event_state = hass.states.get(event_id)
+        assert event_state.attributes["event_type"] == "transfer_stop_reached"
+
+        original_deadline = now + timedelta(
+            seconds=VEHICLE_POSITION_MAX_AGE_SECONDS, microseconds=1
+        )
+        freezer.move_to(original_deadline)
+        async_fire_time_changed_exact(hass, original_deadline)
+        await hass.async_block_till_done()
+        assert hass.states.get(entity_id).attributes["active_leg_source"] == "vehicle"
+
+        boundary = stopped_at + timedelta(seconds=VEHICLE_POSITION_MAX_AGE_SECONDS)
+        freezer.move_to(boundary)
+        async_fire_time_changed_exact(hass, boundary)
+        await hass.async_block_till_done()
+        assert hass.states.get(entity_id).attributes["vehicle_observation"]["fresh"]
+
+        expired = boundary + timedelta(microseconds=1)
+        freezer.move_to(expired)
+        async_fire_time_changed_exact(hass, expired)
+        await hass.async_block_till_done()
+        state = hass.states.get(entity_id)
+        assert state.state == "in_progress"
+        assert state.attributes["vehicle_observation"] is None
+        assert state.attributes["active_leg_source"] == "realtime_schedule"
+        assert hass.states.get(event_id) is event_state
+        refresh.assert_awaited_once()
+        assert await hass.config_entries.async_unload(entry.entry_id)

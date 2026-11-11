@@ -3,22 +3,23 @@
     "step": {
       "user": {
         "title": "Translink Queensland",
-        "description": "Choose whether to track a Journey between an origin and destination, or a Station/Stop departure board.",
+        "description": "Track a journey, schedule a commute window, create a departure board, or follow service notices.",
         "data": {
           "mode": "Mode"
         },
         "data_description": {
-          "mode": "Select Journey to track commute between two places, or Stop to track upcoming departures from a station."
+          "mode": "Choose a journey, commute window, departure board, or service notices."
         }
       },
       "journey": {
         "title": "Configure Journey",
-        "description": "Specify the Starting Point and Destination for realtime journey tracking across South East Queensland.",
+        "description": "Choose a starting point, destination, and live feed region.",
         "data": {
           "name": "Journey Name",
           "start_name": "Starting Point (Origin)",
           "end_name": "Destination",
           "transport_modes": "Transport Modes",
+          "realtime_region": "Live feed region",
           "track_vehicle": "Enable Live GPS Vehicle Tracking"
         },
         "data_description": {
@@ -26,6 +27,7 @@
           "start_name": "Station, bus stop, ferry wharf, or address (e.g. Central station).",
           "end_name": "Destination station, stop, or address (e.g. Springfield Central station).",
           "transport_modes": "Select public transport modes to include in routing.",
+          "realtime_region": "Cairns and South East Queensland have public live feeds. Choose schedule only for other regions.",
           "track_vehicle": "Create a live GPS device tracker for the active transit vehicle."
         }
       },
@@ -43,6 +45,59 @@
           "transport_modes": "Modes to monitor from this stop."
         }
       },
+      "journey_select": {
+        "title": "Choose journey locations",
+        "description": "Several locations match your search from {start_query} to {end_query}. Choose a location for each field shown.",
+        "data": {
+          "start_location_id": "Starting point",
+          "end_location_id": "Destination"
+        },
+        "data_description": {
+          "start_location_id": "Select the starting point for this journey.",
+          "end_location_id": "Select the destination for this journey."
+        }
+      },
+      "stop_select": {
+        "title": "Choose a stop or station",
+        "description": "Several stops or stations match {stop_query}. Choose the one you want to track.",
+        "data": {
+          "stop_location_id": "Stop or station"
+        },
+        "data_description": {
+          "stop_location_id": "Select the stop or station for this departure board."
+        }
+      },
+      "nearby": {
+        "title": "Find nearby stops",
+        "description": "Choose a Home Assistant zone or a map point. Home Assistant sends the selected coordinates to Translink once per lookup and discards them after the lookup.",
+        "menu_options": {
+          "nearby_zone": "Choose a Home Assistant zone",
+          "nearby_point": "Choose a point on the map"
+        }
+      },
+      "nearby_zone": {
+        "title": "Choose a zone",
+        "description": "Find stops near the centre of the selected zone.",
+        "data": {
+          "zone": "Home Assistant zone"
+        }
+      },
+      "nearby_point": {
+        "title": "Choose a map point",
+        "description": "Move the marker to the location you want to search.",
+        "data": {
+          "location": "Map point"
+        }
+      },
+      "nearby_select": {
+        "title": "Choose a nearby stop",
+        "description": "Confirm the exact stop ID for this departure board.",
+        "data": {
+          "stop_location_id": "Nearby stop",
+          "name": "Board Name",
+          "transport_modes": "Transport Modes"
+        }
+      },
       "reconfigure": {
         "title": "Reconfigure Translink",
         "description": "Update location and transport settings for this Translink entry.",
@@ -50,17 +105,113 @@
           "start_name": "Starting Point (Origin)",
           "end_name": "Destination",
           "stop_name": "Station or Stop Name",
-          "transport_modes": "Transport Modes"
+          "transport_modes": "Transport Modes",
+          "realtime_region": "Live feed region"
+        },
+        "data_description": {
+          "realtime_region": "Cairns and South East Queensland have public live feeds. Choose schedule only for other regions."
+        }
+      },
+      "notices": {
+        "title": "Configure service notices",
+        "description": "Choose a Translink network and scope for service notices.",
+        "data": {
+          "name": "Name",
+          "notice_network": "Network",
+          "notice_scope": "Scope",
+          "notice_route_id": "GTFS route ID",
+          "notice_route_mode": "Transport mode"
+        },
+        "data_description": {
+          "notice_route_id": "For route scope, enter a GTFS route ID such as RPSP. Passenger-facing route names and numbers may differ.",
+          "notice_route_mode": "For transport mode scope, choose the mode to monitor."
+        }
+      },
+      "notices_reconfigure": {
+        "title": "Reconfigure service notices",
+        "description": "Update the name, network or scope for this service notice entry.",
+        "data": {
+          "name": "Name",
+          "notice_network": "Network",
+          "notice_scope": "Scope",
+          "notice_route_id": "GTFS route ID",
+          "notice_route_mode": "Transport mode"
+        },
+        "data_description": {
+          "notice_route_id": "For route scope, enter a GTFS route ID such as RPSP. Passenger-facing route names and numbers may differ.",
+          "notice_route_mode": "For transport mode scope, choose the mode to monitor."
+        }
+      },
+      "window": {
+        "title": "Configure a commute window",
+        "description": "Choose the route and the Brisbane-local dates and times to monitor.",
+        "data": {
+          "name": "Window name",
+          "start_name": "Starting point",
+          "end_name": "Destination",
+          "transport_modes": "Transport modes",
+          "window_kind": "Schedule type",
+          "window_date": "One-off date",
+          "window_weekdays": "Recurring weekdays",
+          "window_start": "Start time",
+          "window_end": "End time"
+        },
+        "data_description": {
+          "window_date": "Select a Brisbane date for a one-off window.",
+          "window_weekdays": "Select at least one weekday for a recurring window.",
+          "window_start": "Enter a Brisbane local time to the minute.",
+          "window_end": "An end time earlier than the start falls on the following day."
+        }
+      },
+      "window_reconfigure": {
+        "title": "Reconfigure a commute window",
+        "description": "Update the route or the Brisbane-local schedule.",
+        "data": {
+          "start_name": "Starting point",
+          "end_name": "Destination",
+          "transport_modes": "Transport modes",
+          "window_kind": "Schedule type",
+          "window_date": "One-off date",
+          "window_weekdays": "Recurring weekdays",
+          "window_start": "Start time",
+          "window_end": "End time"
+        },
+        "data_description": {
+          "window_date": "Select a Brisbane date for a one-off window.",
+          "window_weekdays": "Select at least one weekday for a recurring window.",
+          "window_start": "Enter a Brisbane local time to the minute.",
+          "window_end": "An end time earlier than the start falls on the following day."
+        }
+      },
+      "window_select": {
+        "title": "Confirm commute window locations",
+        "description": "Choose the matches for {start_query} and {end_query}.",
+        "data": {
+          "start_location_id": "Starting point",
+          "end_location_id": "Destination"
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to Translink API",
       "location_not_found": "Could not find any matching stop or station in Translink network",
-      "unknown": "Unexpected error occurred"
+      "no_board_location": "No stop or station matched. Enter a stop or station name, or a stop number.",
+      "invalid_location_selection": "Choose a location from the search results.",
+      "region_mismatch": "Choose a live feed region that serves this journey, or choose schedule only.",
+      "location_unavailable": "Choose a zone or map point with valid coordinates.",
+      "no_nearby_stops": "Translink found no nearby stops for this location.",
+      "unknown": "Unexpected error occurred",
+      "invalid_route_id": "Enter a printable GTFS route ID of 1 to 128 characters.",
+      "notice_mode_required": "Select a transport mode.",
+      "invalid_window_duration": "Enter a window longer than zero minutes and up to 12 hours.",
+      "window_date_required": "Select a date for the one-off window.",
+      "window_date_expired": "Select a one-off window that ends in the future.",
+      "window_weekdays_required": "Select at least one weekday.",
+      "invalid_window_weekdays": "Select weekdays from the available options.",
+      "window_minute_precision_required": "Enter times to the minute."
     },
     "abort": {
-      "already_configured": "This Translink journey or stop is already configured",
+      "already_configured": "This Translink entry is already configured.",
       "reconfigure_successful": "Reconfiguration was successful",
       "reconfigure_failed": "Reconfiguration failed because the config entry could not be found"
     }
@@ -86,7 +237,30 @@
           "fare_preference": "Preferred go card fare category to display.",
           "track_vehicle": "Expose live GPS vehicle positions on Home Assistant maps."
         }
+      },
+      "notices": {
+        "title": "Service notice options",
+        "data": {
+          "scan_interval": "Update Interval (seconds)"
+        },
+        "data_description": {
+          "scan_interval": "How frequently to refresh the regional Alerts feed."
+        }
+      },
+      "window_options": {
+        "title": "Commute window options",
+        "description": "Choose when to poll and how to confirm changes for your automations.",
+        "data": {
+          "scan_interval": "Refresh interval (seconds)",
+          "window_lead_minutes": "Lead time (minutes)",
+          "window_delay_threshold_minutes": "Delay threshold (minutes)",
+          "window_delay_step_minutes": "Additional delay to alert again (minutes)",
+          "window_trip_limit": "Maximum tracked trips"
+        }
       }
+    },
+    "error": {
+      "window_whole_number_required": "Enter a whole number."
     }
   },
   "entity": {
@@ -105,10 +279,23 @@
         "state": {
           "scheduled": "Scheduled",
           "on_time": "On Time",
+          "early": "Early",
           "delayed": "Delayed",
+          "cancelled": "Cancelled",
+          "boarding_skipped": "Boarding stop skipped",
           "departed": "Departed",
           "arrived": "Arrived",
           "no_service": "No Service"
+        }
+      },
+      "journey_progress": {
+        "name": "Journey Progress",
+        "state": {
+          "no_service": "No Service",
+          "not_started": "Not Started",
+          "in_progress": "In Progress",
+          "finished": "Finished",
+          "cancelled": "Cancelled"
         }
       },
       "next_service": {
@@ -140,6 +327,23 @@
       },
       "departures_board": {
         "name": "Departures Board"
+      },
+      "last_successful_fetch": {
+        "name": "Last Successful Fetch"
+      },
+      "window_status": {
+        "name": "Window status",
+        "state": {
+          "idle": "Idle",
+          "active": "Active",
+          "expired": "Expired"
+        }
+      },
+      "window_next_start": {
+        "name": "Next window start"
+      },
+      "window_tracked_trips": {
+        "name": "Tracked trips"
       }
     },
     "device_tracker": {
@@ -148,6 +352,17 @@
       }
     },
     "event": {
+      "journey_transition": {
+        "name": "Journey Transition",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "transfer_stop_reached": "Vehicle reached transfer stop",
+              "alighting_stop_reached": "Vehicle reached alighting stop"
+            }
+          }
+        }
+      },
       "disruption": {
         "name": "Disruption",
         "state_attributes": {
@@ -158,6 +373,95 @@
             }
           }
         }
+      },
+      "window_trip": {
+        "name": "Trip changes",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "trip_delayed": "Trip delayed",
+              "trip_cancelled": "Trip cancelled",
+              "trip_disruption": "Trip disruption",
+              "trip_recovered": "Trip recovered"
+            }
+          }
+        }
+      }
+    }
+  },
+  "services": {
+    "plan_journey": {
+      "name": "Plan a journey",
+      "description": "Find scheduled alternatives for a configured Translink journey at a selected Brisbane date and time.",
+      "fields": {
+        "entity_id": {
+          "name": "Itinerary sensor",
+          "description": "The itinerary sensor of the journey to plan."
+        },
+        "date": {
+          "name": "Date (Brisbane)",
+          "description": "The calendar date in Australia/Brisbane."
+        },
+        "time": {
+          "name": "Time (Brisbane)",
+          "description": "The local time in Australia/Brisbane."
+        },
+        "time_search_mode": {
+          "name": "Time preference",
+          "description": "Choose whether the journey should leave after or arrive before the selected time."
+        },
+        "sort_by": {
+          "name": "Sort by",
+          "description": "Sort alternatives by scheduled departure, scheduled arrival, or duration."
+        },
+        "limit": {
+          "name": "Maximum alternatives",
+          "description": "The maximum number of alternatives to return."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "planner_entity": {
+      "message": "Select a registered Translink itinerary sensor."
+    },
+    "planner_itinerary": {
+      "message": "The selected entity must be a Translink itinerary sensor."
+    },
+    "planner_entry": {
+      "message": "The selected sensor is missing a Translink configuration entry."
+    },
+    "planner_unloaded": {
+      "message": "The selected Translink journey is unavailable. Check that the integration entry is loaded."
+    },
+    "planner_journey_mode": {
+      "message": "Select an itinerary sensor from an entry configured in Journey mode."
+    },
+    "planner_upstream": {
+      "message": "Translink could not plan the journey. Check the selected date and time and try again."
+    }
+  },
+  "selector": {
+    "planner_sort": {
+      "options": {
+        "departure": "Departure",
+        "arrival": "Arrival",
+        "duration": "Duration"
+      }
+    },
+    "notice_scope": {
+      "options": {
+        "network": "Whole network",
+        "route": "GTFS route",
+        "mode": "Transport mode"
+      }
+    },
+    "notice_route_mode": {
+      "options": {
+        "bus": "Bus",
+        "ferry": "Ferry",
+        "train": "Train",
+        "tram": "Tram"
       }
     }
   }

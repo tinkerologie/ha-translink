@@ -4,18 +4,39 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from itertools import pairwise
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    OnErrorOmit,
+    StrictBool,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from ..const import LOCATION_PLACE_PREFIX, LOCATION_STATION_PREFIX, LOCATION_STOP_PREFIX
 
 type JourneyStatus = Literal[
     "scheduled",
     "on_time",
+    "early",
     "delayed",
+    "cancelled",
+    "boarding_skipped",
     "departed",
     "arrived",
     "no_service",
 ]
+
+type RealtimeStatus = Literal[
+    "live", "unavailable", "stale", "no_prediction", "no_data"
+]
+type DelaySource = Literal["stop_event", "trip"]
+type StopRelationship = Literal["scheduled", "skipped", "no_data", "unknown"]
 
 
 class TranslinkApiModel(BaseModel):
@@ -44,6 +65,42 @@ class LocationSearchResult(TranslinkApiModel):
     def name(self) -> str:
         """Alias for Description."""
         return self.Description
+
+    @property
+    def kind(self) -> Literal["station", "stop", "place", "unknown"]:
+        """Classify the public location ID by its prefix."""
+        if self.id.startswith(LOCATION_STATION_PREFIX):
+            return "station"
+        if self.id.startswith(LOCATION_STOP_PREFIX):
+            return "stop"
+        if self.id.startswith(LOCATION_PLACE_PREFIX):
+            return "place"
+        return "unknown"
+
+    @property
+    def is_board_candidate(self) -> bool:
+        """Return whether this location can be used for a departure board."""
+        return self.kind in ("station", "stop")
+
+
+class NearbyStation(TranslinkApiModel):
+    """Station identity attached to a nearby platform."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class NearbyStop(TranslinkApiModel):
+    """Nearby stop metadata, without its geographic position."""
+
+    model_config = ConfigDict(str_strip_whitespace=False)
+
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    distanceM: float = Field(strict=True, ge=0, allow_inf_nan=False)
+    stopId: str | None = None
+    stopType: str | None = None
+    station: NearbyStation | None = None
 
 
 class Position(TranslinkApiModel):
@@ -154,11 +211,18 @@ class JourneyItinerary(TranslinkApiModel):
     """Single complete journey itinerary."""
 
     durationMins: int = 0
+    transfers: int | None = None
     endTimeUtc: str | None = None
     firstDepartureTimeUtc: str | None = None
     lastArrivalTimeUtc: str | None = None
     fares: list[FareItem] = Field(default_factory=list)
     legs: list[JourneyLeg] = Field(default_factory=list)
+
+    @field_validator("transfers", mode="before")
+    @classmethod
+    def validate_transfer_count(cls, value: Any) -> int | None:
+        """Treat malformed optional counts as unavailable."""
+        return value if type(value) is int and value >= 0 else None
 
 
 class PlanNotice(TranslinkApiModel):
@@ -173,11 +237,210 @@ class PlanNotice(TranslinkApiModel):
     endsUtc: str | None = None
 
 
+def _require_utc_time(value: str) -> str:
+    """Keep the original timestamp after verifying its UTC offset."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("Timetable departure must be timezone-aware UTC")
+    return value
+
+
+type TimetableTime = Annotated[str, AfterValidator(_require_utc_time)]
+
+
+class TimetableRouteLine(TranslinkApiModel):
+    """Mode metadata for one line of a timetable route."""
+
+    vehicleType: str | None = None
+
+
+class TimetableRoute(TranslinkApiModel):
+    """Timetable route metadata, which may repeat across directions."""
+
+    id: str
+    shortName: str | None = None
+    code: str | None = None
+    name: str | None = None
+    direction: str | None = None
+    routeHexColor: str | None = None
+    lines: list[OnErrorOmit[TimetableRouteLine]] | None = None
+
+
+class TimetablePlatformChange(TranslinkApiModel):
+    """Upstream platform-change metadata for a stop visit."""
+
+    platform: str | None = None
+    oldPlatform: str | None = None
+    isSource: StrictBool | None = None
+
+
+class TimetableRealtime(TranslinkApiModel):
+    """Live data supplied for one stop visit."""
+
+    expectedDepartureUtc: TimetableTime | None = None
+    isExtra: StrictBool | None = None
+    isSkipped: StrictBool | None = None
+    isCancelled: StrictBool | None = None
+    platformChange: TimetablePlatformChange | None = None
+
+
+class TimetableDeparture(TranslinkApiModel):
+    """One visit in a selected station or platform timetable."""
+
+    id: str | None = None
+    routeId: str | None = None
+    headsign: str | None = None
+    direction: str | None = None
+    scheduledDepartureUtc: TimetableTime | None = None
+    departurePlatform: str | None = None
+    canBoardDebark: str | None = None
+    realtime: TimetableRealtime | None = None
+
+    @model_validator(mode="after")
+    def validate_visit(self) -> Self:
+        """Reject empty or unrelated records without requiring a complete identity."""
+        if not (self.id or self.routeId or self.scheduledDepartureUtc):
+            raise ValueError("Expected a timetable visit")
+        return self
+
+
+class TimetableNotice(PlanNotice):
+    """A timetable notice with severity supplied alongside its details."""
+
+    severity: str | None = None
+
+
+class TimetableServiceAlerts(TranslinkApiModel):
+    """Notices currently active at the selected location."""
+
+    current: list[TimetableNotice]
+
+
+class StopTimetable(TranslinkApiModel):
+    """Public timetable and notices scoped to the requested station or platform."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    stops: list[StopInfo] | None = None
+    station: StationInfo | None = None
+    routes: list[OnErrorOmit[TimetableRoute]] = Field(default_factory=list)
+    departures: list[OnErrorOmit[TimetableDeparture]]
+    serviceAlerts: TimetableServiceAlerts | None = None
+
+    @field_validator("serviceAlerts", mode="before")
+    @classmethod
+    def allow_unavailable_alerts(cls, value: Any) -> TimetableServiceAlerts | None:
+        """A missing or unusable section carries no notice update."""
+        if value is not None:
+            try:
+                return TimetableServiceAlerts.model_validate(value)
+            except ValidationError:
+                pass
+        return None
+
+
 class JourneyPlanResult(TranslinkApiModel):
     """Response from /api/plan."""
 
     itineraries: list[JourneyItinerary] = Field(default_factory=list)
     notices: list[PlanNotice] = Field(default_factory=list)
+
+
+VehiclePositionStatus = Literal[
+    "live", "stale", "ambiguous", "no_position", "no_active_leg", "disabled"
+]
+
+
+type ProgressState = Literal[
+    "no_service", "not_started", "in_progress", "finished", "cancelled"
+]
+type ProgressSource = Literal["vehicle", "realtime_schedule", "schedule", "unknown"]
+type TrackingBasis = Literal["planner_first_itinerary", "pinned_itinerary"]
+type TransitionType = Literal["transfer_stop_reached", "alighting_stop_reached"]
+
+
+class ProgressStop(TranslinkApiModel):
+    """Public stop details safe to retain and expose in progress."""
+
+    id: str | None = None
+    name: str | None = None
+    platform: str | None = None
+
+
+class ProgressLeg(TranslinkApiModel):
+    """Scheduled leg details for the schematic progress view."""
+
+    index: int
+    mode: str
+    route: str | None = None
+    color: str | None = None
+    trip_id: str | None = None
+    origin: ProgressStop | None = None
+    destination: ProgressStop | None = None
+    scheduled_departure: datetime | None = None
+    scheduled_arrival: datetime | None = None
+    same_vehicle_continuation: bool = False
+
+
+class ProgressAction(TranslinkApiModel):
+    """Next transit action with its timing provenance."""
+
+    type: Literal["board", "transfer", "alight"]
+    leg_index: int
+    stop_id: str | None = None
+    stop_name: str | None = None
+    scheduled_time: datetime | None = None
+    predicted_time: datetime | None = None
+    time_source: Literal["scheduled", "realtime", "unknown"] = "unknown"
+    realtime_updated_at: datetime | None = None
+    skipped: bool = False
+    next_leg_route: str | None = None
+    next_leg_platform: str | None = None
+
+
+class VehicleStopObservation(TranslinkApiModel):
+    """Vehicle stop evidence with no geographic position."""
+
+    status: str | None = None
+    sequence: int
+    stop_id: str | None = None
+    stop_name: str | None = None
+    observed_at: datetime
+    fresh: bool
+    vehicle_id: str | None = None
+
+
+class ProgressTransition(TranslinkApiModel):
+    """Confirmed arrival of a vehicle at a leg's alighting occurrence."""
+
+    type: TransitionType
+    dedup_key: str
+    leg_index: int
+    stop_id: str
+    stop_name: str | None = None
+    observed_at: datetime
+    next_leg_route: str | None = None
+    next_leg_platform: str | None = None
+    next_leg_scheduled_departure: datetime | None = None
+    next_leg_predicted_departure: datetime | None = None
+
+
+class JourneyProgress(TranslinkApiModel):
+    """Journey progress based on an assumed itinerary."""
+
+    journey_id: str | None = None
+    state: ProgressState | None = None
+    active_leg_index: int | None = None
+    active_leg_source: ProgressSource = "unknown"
+    active_leg_timing_source: Literal["realtime_schedule", "schedule", "unknown"] = (
+        Field(default="unknown", exclude=True)
+    )
+    next_action: ProgressAction | None = None
+    vehicle_observation: VehicleStopObservation | None = None
+    legs: list[ProgressLeg] = Field(default_factory=list)
+    transitions: list[ProgressTransition] = Field(default_factory=list)
+    tracking_basis: TrackingBasis = "planner_first_itinerary"
+    planned_at: datetime | None = None
 
 
 class JourneySummary(TranslinkApiModel):
@@ -203,7 +466,16 @@ class JourneySummary(TranslinkApiModel):
     fare_type: str | None = None
     fares_breakdown: list[dict[str, Any]] = Field(default_factory=list)
     walking_distance_m: int = 0
-    delay_mins: int = 0
+    delay_mins: int | None = None
+    departure_delay_seconds: int | None = None
+    arrival_delay_seconds: int | None = None
+    predicted_departure_time: datetime | None = None
+    predicted_arrival_time: datetime | None = None
+    realtime_status: RealtimeStatus = "unavailable"
+    realtime_updated_at: datetime | None = None
+    delay_source: DelaySource | None = None
+    boarding_relationship: StopRelationship | None = None
+    alighting_skipped: bool = False
     disruptions_count: int = 0
     disruptions: list[dict[str, Any]] = Field(default_factory=list)
     disruptions_description: str = "No active disruptions"
@@ -211,6 +483,14 @@ class JourneySummary(TranslinkApiModel):
     latest_disruption_title: str | None = None
     latest_disruption_description: str | None = None
     trip_id: str | None = None
+    active_leg_index: int | None = None
+    active_trip_id: str | None = None
+    active_route_name: str | None = None
+    active_route_code: str | None = None
+    active_route_color: str | None = None
+    active_vehicle_type: str | None = None
+    vehicle_position_status: VehiclePositionStatus = "no_active_leg"
+    vehicle_position_timestamp: str | None = None
     vehicle_id: str | None = None
     vehicle_label: str | None = None
     vehicle_latitude: float | None = None
@@ -220,20 +500,39 @@ class JourneySummary(TranslinkApiModel):
     vehicle_tracked: bool = False
     polyline: str | None = None
     itinerary_legs: list[dict[str, Any]] = Field(default_factory=list)
+    progress: JourneyProgress | None = None
     last_updated: datetime | None = None
 
 
-class StopDepartureItem(TranslinkApiModel):
-    """Single departure item from a stop."""
+class StopDeparturePlatformChange(TranslinkApiModel):
+    """Platform-change provenance exposed on a departure row."""
 
-    route_code: str
-    route_name: str
-    vehicle: str
-    headsign: str
-    departure_time: datetime | None = None
-    platform: str | None = None
-    delay_mins: int = 0
-    trip_id: str | None = None
+    platform: str | None
+    old_platform: str | None
+    is_source: bool | None
+
+
+class StopDepartureItem(TranslinkApiModel):
+    """Normalized stop timetable visit exposed on the Home Assistant board."""
+
+    route: str
+    vehicle: str | None
+    headsign: str | None
+    departure_time: str | None
+    platform: str | None
+    trip_id: str | None
+    visit_id: str
+    route_id: str | None
+    direction: str | None
+    boarding: str | None
+    scheduled_departure_time: str | None
+    expected_departure_time: str | None
+    time_source: Literal["scheduled", "realtime"]
+    is_cancelled: bool | None
+    is_skipped: bool | None
+    is_extra: bool | None
+    platform_change: StopDeparturePlatformChange | None
+    route_color: str | None
 
 
 class StopSummary(TranslinkApiModel):
@@ -249,8 +548,15 @@ class StopSummary(TranslinkApiModel):
     next_vehicle: str | None = None
     next_platform: str | None = None
     next_headsign: str | None = None
-    delay_mins: int = 0
+    delay_mins: int | None = None
+    departure_delay_seconds: int | None = None
+    arrival_delay_seconds: int | None = None
+    predicted_departure_time: datetime | None = None
+    realtime_status: RealtimeStatus = "unavailable"
+    realtime_updated_at: datetime | None = None
+    delay_source: DelaySource | None = None
     departures: list[dict[str, Any]] = Field(default_factory=list)
+    arrivals: list[dict[str, Any]] = Field(default_factory=list)
     disruptions_count: int = 0
     disruptions: list[dict[str, Any]] = Field(default_factory=list)
     disruptions_description: str = "No active disruptions"
@@ -260,23 +566,37 @@ class StopSummary(TranslinkApiModel):
     last_updated: datetime | None = None
 
 
+class NoticeSummary(TranslinkApiModel):
+    """Bounded regional service notices from one successful feed fetch."""
+
+    network: str
+    scope_type: Literal["network", "route", "mode"]
+    scope_value: str | int | None
+    feed_timestamp: datetime | None
+    last_successful_fetch: datetime
+    last_updated: datetime
+    total_count: int
+    shown_count: int
+    active_count: int
+    upcoming_count: int
+    unclassified_count: int
+    duplicates_dropped: int
+    disruptions_count: int
+    disruptions: list[dict[str, Any]]
+    disruptions_description: str
+    disruptions_summary: str
+    latest_disruption_title: str | None
+    latest_disruption_description: str | None
+
+
 class TripDeparture(TranslinkApiModel):
     """An actual scheduled stop visit supplied by the public trip page."""
 
     stopId: str
     name: str | None = None
     order: int
-    scheduledDepartureUtc: str
+    scheduledDepartureUtc: TimetableTime
     canBoardDebark: str | None = None
-
-    @field_validator("scheduledDepartureUtc")
-    @classmethod
-    def validate_utc_time(cls, value: str) -> str:
-        """Reject missing time zones and non-UTC timetable values."""
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
-            raise ValueError("Scheduled departure must be timezone-aware UTC")
-        return value
 
 
 class TripTimetable(TranslinkApiModel):
@@ -299,9 +619,7 @@ class CallingStopRealtime(TranslinkApiModel):
     """Explicit GTFS-RT values, separate from scheduled timetable information."""
 
     sequence: int | None = None
-    scheduleRelationship: Literal["scheduled", "skipped", "no_data", "unknown"] = (
-        "unknown"
-    )
+    scheduleRelationship: StopRelationship = "unknown"
     arrivalTimeUtc: str | None = None
     arrivalDelaySeconds: int | None = None
     arrivalUncertaintySeconds: int | None = None

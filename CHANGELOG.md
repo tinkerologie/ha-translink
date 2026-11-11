@@ -6,6 +6,43 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+## [2026.11.1] - 2026-11-11
+
+### Added
+
+- Added a journey progress sensor, schematic dashboard card and vehicle-confirmed transfer and alighting events. Progress follows the departing itinerary through subsequent replans using an in-memory snapshot. [#57](https://github.com/tinkerologie/ha-translink/issues/57)
+
+- Added opt-in one-off and recurring commute windows with scheduled polling, tracked trips, and Home Assistant events for confirmed delays, recovery, cancellations, and disruptions. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
+
+- Journey entries can select the Cairns or South East Queensland live feed, or use scheduled times only. Cairns predictions and positions require verified service identity. Stop boards use the timetable for their selected stop. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
+
+- Service Notices entries show active and upcoming Translink GTFS-RT alerts for South East Queensland and Cairns, with optional route or mode filtering. The Alerts card shows affected entities, active periods and the last successful fetch. [#60](https://github.com/tinkerologie/ha-translink/issues/60)
+
+- The Departures card offers an opt-in Arrivals view for drop-off-only stop visits and optional route, direction, and order controls. Scheduled and expected stop times are shown separately. [#52](https://github.com/tinkerologie/ha-translink/issues/52)
+- Added a preview for sharing journeys, downloading calendar files and creating events in a configured Home Assistant calendar. Journey details link to verified Translink trip timetables. [#58](https://github.com/tinkerologie/ha-translink/issues/58)
+- Added the response-only `translink.plan_journey` action and an opt-in Journey card planner for comparing scheduled alternatives at a selected Brisbane date and time. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
+- Added opt-in nearby stop discovery during setup. Choose a Home Assistant zone or map point, then confirm a stop ID to create a departure board. The lookup discards the selected coordinates. [#55](https://github.com/tinkerologie/ha-translink/issues/55)
+
+### Changed
+
+- **Behaviour change:** The Live Vehicle tracker follows the active transit leg and exposes the fix provenance. Stale, ambiguous, and missing positions leave the tracker available with an `unknown` state. The Journey card marks the active leg, and diagnostics and recorder history exclude vehicle coordinates. [#51](https://github.com/tinkerologie/ha-translink/issues/51)
+- **Behaviour change:** Delay now reports signed boarding offsets and shows `unknown` when no applicable prediction is available. Journey Status distinguishes scheduled, early, cancelled, and skipped boarding services. Departure and arrival sensors keep their scheduled states and expose predicted times as attributes. [#48](https://github.com/tinkerologie/ha-translink/issues/48)
+- Documented the limits of via stops, transfer preferences, and accessibility routing. Added exact planner request tests and an opt-in developer capture. Home Assistant routing behaviour is unchanged. [#54](https://github.com/tinkerologie/ha-translink/issues/54)
+
+### Fixed
+
+- Departure boards use the selected station or platform timetable across routes and directions, with scheduled and expected times shown separately. Stop notices remain visible when there are no departures. [#47](https://github.com/tinkerologie/ha-translink/issues/47)
+- Journey disruption sensors keep relevant planner notices when no services are found. The Journey card shows those notices with the no-service message. Notice details report `leg` or `request` scope, and notices expire when they reach a confirmed end time. [#49](https://github.com/tinkerologie/ha-translink/issues/49)
+- Setup and reconfiguration ask you to confirm ambiguous location matches. Departure boards accept only stations and stops, and reconfiguration keeps unchanged locations. [#50](https://github.com/tinkerologie/ha-translink/issues/50)
+- The journey feed picker displays readable names for South East Queensland, Cairns, and schedule-only mode. [#59](https://github.com/tinkerologie/ha-translink/issues/59)
+- The Service Notices transport mode picker uses Home Assistant-compatible translation keys for Bus, Ferry, Train, and Tram. [#60](https://github.com/tinkerologie/ha-translink/issues/60)
+- Reconfiguring a loaded entry uses its existing Home Assistant reload listener.
+- Journey alternatives honour the planner's transfer count. The planner action requires read access to its itinerary sensor. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
+- Commute windows reset their saved trips when transport modes change and require fresh predictions for all transit legs before reporting recovery. Duplicate live trip updates cannot confirm a commute alert or journey delay. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
+- Reject invalid weekdays in recurring commute windows and show a reconfiguration message when a saved schedule is invalid. [#56](https://github.com/tinkerologie/ha-translink/issues/56)
+- Journey progress handles late arrivals into walking legs, through-services and same-sequence vehicle arrivals. Vehicle observations expire after 90 seconds between refreshes. [#57](https://github.com/tinkerologie/ha-translink/issues/57)
+- Cairns vehicle fixes with contradictory routes or service dates are discarded. Route-scoped Service Notices require both route identifiers to match when the feed supplies both. [#59](https://github.com/tinkerologie/ha-translink/issues/59), [#60](https://github.com/tinkerologie/ha-translink/issues/60)
+
 ## [2026.11.0] - 2026-11-11
 
 ### Changed

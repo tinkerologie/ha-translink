@@ -1,4 +1,5 @@
 import { AlertsCard, DeparturesCard, JourneyCard } from "./cards";
+import { ProgressCard } from "./progress-card";
 import type { HomeAssistant } from "./types";
 interface CustomCard {
   type: string;
@@ -33,7 +34,13 @@ for (const [tag, constructor, name, description] of [
     "translink-alerts-card",
     AlertsCard,
     "Translink Service Alerts",
-    "Disruptions affecting your journey or stop.",
+    "Disruptions for a journey, stop or network/route",
+  ],
+  [
+    "translink-progress-card",
+    ProgressCard,
+    "Translink Journey Progress",
+    "Follow the itinerary, active leg and next transit action.",
   ],
 ] as const) {
   if (!customElements.get(tag)) customElements.define(tag, constructor);

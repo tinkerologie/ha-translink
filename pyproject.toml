@@ -1,6 +1,6 @@
 [project]
 name = "ha-translink"
-version = "2026.11.0"
+version = "2026.11.1"
 description = "Translink Queensland Home Assistant custom integration"
 readme = "README.md"
 dependencies = [

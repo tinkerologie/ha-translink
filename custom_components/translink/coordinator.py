@@ -3,16 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from datetime import timedelta
-from typing import Any
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
+from .api.client import stop_disruption_fields
+from .api.models import (
+    JourneyItinerary,
+    NoticeSummary,
+    StopDepartureItem,
+    StopDeparturePlatformChange,
+    StopTimetable,
+    TimetableDeparture,
+    TimetableRoute,
+)
+from .api.notices import build_notice_summary
+from .api.progress import (
+    ProgressFeeds,
+    ProgressMemory,
+    evaluate_progress,
+    snapshot_itinerary,
+)
 from .client import (
     JourneyPlanResult,
     JourneySummary,
@@ -21,13 +41,19 @@ from .client import (
     TranslinkClient,
     TripTimetable,
     build_journey_summary,
+    parse_iso_datetime,
 )
 from .const import (
+    AVAILABLE_TRANSPORT_MODES,
     CONF_END_LOCATION_ID,
     CONF_END_NAME,
     CONF_FARE_PREFERENCE,
     CONF_MAX_WALKING_DISTANCE,
     CONF_MODE,
+    CONF_NOTICE_NETWORK,
+    CONF_NOTICE_ROUTE_ID,
+    CONF_NOTICE_ROUTE_MODE,
+    CONF_NOTICE_SCOPE,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
     CONF_START_NAME,
@@ -46,12 +72,17 @@ from .const import (
     DEFAULT_TRANSPORT_MODES,
     DEFAULT_WALKING_SPEED,
     DOMAIN,
+    JOURNEY_PROGRESS_GRACE_SECONDS,
     MIN_SCAN_INTERVAL,
     MODE_JOURNEY,
+    MODE_NOTICES,
+    NOTICE_ROUTE_TYPES,
+    REALTIME_REGION_NONE,
     TRIP_PAGE_CACHE_LIMIT,
     TRIP_PAGE_MAX_PER_REFRESH,
     TRIP_PAGE_NEGATIVE_TTL,
     TRIP_PAGE_SUCCESS_TTL,
+    resolve_realtime_region,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -63,13 +94,164 @@ def _describe_error(err: BaseException) -> str:
     return f"{type(err).__name__}: {message}" if message else type(err).__name__
 
 
-class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
+def _timetable_vehicle(
+    routes: list[TimetableRoute], route_id: str | None
+) -> str | None:
+    """Resolve a mode from consistent route lines, then the route ID."""
+    line_modes = {
+        line.vehicleType.casefold()
+        for route in routes
+        for line in route.lines or ()
+        if line.vehicleType
+    }
+    known_modes = {mode.casefold(): mode for mode in AVAILABLE_TRANSPORT_MODES}
+    if len(line_modes) == 1:
+        vehicle = known_modes.get(next(iter(line_modes)))
+        if vehicle is not None:
+            return vehicle
+
+    parts = route_id.split(":", maxsplit=2) if route_id else []
+    if len(parts) == 3 and parts[0] == "T":
+        return known_modes.get(parts[1].casefold())
+    return None
+
+
+def _stop_visit_row(
+    departure: TimetableDeparture,
+    routes: list[TimetableRoute],
+    vehicle: str | None,
+    visit_id: str,
+) -> StopDepartureItem:
+    """Keep the upstream schedule and realtime fields independent."""
+    short_name = next((route.shortName for route in routes if route.shortName), None)
+    code = next((route.code for route in routes if route.code), None)
+    route_id = departure.routeId
+    route_label = (
+        short_name or code or (route_id.rsplit(":", 1)[-1] if route_id else "")
+    )
+    realtime = departure.realtime
+    expected = realtime.expectedDepartureUtc if realtime is not None else None
+    platform_change = realtime.platformChange if realtime is not None else None
+
+    return StopDepartureItem(
+        route=route_label or "Transit",
+        vehicle=vehicle,
+        headsign=departure.headsign,
+        departure_time=departure.scheduledDepartureUtc,
+        platform=departure.departurePlatform,
+        trip_id=departure.id,
+        visit_id=visit_id,
+        route_id=route_id,
+        direction=departure.direction,
+        boarding=departure.canBoardDebark,
+        scheduled_departure_time=departure.scheduledDepartureUtc,
+        expected_departure_time=expected,
+        time_source="realtime" if expected is not None else "scheduled",
+        is_cancelled=realtime.isCancelled if realtime is not None else None,
+        is_skipped=realtime.isSkipped if realtime is not None else None,
+        is_extra=realtime.isExtra if realtime is not None else None,
+        platform_change=(
+            StopDeparturePlatformChange(
+                platform=platform_change.platform,
+                old_platform=platform_change.oldPlatform,
+                is_source=platform_change.isSource,
+            )
+            if platform_change is not None
+            else None
+        ),
+        route_color=next(
+            (route.routeHexColor for route in routes if route.routeHexColor), None
+        ),
+    )
+
+
+def _stop_board_rows(
+    timetable: StopTimetable, modes: list[str]
+) -> tuple[list[StopDepartureItem], list[StopDepartureItem]]:
+    """Split alighting-only visits and deduplicate within each view."""
+    routes_by_id: dict[str, list[TimetableRoute]] = defaultdict(list)
+    for route in timetable.routes:
+        routes_by_id[route.id].append(route)
+
+    visits: dict[
+        tuple[bool, str], tuple[TimetableDeparture, list[TimetableRoute], str | None]
+    ] = {}
+    for index, departure in enumerate(timetable.departures):
+        routes = [
+            route
+            for route in routes_by_id.get(departure.routeId or "", ())
+            if departure.direction is None or route.direction == departure.direction
+        ]
+        vehicle = _timetable_vehicle(routes, departure.routeId)
+        if modes and vehicle is not None and vehicle not in modes:
+            continue
+
+        visit_id = (
+            json.dumps(
+                (
+                    departure.id,
+                    departure.scheduledDepartureUtc,
+                    departure.departurePlatform,
+                ),
+                separators=(",", ":"),
+            )
+            if (
+                departure.id
+                and departure.scheduledDepartureUtc
+                and departure.departurePlatform
+            )
+            else f"unidentified:{index}"
+        )
+        key = departure.canBoardDebark == "Alighting", visit_id
+        previous = visits.get(key)
+        if previous is None or (
+            previous[0].realtime is None and departure.realtime is not None
+        ):
+            visits[key] = departure, routes, vehicle
+
+    ordered = sorted(
+        visits.items(),
+        key=lambda item: (
+            parse_iso_datetime(item[1][0].scheduledDepartureUtc)
+            or datetime.max.replace(tzinfo=UTC)
+        ),
+    )
+    departures: list[StopDepartureItem] = []
+    arrivals: list[StopDepartureItem] = []
+    for (alighting_only, visit_id), (departure, routes, vehicle) in ordered:
+        board = arrivals if alighting_only else departures
+        board.append(_stop_visit_row(departure, routes, vehicle, visit_id))
+    return departures, arrivals
+
+
+@dataclass(frozen=True)
+class _FollowedJourney:
+    """One sanitized itinerary and its in-memory progress evidence."""
+
+    itinerary: JourneyItinerary
+    planned_at: datetime
+    memory: ProgressMemory
+
+    def has_departed(self, now: datetime) -> bool:
+        """Pin only journeys with a scheduled start and end."""
+        legs = self.itinerary.legs
+        start = parse_iso_datetime(legs[0].departureTimeUtc)
+        end = parse_iso_datetime(legs[-1].arrivalTimeUtc)
+        return start is not None and end is not None and start <= now
+
+
+class TranslinkCoordinator(
+    DataUpdateCoordinator[JourneySummary | StopSummary | NoticeSummary]
+):
     """Coordinator to fetch and update data from Translink Queensland."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the coordinator."""
         self.entry = entry
         self.mode = entry.data.get(CONF_MODE, DEFAULT_MODE)
+        self.realtime_region, self.region_confirmed = resolve_realtime_region(
+            entry.data
+        )
 
         # Configurable scan interval
         scan_seconds = entry.options.get(
@@ -89,6 +271,7 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         session = async_get_clientsession(hass)
         self.client = TranslinkClient(session=session)
         self._trip_cache: dict[str, tuple[float, TripTimetable | None]] = {}
+        self._followed_journey: _FollowedJourney | None = None
 
     @property
     def start_location_id(self) -> str:
@@ -192,11 +375,13 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
             )
         )
 
-    async def _async_update_data(self) -> JourneySummary | StopSummary:
+    async def _async_update_data(self) -> JourneySummary | StopSummary | NoticeSummary:
         """Fetch updated data from Translink."""
         try:
             if self.mode == MODE_JOURNEY:
                 return await self._async_update_journey()
+            if self.mode == MODE_NOTICES:
+                return await self._async_update_notices()
             return await self._async_update_stop()
         except TranslinkApiError as err:
             raise UpdateFailed(
@@ -207,6 +392,19 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
             raise UpdateFailed(
                 f"Unexpected error fetching Translink data: {_describe_error(err)}"
             ) from err
+
+    async def _async_update_notices(self) -> NoticeSummary:
+        """Refresh the configured regional alert scope independently."""
+        data = self.entry.data
+        network = data[CONF_NOTICE_NETWORK]
+        scope = data[CONF_NOTICE_SCOPE]
+        value: str | int | None = None
+        if scope == "route":
+            value = data[CONF_NOTICE_ROUTE_ID]
+        elif scope == "mode":
+            value = NOTICE_ROUTE_TYPES[data[CONF_NOTICE_ROUTE_MODE]]
+        feed = await self.client.fetch_alert_feed(network)
+        return build_notice_summary(feed, network, scope, value, dt_util.utcnow())
 
     async def _async_update_journey(self) -> JourneySummary:
         """Update journey planner data and live vehicle tracking."""
@@ -221,12 +419,17 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
             walking_speed=self.walking_speed,
         )
 
+        fetch_realtime = self.realtime_region != REALTIME_REGION_NONE
         vehicle_task = (
-            self.client.fetch_vehicle_positions()
-            if self.track_vehicle
+            self.client.fetch_vehicle_positions(self.realtime_region)
+            if fetch_realtime and self.track_vehicle
+            else asyncio.sleep(0, result=())
+        )
+        trip_task = (
+            self.client.fetch_trip_updates(self.realtime_region, preserve_stale=True)
+            if fetch_realtime
             else asyncio.sleep(0, result={})
         )
-        trip_task = self.client.fetch_trip_updates()
 
         plan_res, vp_res, tu_res = await asyncio.gather(
             plan_task, vehicle_task, trip_task
@@ -235,28 +438,91 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         if not isinstance(plan_res, JourneyPlanResult):
             plan_res = JourneyPlanResult()
 
-        timetables = await self._async_get_trip_timetables(plan_res)
+        now = datetime.now(UTC)
+        followed = self._followed_journey
+        pinned = (
+            followed if followed is not None and followed.has_departed(now) else None
+        )
+        timetables = await self._async_get_trip_timetables(
+            plan_res, pinned.itinerary if pinned is not None else None
+        )
+        trip_updates = tu_res if isinstance(tu_res, dict) else {}
+        feeds = ProgressFeeds(
+            trip_updates=trip_updates,
+            vehicle_positions=vp_res if isinstance(vp_res, (tuple, list)) else (),
+            timetables=timetables,
+            realtime_region=self.realtime_region,
+            region_confirmed=self.region_confirmed,
+        )
+        planned_at = pinned.planned_at if pinned is not None else now
+        itinerary = (
+            pinned.itinerary
+            if pinned is not None
+            else snapshot_itinerary(plan_res.itineraries[0])
+            if plan_res.itineraries
+            else None
+        )
+        progress = evaluate_progress(
+            itinerary,
+            planned_at=planned_at,
+            now=now,
+            tracking_basis="pinned_itinerary" if pinned else "planner_first_itinerary",
+            feeds=feeds,
+            memory=followed.memory if followed is not None else None,
+        )
+        grace = timedelta(seconds=JOURNEY_PROGRESS_GRACE_SECONDS)
+        if (
+            pinned is not None
+            and progress.progress.state != "cancelled"
+            and progress.final_arrival is not None
+            and now > progress.final_arrival + grace
+        ):
+            planned_at = now
+            itinerary = (
+                snapshot_itinerary(plan_res.itineraries[0])
+                if plan_res.itineraries
+                else None
+            )
+            progress = evaluate_progress(
+                itinerary, planned_at=planned_at, now=now, feeds=feeds
+            )
         summary = build_journey_summary(
             plan=plan_res,
             trip_timetables=timetables,
-            vehicle_positions=vp_res if isinstance(vp_res, dict) else {},
-            trip_updates=tu_res if isinstance(tu_res, dict) else {},
+            vehicle_positions=vp_res,
+            track_vehicle=self.track_vehicle,
+            realtime_region=self.realtime_region,
+            region_confirmed=self.region_confirmed,
+            trip_updates=trip_updates,
+            now=now,
             fare_preference=self.fare_preference,
             origin_name_fallback=self.start_name,
             destination_name_fallback=self.end_name,
         )
 
+        summary.progress = progress.progress
+        self._followed_journey = (
+            _FollowedJourney(itinerary, planned_at, progress.memory)
+            if itinerary is not None
+            and itinerary.legs
+            and progress.progress.state != "cancelled"
+            and (
+                progress.final_arrival is None or now <= progress.final_arrival + grace
+            )
+            else None
+        )
         return summary
 
     async def _async_get_trip_timetables(
-        self, plan: JourneyPlanResult
+        self, plan: JourneyPlanResult, pinned: JourneyItinerary | None = None
     ) -> dict[str, TripTimetable]:
         """Cache bounded optional enrichment without affecting core availability."""
         now = time.monotonic()
         self._trip_cache = {
             key: value for key, value in self._trip_cache.items() if value[0] > now
         }
-        legs = plan.itineraries[0].legs if plan.itineraries else []
+        current_legs = plan.itineraries[0].legs if plan.itineraries else []
+        legs = [*(pinned.legs if pinned is not None else ()), *current_legs]
         ids = list(
             dict.fromkeys(
                 leg.tripId
@@ -295,72 +561,45 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
         stop_id = self.entry.data.get(CONF_STOP_LOCATION_ID, "")
         stop_name = self.entry.data.get(CONF_STOP_NAME, "")
 
-        # Select reference destination avoiding collision if stop is Central
-        ref_id = "ST:place_censta"
-        ref_name = "Central Station"
-        if stop_id == "ST:place_censta" or "central" in stop_name.lower():
-            ref_id = "ST:place_romsta"
-            ref_name = "Roma Street Station"
-
-        plan = await self.client.plan_journey(
-            start_location_id=stop_id,
-            start_name=stop_name,
-            end_location_id=ref_id,
-            end_name=ref_name,
-            transport_modes=self.transport_modes,
-            time_search_mode="LeaveAfter",
-            max_walking_distance=self.max_walking_distance,
+        timetable = await self.client.fetch_stop_timetable(stop_id)
+        departures, arrivals = _stop_board_rows(timetable, self.transport_modes)
+        now = datetime.now(UTC)
+        disruptions = stop_disruption_fields(
+            timetable.serviceAlerts,
+            self.data if isinstance(self.data, StopSummary) else None,
+            now,
         )
-
-        tu_res = await self.client.fetch_trip_updates()
-
-        journey_summary = build_journey_summary(
-            plan=plan,
-            trip_updates=tu_res,
-            origin_name_fallback=stop_name,
-            destination_name_fallback=ref_name,
-        )
-
-        # Collect upcoming departures from across planned itineraries
-        departures: list[dict[str, Any]] = []
-        for itin in plan.itineraries:
-            for leg in itin.legs:
-                if leg.travelMode.lower() != "walk":
-                    departures.append(
-                        {
-                            "route": (leg.legRoute.name if leg.legRoute else None)
-                            or leg.tripHeadsign
-                            or "Transit",
-                            "vehicle": leg.travelMode,
-                            "headsign": leg.tripHeadsign,
-                            "departure_time": leg.departureTimeUtc,
-                            "platform": leg.origin.platform if leg.origin else None,
-                        }
-                    )
-                    break
-        if not departures:
-            departures = journey_summary.itinerary_legs
-
-        stop_summary = StopSummary(
+        summary = StopSummary(
             stop_id=stop_id,
-            stop_name=stop_name,
-            next_departure_time=journey_summary.departure_time,
-            next_route=journey_summary.next_service_name,
-            next_vehicle=journey_summary.next_service_vehicle,
-            next_platform=journey_summary.origin_platform,
-            next_headsign=journey_summary.next_service_headsign,
-            delay_mins=journey_summary.delay_mins,
-            departures=departures,
-            disruptions_count=journey_summary.disruptions_count,
-            disruptions=journey_summary.disruptions,
-            disruptions_description=journey_summary.disruptions_description,
-            disruptions_summary=journey_summary.disruptions_summary,
-            latest_disruption_title=journey_summary.latest_disruption_title,
-            latest_disruption_description=journey_summary.latest_disruption_description,
-            last_updated=journey_summary.last_updated,
+            stop_name=stop_name or timetable.name,
+            departures=[row.model_dump() for row in departures],
+            arrivals=[row.model_dump() for row in arrivals],
+            last_updated=now,
+            **disruptions,
         )
-
-        return stop_summary
+        for row in departures:
+            if row.is_cancelled or row.is_skipped:
+                continue
+            scheduled = parse_iso_datetime(row.scheduled_departure_time)
+            expected = parse_iso_datetime(row.expected_departure_time)
+            effective = expected or scheduled
+            if effective is None or effective < now:
+                continue
+            summary.next_departure_time = scheduled
+            summary.next_route = row.route
+            summary.next_vehicle = row.vehicle
+            summary.next_platform = row.platform
+            summary.next_headsign = row.headsign
+            if expected is not None:
+                summary.predicted_departure_time = expected
+                summary.realtime_status = "live"
+                if scheduled is not None:
+                    delay_seconds = (expected - scheduled).total_seconds()
+                    summary.departure_delay_seconds = round(delay_seconds)
+                    summary.delay_mins = round(delay_seconds / 60)
+                    summary.delay_source = "stop_event"
+            break
+        return summary
 
     async def async_shutdown(self) -> None:
         """Cleanly close coordinator connections."""

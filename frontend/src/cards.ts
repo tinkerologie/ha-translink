@@ -5,14 +5,22 @@ import {
   type PropertyValues,
   type TemplateResult,
 } from "lit";
+import { live } from "lit/directives/live.js";
 import {
   available,
+  boardFilterOptions,
+  brisbaneInputDefaults,
+  filterDepartures,
   modeIcon,
   normalizeDepartures,
+  normalizeNoticePeriods,
+  normalizeNoticeSelectors,
   number,
+  orderDepartures,
   routeColors,
   rows,
   siblings,
+  sortJourneyAlternatives,
   statusLabel,
   stopName,
   stub,
@@ -20,9 +28,36 @@ import {
   time,
   validTime,
 } from "./helpers";
+import {
+  buildCalendarFile,
+  buildJourneySharePayload,
+  validateTimetableUrl,
+  type JourneySharePayload,
+} from "./share";
 import { strings } from "./strings";
 import { cardStyles } from "./styles";
-import type { CardConfig, EntityState, HomeAssistant, Row } from "./types";
+import type {
+  BoardFilterOption,
+  BoardOrder,
+  BoardView,
+  CardConfig,
+  Departure,
+  EntityState,
+  HomeAssistant,
+  JourneyAlternative,
+  JourneyAlternatives,
+  JourneyLegAttributes,
+  JourneySort,
+  NoticeAlertRow,
+  NoticePeriod,
+  NoticeSelector,
+  RegistryEntry,
+  Row,
+  VehicleTrackerAttributes,
+} from "./types";
+
+const MAX_ALTERNATIVES_LIMIT = 10;
+const DEFAULT_ALTERNATIVES_LIMIT = 5;
 
 const labels: Record<string, string> = {
   entity: "Translink entity",
@@ -32,9 +67,15 @@ const labels: Record<string, string> = {
   show_disruptions: "Show service alerts",
   max_departures: "Maximum departures",
   show_platform: "Show platform",
+  show_arrivals: strings.showArrivals,
+  show_filters: strings.showFilters,
   max_alerts: "Maximum alerts",
+  show_planner: "Show journey planner",
+  alternatives_limit: "Maximum alternatives",
+  show_actions: "Show journey actions",
+  calendar_entity: "Calendar for journey events",
 };
-function form(role: string, fields: string[]) {
+export function form(role: string, fields: string[]) {
   return {
     schema: [
       {
@@ -47,9 +88,14 @@ function form(role: string, fields: string[]) {
       { name: "title", selector: { text: {} } },
       ...fields.map((name) => ({
         name,
-        selector: name.startsWith("max_")
-          ? { number: { min: 1, max: 20, mode: "box" } }
-          : { boolean: {} },
+        selector:
+          name === "calendar_entity"
+            ? { entity: { filter: { domain: "calendar" } } }
+            : name === "alternatives_limit"
+              ? { number: { min: 1, max: MAX_ALTERNATIVES_LIMIT, mode: "box" } }
+              : name.startsWith("max_")
+                ? { number: { min: 1, max: 20, mode: "box" } }
+                : { boolean: {} },
       })),
     ],
     computeLabel: (schema: { name: string }) =>
@@ -60,7 +106,7 @@ function form(role: string, fields: string[]) {
         : undefined,
   };
 }
-function chip(label: unknown, vehicle: unknown, color?: unknown) {
+export function chip(label: unknown, vehicle: unknown, color?: unknown) {
   const colors = routeColors(color);
   return html`<span
     class="chip"
@@ -114,6 +160,8 @@ export abstract class TranslinkCard extends LitElement {
       "legs_expanded",
       "show_disruptions",
       "show_platform",
+      "show_arrivals",
+      "show_filters",
     ] as const) {
       if (config[key] !== undefined && typeof config[key] !== "boolean")
         throw new Error(`${key} must be a boolean`);
@@ -167,6 +215,9 @@ export abstract class TranslinkCard extends LitElement {
       );
   }
   protected abstract renderContent(state: EntityState): TemplateResult;
+  protected stateIsAvailable(state: EntityState): boolean {
+    return available(state);
+  }
   protected override render() {
     const state = this.hass?.states[this.config.entity ?? ""];
     const entry = this.hass?.entities?.[this.config.entity ?? ""];
@@ -177,7 +228,7 @@ export abstract class TranslinkCard extends LitElement {
     if (!this.config.entity) message = strings.choose;
     else if (!this.hass?.states) message = strings.loading;
     else if (!state) message = strings.missing;
-    else if (!available(state)) message = strings.unavailable;
+    else if (!this.stateIsAvailable(state)) message = strings.unavailable;
     else if (!this.hass.entities) message = strings.loading;
     else if (
       entry?.platform !== "translink" ||
@@ -222,28 +273,574 @@ export abstract class TranslinkCard extends LitElement {
           : state
             ? this.renderContent(state)
             : nothing}
+        ${this.renderExtra(entry)}
       </div>
     </ha-card>`;
+  }
+  protected renderDisruptionStrip(state?: EntityState) {
+    const alerts = number(value(state));
+    return this.config.show_disruptions !== false &&
+      alerts !== undefined &&
+      alerts > 0
+      ? html`<div class="alert-strip">
+          <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon
+          ><span
+            >${alerts} service alert${alerts === 1 ? "" : "s"} ·
+            ${text(state?.attributes.latest_title) ??
+            "Check service information"}</span
+          >
+        </div>`
+      : nothing;
+  }
+  protected renderExtra(
+    _entry?: RegistryEntry,
+  ): TemplateResult | typeof nothing {
+    return nothing;
   }
   protected formatTime(value: unknown, date = false) {
     return time(value, this.hass, date);
   }
 }
 
+type PlannerState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "complete"; result: JourneyAlternatives };
+
+type SharePreview = Extract<JourneySharePayload, { available: true }>;
+
 export class JourneyCard extends TranslinkCard {
+  static override properties = {
+    ...TranslinkCard.properties,
+    planner: { state: true },
+    plannerSort: { state: true },
+    sharePreview: { state: true },
+    shareStatus: { state: true },
+    calendarSaving: { state: true },
+  };
   static override role = "itinerary";
   static override title = strings.journey;
   static getConfigForm() {
-    return form(this.role, ["show_fare", "legs_expanded", "show_disruptions"]);
+    return form(this.role, [
+      "show_fare",
+      "legs_expanded",
+      "show_disruptions",
+      "show_planner",
+      "alternatives_limit",
+      "show_actions",
+      "calendar_entity",
+    ]);
   }
   protected entityRole = "itinerary";
   protected defaultTitle = strings.journey;
   protected icon = "mdi:routes";
+  private planner?: PlannerState;
+  private plannerSort: JourneySort = "departure";
+  private readonly plannerDefaults = brisbaneInputDefaults();
+  private sharePreview?: SharePreview;
+  private shareStatus = "";
+  private calendarSaving = false;
+
+  override setConfig(config: CardConfig): void {
+    if (
+      config?.show_planner !== undefined &&
+      typeof config.show_planner !== "boolean"
+    )
+      throw new Error("show_planner must be a boolean");
+    if (
+      config?.show_actions !== undefined &&
+      typeof config.show_actions !== "boolean"
+    )
+      throw new Error("show_actions must be a boolean");
+    const calendar = config?.calendar_entity;
+    if (
+      calendar !== undefined &&
+      (typeof calendar !== "string" ||
+        calendar.trim() !== calendar ||
+        !/^calendar\.[a-z0-9_]+$/.test(calendar))
+    )
+      throw new Error("calendar_entity must be a calendar entity ID");
+    const limit = config?.alternatives_limit;
+    if (
+      limit !== undefined &&
+      (!Number.isInteger(limit) || limit < 1 || limit > MAX_ALTERNATIVES_LIMIT)
+    )
+      throw new Error("alternatives_limit must be between 1 and 10");
+    const oldEntity = this.config.entity;
+    super.setConfig(config);
+    this.sharePreview = undefined;
+    this.shareStatus = "";
+    if (oldEntity !== config.entity || !config.show_planner)
+      this.planner = undefined;
+  }
+
+  protected override shouldUpdate(changed: PropertyValues<this>): boolean {
+    if (super.shouldUpdate(changed)) return true;
+    return (
+      !!this.sharePreview &&
+      this.calendarTarget(changed.get("hass") as HomeAssistant | undefined) !==
+        this.calendarTarget(this.hass)
+    );
+  }
+
+  private calendarTarget(hass?: HomeAssistant): string | undefined {
+    const entity = this.config.calendar_entity;
+    const state = entity ? hass?.states[entity] : undefined;
+    if (!available(state) || typeof hass?.callService !== "function")
+      return undefined;
+    const features = number(state.attributes.supported_features);
+    // Home Assistant CalendarEntityFeature.CREATE_EVENT is bit 1.
+    return features !== undefined &&
+      Number.isInteger(features) &&
+      features >= 0 &&
+      (features & 1) !== 0
+      ? entity
+      : undefined;
+  }
+
+  private async addToCalendar(preview: SharePreview): Promise<void> {
+    const hass = this.hass;
+    const entity = this.calendarTarget(hass);
+    if (this.calendarSaving || !entity || !preview.calendar.available) return;
+    const { data } = preview.calendar;
+    this.calendarSaving = true;
+    try {
+      await this.runShareAction(
+        preview,
+        () =>
+          hass?.callService?.(
+            "calendar",
+            "create_event",
+            data,
+            { entity_id: entity },
+            false,
+          ),
+        strings.share.calendarFailed,
+        strings.share.calendarAdded,
+      );
+    } finally {
+      this.calendarSaving = false;
+    }
+  }
+
+  private downloadCalendar(preview: SharePreview): void {
+    if (!preview.calendar.available) return;
+    const calendar = preview.calendar;
+    void this.runShareAction(
+      preview,
+      () => {
+        const link = document.createElement("a");
+        const file = new Blob([buildCalendarFile(calendar)], {
+          type: "text/calendar;charset=utf-8",
+        });
+        const url = URL.createObjectURL(file);
+        try {
+          link.href = url;
+          link.download = "translink-journey.ics";
+          document.body.append(link);
+          link.click();
+        } finally {
+          link.remove();
+          // Give the browser the next turn to start consuming the object URL.
+          setTimeout(() => URL.revokeObjectURL(url), 0);
+        }
+      },
+      strings.share.downloadFailed,
+    );
+  }
+
+  private async runShareAction(
+    preview: SharePreview,
+    action: () => unknown,
+    failure: string,
+    success = "",
+    ignoreAbort = false,
+  ): Promise<void> {
+    if (this.sharePreview !== preview) return;
+    this.shareStatus = "";
+    try {
+      await action();
+      if (this.sharePreview === preview) this.shareStatus = success;
+    } catch (error) {
+      if (
+        this.sharePreview === preview &&
+        !(
+          ignoreAbort &&
+          (error instanceof Error || error instanceof DOMException) &&
+          error.name === "AbortError"
+        )
+      )
+        this.shareStatus = failure;
+    }
+  }
+
+  protected override willUpdate(changed: PropertyValues<this>): void {
+    if (!this.sharePreview || !changed.has("hass")) return;
+    const payload = this.currentSharePayload();
+    if (!payload?.available) {
+      this.sharePreview = undefined;
+      this.shareStatus = "";
+    } else if (JSON.stringify(payload) !== JSON.stringify(this.sharePreview)) {
+      this.sharePreview = payload;
+      this.shareStatus = strings.share.updated;
+    }
+  }
+
+  private currentSharePayload() {
+    const entity = this.config.entity ?? "";
+    const entry = this.hass?.entities?.[entity];
+    if (
+      this.config.show_actions === false ||
+      entry?.platform !== "translink" ||
+      entry.translation_key !== this.entityRole
+    )
+      return undefined;
+    return buildJourneySharePayload(
+      this.hass?.states[entity],
+      this.related,
+      this.hass,
+    );
+  }
+
+  private async toggleSharePreview(): Promise<void> {
+    if (this.sharePreview) {
+      this.closeSharePreview();
+      return;
+    }
+    const payload = this.currentSharePayload();
+    if (!payload?.available) return;
+    this.sharePreview = payload;
+    this.shareStatus = "";
+    await this.updateComplete;
+    this.renderRoot
+      .querySelector<HTMLElement>("#share-preview-heading")
+      ?.focus();
+  }
+
+  private closeSharePreview(): void {
+    this.sharePreview = undefined;
+    this.shareStatus = "";
+    this.renderRoot.querySelector<HTMLButtonElement>(".share-toggle")?.focus();
+  }
+
+  private renderShareActions() {
+    const preview = this.sharePreview;
+    const labels = strings.share;
+    return html`
+      <button
+        class="share-toggle"
+        type="button"
+        aria-expanded=${!!preview}
+        aria-controls="journey-share"
+        @click=${this.toggleSharePreview}
+      >
+        ${labels.open}
+      </button>
+      ${preview
+        ? html`<section
+            id="journey-share"
+            class="share-preview"
+            aria-labelledby="share-preview-heading"
+            @keydown=${(event: KeyboardEvent) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              event.stopPropagation();
+              this.closeSharePreview();
+            }}
+          >
+            <h3 id="share-preview-heading" tabindex="-1">${labels.preview}</h3>
+            <pre class="share-text" tabindex="0" aria-label=${labels.text}>
+${preview.shareText}</pre
+            >
+            <p class="secondary">${labels.included}</p>
+            <p class="secondary">${labels.excluded}</p>
+            ${preview.calendar.available
+              ? html`<dl class="share-calendar">
+                  <dt>${labels.calendarSummary}</dt>
+                  <dd>${preview.calendar.data.summary}</dd>
+                  ${preview.calendar.data.location
+                    ? html`<dt>${labels.calendarLocation}</dt>
+                        <dd>${preview.calendar.data.location}</dd>`
+                    : nothing}
+                  <dt>${labels.departure} · ${preview.timeZone}</dt>
+                  <dd>
+                    <time datetime=${preview.calendar.data.start_date_time}
+                      >${preview.calendar.displayStart}</time
+                    >
+                  </dd>
+                  <dt>${labels.arrival} · ${preview.timeZone}</dt>
+                  <dd>
+                    <time datetime=${preview.calendar.data.end_date_time}
+                      >${preview.calendar.displayEnd}</time
+                    >
+                  </dd>
+                </dl>`
+              : html`<p id="calendar-unavailable" class="secondary">
+                  ${preview.calendar.reason}
+                </p>`}
+            <div class="share-buttons">
+              ${typeof navigator.share === "function"
+                ? html`<button
+                    type="button"
+                    class="share-native"
+                    @click=${() =>
+                      this.runShareAction(
+                        preview,
+                        () => navigator.share({ text: preview.shareText }),
+                        labels.shareFailed,
+                        "",
+                        true,
+                      )}
+                  >
+                    ${labels.share}
+                  </button>`
+                : nothing}
+              ${typeof navigator.clipboard?.writeText === "function"
+                ? html`<button
+                    type="button"
+                    class="share-copy"
+                    @click=${() =>
+                      this.runShareAction(
+                        preview,
+                        () => navigator.clipboard.writeText(preview.shareText),
+                        labels.copyFailed,
+                        labels.copied,
+                      )}
+                  >
+                    ${labels.copy}
+                  </button>`
+                : nothing}
+              <button
+                type="button"
+                class="share-download"
+                ?disabled=${!preview.calendar.available}
+                aria-describedby=${preview.calendar.available
+                  ? nothing
+                  : "calendar-unavailable"}
+                @click=${() => this.downloadCalendar(preview)}
+              >
+                ${labels.download}
+              </button>
+              ${this.calendarTarget(this.hass)
+                ? html`<button
+                    type="button"
+                    class="share-add-calendar"
+                    ?disabled=${this.calendarSaving ||
+                    !preview.calendar.available}
+                    @click=${() => this.addToCalendar(preview)}
+                  >
+                    ${labels.addCalendar}
+                  </button>`
+                : nothing}
+              <button
+                type="button"
+                class="share-cancel"
+                @click=${this.closeSharePreview}
+              >
+                ${labels.cancel}
+              </button>
+            </div>
+            <div class="share-status secondary" aria-live="polite">
+              ${this.shareStatus}
+            </div>
+          </section>`
+        : html`<div id="journey-share" hidden></div>`}
+    `;
+  }
+
+  protected override renderExtra(entry?: RegistryEntry) {
+    if (
+      !this.config.show_planner ||
+      entry?.platform !== "translink" ||
+      entry.translation_key !== this.entityRole
+    )
+      return nothing;
+    const result =
+      this.planner?.status === "complete" ? this.planner.result : undefined;
+    const sorted = result
+      ? sortJourneyAlternatives(result.alternatives, this.plannerSort).slice(
+          0,
+          this.config.alternatives_limit ?? DEFAULT_ALTERNATIVES_LIMIT,
+        )
+      : [];
+    const planNoticeTitles = result?.plan_notices
+      ?.map(({ title }) => title)
+      .filter(Boolean);
+
+    return html`<section class="planner" aria-label="Journey planner">
+      <h3>Plan a journey</h3>
+      <form @submit=${this.submitPlan}>
+        <label>
+          Date (Brisbane)
+          <input
+            name="date"
+            type="date"
+            required
+            .value=${this.plannerDefaults.date}
+          />
+        </label>
+        <label>
+          Time (Brisbane)
+          <input
+            name="time"
+            type="time"
+            required
+            .value=${this.plannerDefaults.time}
+          />
+        </label>
+        <label>
+          Time preference
+          <select name="time_search_mode">
+            <option value="LeaveAfter">Leave after</option>
+            <option value="ArriveBefore">Arrive before</option>
+          </select>
+        </label>
+        <button type="submit" ?disabled=${this.planner?.status === "loading"}>
+          Plan
+        </button>
+      </form>
+      <label class="planner-sort">
+        Sort by
+        <select
+          .value=${this.plannerSort}
+          @change=${(event: Event) => {
+            this.plannerSort = (event.target as HTMLSelectElement)
+              .value as JourneySort;
+          }}
+        >
+          <option value="departure">Departure</option>
+          <option value="arrival">Arrival</option>
+          <option value="duration">Duration</option>
+        </select>
+      </label>
+      ${this.planner?.status === "loading"
+        ? html`<div role="status">Planning journey…</div>`
+        : nothing}
+      ${this.planner?.status === "error"
+        ? html`<div role="alert">${this.planner.message}</div>`
+        : nothing}
+      ${result && !sorted.length
+        ? html`<div role="status">No journeys found</div>`
+        : nothing}
+      ${sorted.length
+        ? html`<ol class="alternatives" aria-label="Journey alternatives">
+            ${sorted.map((alternative) => this.renderAlternative(alternative))}
+          </ol>`
+        : nothing}
+      ${result?.truncated
+        ? html`<div class="secondary">
+            Received ${result.returned} of ${result.total_alternatives}
+            journeys.
+          </div>`
+        : nothing}
+      ${planNoticeTitles?.length
+        ? html`<div class="secondary">
+            Planner notices · ${planNoticeTitles.join("; ")}
+          </div>`
+        : nothing}
+    </section>`;
+  }
+
+  private async submitPlan(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const { hass } = this;
+    if (this.planner?.status === "loading") return;
+    if (!hass?.callService) {
+      this.planner = {
+        status: "error",
+        message: "Journey planning is unavailable",
+      };
+      return;
+    }
+    const fields = new FormData(event.currentTarget as HTMLFormElement);
+    const pending = { status: "loading" } as const;
+    this.planner = pending;
+    try {
+      const { response } = await hass.callService(
+        "translink",
+        "plan_journey",
+        {
+          entity_id: this.config.entity,
+          date: fields.get("date"),
+          time: fields.get("time"),
+          time_search_mode: fields.get("time_search_mode"),
+          sort_by: this.plannerSort,
+          limit: MAX_ALTERNATIVES_LIMIT,
+        },
+        undefined,
+        false,
+        true,
+      );
+      if (this.planner === pending)
+        this.planner = { status: "complete", result: response };
+    } catch (error) {
+      if (this.planner !== pending) return;
+      const message = text((error as { message?: unknown } | null)?.message);
+      this.planner = {
+        status: "error",
+        message: message ?? "Unable to plan journey",
+      };
+    }
+  }
+
+  private renderAlternative(option: JourneyAlternative) {
+    const notices = option.notices.length;
+    return html`<li class="alternative">
+      <dl>
+        <div>
+          <dt>Departure</dt>
+          <dd>${this.formatTime(option.departure, true)}</dd>
+        </div>
+        <div>
+          <dt>Arrival</dt>
+          <dd>${this.formatTime(option.arrival, true)}</dd>
+        </div>
+        <div>
+          <dt>Duration</dt>
+          <dd>
+            ${option.duration_mins === null
+              ? "—"
+              : `${option.duration_mins} min`}
+          </dd>
+        </div>
+        <div>
+          <dt>Transfers</dt>
+          <dd>${option.transfers ?? "—"}</dd>
+        </div>
+      </dl>
+      ${option.planner_first
+        ? html`<span class="secondary">Planner first</span>`
+        : nothing}
+      ${notices
+        ? html`<details>
+            <summary>
+              ${notices} service notice${notices === 1 ? "" : "s"}
+            </summary>
+            <ul>
+              ${option.notices.map(
+                ({ title }) => html`<li>${title ?? "Service notice"}</li>`,
+              )}
+            </ul>
+          </details>`
+        : nothing}
+    </li>`;
+  }
   protected renderContent(state: EntityState) {
     const related = this.related;
-    const legs = rows(state.attributes.legs);
+    const tracker = related.vehicle_tracker;
+    // GPS trackers retain provenance attributes in the unknown state.
+    const vehicle =
+      tracker?.state === "unavailable"
+        ? undefined
+        : (tracker?.attributes as VehicleTrackerAttributes | undefined);
+    const activeLeg = number(vehicle?.active_leg_index);
+    const legs: JourneyLegAttributes[] = rows(state.attributes.legs);
     if (value(related.status) === "no_service" || !legs.length)
-      return html`<div class="state" role="status">${strings.noServices}</div>`;
+      return html`
+        <div class="state" role="status">${strings.noServices}</div>
+        ${this.renderActiveVehicle(vehicle)}
+        ${this.renderDisruptionStrip(related.disruptions)}
+      `;
     const first = legs[0]!;
     const last = legs[legs.length - 1]!;
     const service = related.next_service?.attributes ?? {};
@@ -251,7 +848,12 @@ export class JourneyCard extends TranslinkCard {
     const transfers = number(value(related.transfers));
     const walking = number(value(related.walking_distance));
     const fare = number(value(related.fare));
-    const alerts = number(value(related.disruptions));
+    const predictedDeparture = validTime(
+      related.next_departure?.attributes.predicted_time,
+    );
+    const predictedArrival = validTime(
+      related.arrival_time?.attributes.predicted_time,
+    );
     return html`
       <div class="timing">
         <div>
@@ -261,6 +863,11 @@ export class JourneyCard extends TranslinkCard {
               value(related.next_departure) ?? first.departureTimeUtc,
             )}
           </div>
+          ${predictedDeparture
+            ? html`<span class="prediction"
+                >Predicted ${this.formatTime(predictedDeparture)}</span
+              >`
+            : nothing}
           <div class="stop-name">${stopName(first.origin) ?? "Origin"}</div>
           ${text(first.originPlatform)
             ? html`<div class="secondary">
@@ -276,6 +883,11 @@ export class JourneyCard extends TranslinkCard {
               value(related.arrival_time) ?? last.arrivalTimeUtc,
             )}
           </div>
+          ${predictedArrival
+            ? html`<span class="prediction"
+                >Predicted ${this.formatTime(predictedArrival)}</span
+              >`
+            : nothing}
           <div class="stop-name">
             ${stopName(last.destination) ?? "Destination"}
           </div>
@@ -295,6 +907,7 @@ export class JourneyCard extends TranslinkCard {
         <ha-icon icon="mdi:clock-outline" aria-hidden="true"></ha-icon
         >${statusLabel(value(related.status), number(value(related.delay)))}
       </div>
+      ${this.renderActiveVehicle(vehicle)}
       <div class="metrics">
         ${duration !== undefined
           ? html`<span class="metric"
@@ -324,17 +937,11 @@ export class JourneyCard extends TranslinkCard {
             >`
           : nothing}
       </div>
-      ${this.config.show_disruptions !== false &&
-      alerts !== undefined &&
-      alerts > 0
-        ? html`<div class="alert-strip">
-            <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon
-            ><span
-              >${alerts} service alert${alerts === 1 ? "" : "s"} ·
-              ${text(related.disruptions?.attributes.latest_title) ??
-              "Check service information"}</span
-            >
-          </div>`
+      ${this.renderDisruptionStrip(related.disruptions)}
+      ${this.config.show_actions !== false &&
+      text(state.state) &&
+      state.state !== "no_service"
+        ? this.renderShareActions()
         : nothing}
       <button
         class="disclosure"
@@ -354,12 +961,49 @@ export class JourneyCard extends TranslinkCard {
       </button>
       ${this.expanded
         ? html`<ol class="legs" id="journey-legs">
-            ${legs.map((leg) => this.renderLeg(leg))}
+            ${legs.map((leg, index) =>
+              this.renderLeg(leg, index === activeLeg),
+            )}
           </ol>`
         : html`<div id="journey-legs" hidden></div>`}
     `;
   }
-  private renderLeg(leg: Row) {
+  private renderActiveVehicle(vehicle?: VehicleTrackerAttributes) {
+    if (!vehicle) return nothing;
+    const status = vehicle.position_status;
+    const labels = strings.vehiclePosition;
+    const provenance =
+      status && Object.hasOwn(labels, status)
+        ? labels[status]
+        : labels.no_position;
+    const route =
+      text(vehicle.route_name) ??
+      text(vehicle.route_code) ??
+      text(vehicle.vehicle_type);
+    const label = status === "live" ? text(vehicle.vehicle_label) : undefined;
+    const timestamp =
+      status === "live" ? validTime(vehicle.position_timestamp) : undefined;
+    return html`<div class="active-vehicle">
+      <div>
+        <strong>${strings.activeVehicle}</strong>
+        ${route ? html`<span> · ${route}</span>` : nothing}
+        ${label ? html`<span> · ${label}</span>` : nothing}
+      </div>
+      <span class="secondary" role="status"
+        >${provenance}${timestamp
+          ? ` · ${this.formatTime(timestamp)}`
+          : ""}</span
+      >
+    </div>`;
+  }
+  private renderLeg(leg: JourneyLegAttributes, active: boolean) {
+    const timetable =
+      this.config.show_actions !== false &&
+      text(leg.travelMode)?.toLowerCase() !== "walk"
+        ? validateTimetableUrl(leg.timetableUrl)
+        : undefined;
+    const route =
+      text(leg.routeCode) ?? text(leg.route) ?? text(leg.travelMode);
     const calls = rows(leg.callingStops);
     const source = text(leg.callingStopsSource);
     const showCalls =
@@ -367,8 +1011,11 @@ export class JourneyCard extends TranslinkCard {
       ["scheduled", "scheduled_with_realtime", "realtime_partial"].includes(
         source ?? "",
       );
-    return html`<li class="leg">
+    return html`<li class="leg" aria-current=${active ? "step" : nothing}>
       ${chip(leg.route ?? leg.travelMode, leg.travelMode, leg.routeColor)}
+      ${active
+        ? html`<span class="secondary leg-marker">${strings.activeLeg}</span>`
+        : nothing}
       <div class="endpoint">
         <div>
           <div class="label">${stopName(leg.origin) ?? "Origin"}</div>
@@ -398,6 +1045,18 @@ export class JourneyCard extends TranslinkCard {
         min${number(leg.numberOfStops) ? ` · ${leg.numberOfStops} stops` : ""} ·
         Scheduled
       </div>
+      ${timetable
+        ? html`<a
+            class="trip-timetable"
+            href=${timetable}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label=${route
+              ? `${strings.share.timetable} · ${route}`
+              : strings.share.timetable}
+            >${strings.share.timetable}</a
+          >`
+        : nothing}
       ${showCalls
         ? html`<details class="stop-details">
             <summary>Calling stops · ${calls.length}</summary>
@@ -462,55 +1121,279 @@ export class JourneyCard extends TranslinkCard {
 }
 
 export class DeparturesCard extends TranslinkCard {
+  static override properties = {
+    ...TranslinkCard.properties,
+    boardView: { state: true },
+    boardRoute: { state: true },
+    boardDirection: { state: true },
+    boardOrder: { state: true },
+  };
   static override role = "departures_board";
   static override title = strings.departures;
   static getConfigForm() {
-    return form(this.role, ["max_departures", "show_platform"]);
+    return form(this.role, [
+      "max_departures",
+      "show_platform",
+      "show_arrivals",
+      "show_filters",
+    ]);
   }
   protected entityRole = "departures_board";
   protected defaultTitle = strings.departures;
   protected icon = "mdi:train-bus";
+  declare private boardView: BoardView;
+  declare private boardRoute?: BoardFilterOption;
+  declare private boardDirection?: BoardFilterOption;
+  declare private boardOrder: BoardOrder;
+
+  constructor() {
+    super();
+    this.boardView = "departures";
+    this.boardOrder = "scheduled";
+  }
+
   protected renderContent(state: EntityState) {
-    const departures = normalizeDepartures(state.attributes.departures);
-    if (!departures.length)
-      return html`<div class="state" role="status">${strings.noServices}</div>`;
-    const delay = number(value(this.related.delay));
-    return html`<div class="secondary">
-        Upcoming departures · Planner results
-      </div>
-      ${delay !== undefined && delay > 0
+    const view = this.config.show_arrivals ? this.boardView : "departures";
+    const visits = normalizeDepartures(state.attributes[view]);
+    const showFilters = this.config.show_filters === true;
+    const filtered = showFilters
+      ? filterDepartures(
+          visits,
+          this.boardRoute?.value,
+          this.boardDirection?.value,
+        )
+      : visits;
+    const ordered = orderDepartures(
+      filtered,
+      showFilters ? this.boardOrder : "scheduled",
+    );
+    return html`${this.config.show_arrivals
+      ? this.renderViewSwitch(view)
+      : nothing}
+    ${showFilters ? this.renderBoardFilters(visits) : nothing}
+    ${this.renderBoard(view, ordered, visits.length > 0)}`;
+  }
+
+  private renderViewSwitch(view: BoardView) {
+    const views = ["departures", "arrivals"] as const;
+    return html`<div
+      class="board-views"
+      role="group"
+      aria-label=${strings.boardView}
+    >
+      ${views.map(
+        (option) =>
+          html`<button
+            type="button"
+            value=${option}
+            aria-pressed=${String(view === option)}
+            @click=${() => {
+              this.boardView = option;
+            }}
+          >
+            ${strings[option]}
+          </button>`,
+      )}
+    </div>`;
+  }
+
+  private renderBoardFilters(visits: Departure[]) {
+    const routes = boardFilterOptions(visits, "route", this.boardRoute);
+    const directions = boardFilterOptions(
+      visits,
+      "direction",
+      this.boardDirection,
+    );
+    return html`<div class="board-filters">
+      ${this.renderBoardSelect(
+        "route",
+        [{ value: "", label: strings.allRoutes }, ...routes],
+        this.boardRoute?.value ?? "",
+        (value) => {
+          this.boardRoute = routes.find((option) => option.value === value);
+        },
+      )}
+      ${this.renderBoardSelect(
+        "direction",
+        [{ value: "", label: strings.allDirections }, ...directions],
+        this.boardDirection?.value ?? "",
+        (value) => {
+          this.boardDirection = directions.find(
+            (option) => option.value === value,
+          );
+        },
+      )}
+      ${this.renderBoardSelect(
+        "order",
+        [
+          { value: "scheduled", label: strings.scheduledOrder },
+          { value: "route", label: strings.route },
+        ],
+        this.boardOrder,
+        (value) => {
+          this.boardOrder = value === "route" ? "route" : "scheduled";
+        },
+      )}
+    </div>`;
+  }
+
+  private renderBoardSelect(
+    name: "route" | "direction" | "order",
+    options: BoardFilterOption[],
+    selected: string,
+    onChange: (value: string) => void,
+  ) {
+    return html`<label>
+      ${strings[name]}
+      <select
+        name=${name}
+        @change=${(event: Event) =>
+          onChange((event.target as HTMLSelectElement).value)}
+      >
+        ${options.map(
+          ({ value, label }) =>
+            html`<option value=${value} .selected=${live(value === selected)}>
+              ${label}
+            </option>`,
+        )}
+      </select>
+    </label>`;
+  }
+
+  private clearBoardFilters() {
+    this.boardRoute = undefined;
+    this.boardDirection = undefined;
+    this.renderRoot
+      .querySelector<HTMLSelectElement>('select[name="route"]')
+      ?.focus();
+  }
+
+  private renderBoard(
+    view: BoardView,
+    visits: Departure[],
+    hasVisits: boolean,
+  ) {
+    const arrivals = view === "arrivals";
+    const related = this.related;
+    if (!visits.length)
+      return html`
+        <div class="state" role="status">
+          ${hasVisits
+            ? strings.noMatchingServices
+            : arrivals
+              ? strings.noArrivals
+              : strings.noServices}
+        </div>
+        ${hasVisits
+          ? html`<button
+              type="button"
+              class="clear-board-filters"
+              @click=${this.clearBoardFilters}
+            >
+              ${strings.clearFilters}
+            </button>`
+          : nothing}
+        ${this.renderDisruptionStrip(related.disruptions)}
+      `;
+    const delay = arrivals ? undefined : number(value(related.delay));
+    const limit = this.config.max_departures ?? 5;
+    return html`<div class="secondary">${strings.stopTimetable}</div>
+      ${delay !== undefined && delay !== 0
         ? html`<div class="alert-strip">
-            Next service: reported delay +${delay} min
+            Next service · ${statusLabel(undefined, delay)}
           </div>`
         : nothing}
       <ol class="departures">
-        ${departures.slice(0, this.config.max_departures ?? 5).map(
-          (row) =>
-            html`<li class="departure">
-              <div>
-                ${chip(row.route, row.vehicle, row.color)}${row.headsign
-                  ? html`<div class="destination-name">${row.headsign}</div>`
-                  : nothing}${this.config.show_platform !== false &&
-                row.platform
-                  ? html`<div class="secondary">Platform ${row.platform}</div>`
-                  : nothing}
-              </div>
-              <div class="when">
-                <time datetime=${row.time ?? ""}
-                  >${this.formatTime(row.time)}</time
-                >
-                <div class="secondary">Scheduled</div>
-              </div>
-            </li>`,
-        )}
+        ${visits
+          .slice(0, limit)
+          .map((row) => this.renderDeparture(row, arrivals))}
       </ol>
-      ${departures.length > (this.config.max_departures ?? 5)
+      ${visits.length > limit
         ? html`<div class="note">
-            Showing ${this.config.max_departures ?? 5} of ${departures.length}
-            departures
+            ${strings.boardCount(limit, visits.length, arrivals)}
           </div>`
         : nothing}`;
   }
+
+  private renderDeparture(row: Departure, arrivals: boolean) {
+    const showPlatform = this.config.show_platform !== false;
+    const change = row.platformChange;
+    const statuses = [
+      row.cancelled && strings.cancelled,
+      row.skipped && strings.skipped,
+      row.extra && strings.extraService,
+      row.boarding === "Boarding" && strings.boardingOnly,
+    ].filter(Boolean);
+    return html`<li class="departure">
+      <div>
+        ${chip(row.route, row.vehicle, row.color)}
+        ${row.headsign
+          ? html`<div class="destination-name">${row.headsign}</div>`
+          : nothing}
+        ${showPlatform && row.platform
+          ? html`<div class="secondary">Platform ${row.platform}</div>`
+          : nothing}
+        ${showPlatform && change
+          ? html`<div class="secondary">
+              ${strings.platformChange}: ${change.oldPlatform ?? "—"} →
+              ${change.platform ?? "—"}
+            </div>`
+          : nothing}
+        ${statuses.length
+          ? html`<div class="departure-status">
+              ${statuses.map((status) => html`<span>${status}</span>`)}
+            </div>`
+          : nothing}
+      </div>
+      <div class="when">
+        <time datetime=${row.time ?? ""}>${this.formatTime(row.time)}</time>
+        <div class="secondary">
+          ${arrivals ? strings.scheduledStopTime : strings.scheduled}
+        </div>
+        ${row.expectedTime
+          ? html`<div class="expected-time">
+              <time datetime=${row.expectedTime}
+                >${this.formatTime(row.expectedTime)}</time
+              >
+              <div class="secondary">
+                ${arrivals ? strings.expectedStopTime : strings.expected}
+              </div>
+            </div>`
+          : nothing}
+      </div>
+    </li>`;
+  }
+}
+
+function noticeScope(attributes: Row): string | undefined {
+  const { network, scope_type: scope, scope_value: value } = attributes;
+  if (network !== "SEQ" && network !== "CNS") return undefined;
+  const route = text(value);
+  const mode = typeof value === "number" && strings.notice.modeName[value];
+  const detail =
+    scope === "route" && route
+      ? `${strings.route} ${route}`
+      : scope === "mode" && mode
+        ? mode
+        : strings.notice.network;
+  return `${strings.notice.networkName[network]} · ${detail}`;
+}
+
+function noticeSelectorLabel(selector: NoticeSelector): string {
+  if (selector.scope === "network") return strings.notice.networkWide;
+  if (selector.scope === "unknown") return strings.notice.unknown;
+  const route = selector.route_id ?? selector.trip_route_id;
+  return [
+    route && `${strings.route} ${route}`,
+    selector.mode ??
+      (selector.route_type != null
+        ? `${strings.notice.routeType} ${selector.route_type}`
+        : undefined),
+    selector.stop_id && `${strings.notice.stop} ${selector.stop_id}`,
+    selector.trip_id && `${strings.notice.trip} ${selector.trip_id}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export class AlertsCard extends TranslinkCard {
@@ -522,63 +1405,136 @@ export class AlertsCard extends TranslinkCard {
   protected entityRole = "disruptions";
   protected defaultTitle = strings.alerts;
   protected icon = "mdi:alert-circle-outline";
+
+  protected override renderExtra(entry?: RegistryEntry) {
+    const freshness = this.related.last_successful_fetch;
+    return entry?.platform === "translink" &&
+      entry.translation_key === this.entityRole &&
+      available(freshness) &&
+      validTime(freshness.state)
+      ? html`<div class="note">
+          ${strings.notice.lastSuccessfulFetch}
+          <time datetime=${freshness.state}
+            >${this.formatTime(freshness.state, true)}</time
+          >
+        </div>`
+      : nothing;
+  }
+
   protected renderContent(state: EntityState) {
-    const alerts = rows(state.attributes.disruptions);
+    const alerts: NoticeAlertRow[] = rows(state.attributes.disruptions);
+    const scope = noticeScope(state.attributes);
+    const heading = scope
+      ? html`<div class="notice-scope secondary">${scope}</div>`
+      : nothing;
     if (!alerts.length)
-      return html`<div class="state" role="status">
-        <ha-icon icon="mdi:check-circle-outline" aria-hidden="true"></ha-icon
-        >${strings.noAlerts}
-      </div>`;
-    return html`<div class="secondary">
-        ${alerts.length} service alert${alerts.length === 1 ? "" : "s"} reported
+      return html`${heading}
+        <div class="state" role="status">
+          <ha-icon icon="mdi:check-circle-outline" aria-hidden="true"></ha-icon
+          >${scope ? strings.notice.noMatches : strings.noAlerts}
+        </div>`;
+
+    const count = scope ? number(state.attributes.total_count) : undefined;
+    const total = Math.max(alerts.length, count ?? 0);
+    const visible = alerts.slice(0, this.config.max_alerts ?? 5);
+    return html`${heading}
+      <div class="secondary">
+        ${total} service alert${total === 1 ? "" : "s"} reported
       </div>
       <ul class="alerts">
-        ${alerts.slice(0, this.config.max_alerts ?? 5).map(
-          (alert, index) =>
-            html`<li class="alert">
-              <div class="alert-title">
-                <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>
-                <div>
-                  <h3>${text(alert.title) ?? "Service disruption"}</h3>
-                  <div class="secondary">
-                    ${[text(alert.severity), text(alert.route), text(alert.leg)]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </div>
-                </div>
-              </div>
-              ${validTime(alert.starts_utc) || validTime(alert.ends_utc)
-                ? html`<div class="note">
-                    ${validTime(alert.starts_utc)
-                      ? `From ${this.formatTime(alert.starts_utc, true)}`
-                      : ""}${validTime(alert.ends_utc)
-                      ? ` Until ${this.formatTime(alert.ends_utc, true)}`
-                      : ""}
-                  </div>`
-                : nothing}
-              ${text(alert.cause) || text(alert.effect)
-                ? html`<div class="note">
-                    ${[text(alert.cause), text(alert.effect)]
-                      .filter(Boolean)
-                      .map((v) => v!.replaceAll("_", " "))
-                      .join(" · ")}
-                  </div>`
-                : nothing}
-              ${text(alert.description)
-                ? html`<details>
-                    <summary aria-label=${`Details for alert ${index + 1}`}>
-                      Show alert details
-                    </summary>
-                    <div class="description">${alert.description}</div>
-                  </details>`
-                : nothing}
-            </li>`,
-        )}
+        ${visible.map((alert, index) => this.renderAlert(alert, index))}
       </ul>
-      ${alerts.length > (this.config.max_alerts ?? 5)
+      ${total > visible.length
         ? html`<div class="note">
-            Showing ${this.config.max_alerts ?? 5} of ${alerts.length} alerts
+            Showing ${visible.length} of ${total} alerts
           </div>`
         : nothing}`;
+  }
+
+  private renderAlert(alert: NoticeAlertRow, index: number) {
+    const status =
+      alert.status === "active" || alert.status === "upcoming"
+        ? strings.notice[alert.status]
+        : undefined;
+    const selectorLabels = normalizeNoticeSelectors(
+      alert.informed_entities,
+    ).map(noticeSelectorLabel);
+    if (!selectorLabels.length && alert.match === "unknown")
+      selectorLabels.push(strings.notice.unknown);
+    const omittedSelectors = alert.informed_entities_omitted;
+    if (
+      omittedSelectors &&
+      Number.isInteger(omittedSelectors) &&
+      omittedSelectors > 0
+    )
+      selectorLabels.push(strings.notice.more(omittedSelectors, "selector"));
+    const context = [
+      text(alert.severity),
+      text(alert.route),
+      text(alert.leg),
+      ...selectorLabels,
+    ].filter(Boolean);
+
+    return html`<li class="alert">
+      <div class="alert-title">
+        <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>
+        <div>
+          <h3>${text(alert.title) ?? "Service disruption"}</h3>
+          ${status
+            ? html`<div class="departure-status">
+                <span class="notice-status">${status}</span>
+              </div>`
+            : nothing}
+          ${context.length
+            ? html`<div class="secondary">${context.join(" · ")}</div>`
+            : nothing}
+        </div>
+      </div>
+      ${this.renderAlertPeriods(alert)}
+      ${text(alert.cause) || text(alert.effect)
+        ? html`<div class="note">
+            ${[text(alert.cause), text(alert.effect)]
+              .filter(Boolean)
+              .map((v) => v!.replaceAll("_", " "))
+              .join(" · ")}
+          </div>`
+        : nothing}
+      ${text(alert.description)
+        ? html`<details>
+            <summary aria-label=${`Details for alert ${index + 1}`}>
+              Show alert details
+            </summary>
+            <div class="description">${alert.description}</div>
+          </details>`
+        : nothing}
+    </li>`;
+  }
+
+  private renderAlertPeriods(alert: NoticeAlertRow) {
+    const periods = normalizeNoticePeriods(alert.active_periods);
+    if (!periods.length) {
+      const start = validTime(alert.starts_utc);
+      const end = validTime(alert.ends_utc);
+      if (start || end) periods.push({ start, end });
+    }
+    const omitted = alert.active_periods_omitted;
+    const hasOmitted =
+      omitted !== undefined && Number.isInteger(omitted) && omitted > 0;
+    return periods.length || hasOmitted
+      ? html`<div class="note">
+          ${periods.map((period) => this.renderPeriod(period))}
+          ${hasOmitted
+            ? html`<div>${strings.notice.more(omitted, "period")}</div>`
+            : nothing}
+        </div>`
+      : nothing;
+  }
+
+  private renderPeriod({ start, end }: NoticePeriod) {
+    const labels = [
+      start && `${strings.notice.from} ${this.formatTime(start, true)}`,
+      end && `${strings.notice.until} ${this.formatTime(end, true)}`,
+    ].filter(Boolean);
+    return html`<div class="notice-period">${labels.join(" ")}</div>`;
   }
 }

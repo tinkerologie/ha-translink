@@ -1,6 +1,7 @@
 """Client module for the Translink integration."""
 
 from .api.client import (
+    AlertFeedError,
     TranslinkApiError,
     TranslinkClient,
     TranslinkConnectionError,
@@ -11,13 +12,20 @@ from .api.client import (
     redact_sensitive,
 )
 from .api.gtfs_realtime import (
+    AlertDetail,
+    AlertFeed,
+    AlertPeriod,
     AlertRecord,
+    AlertSelector,
+    GtfsRealtimeDecodeError,
     StopTimeEventRecord,
     StopTimeUpdateRecord,
     TripUpdateRecord,
     VehiclePositionRecord,
+    parse_alert_feed,
     parse_alerts,
     parse_trip_updates,
+    parse_vehicle_position_records,
     parse_vehicle_positions,
 )
 from .api.models import (
@@ -26,6 +34,7 @@ from .api.models import (
     JourneyPlanResult,
     JourneySummary,
     LocationSearchResult,
+    NoticeSummary,
     StopSummary,
     TripDeparture,
     TripTimetable,
@@ -33,12 +42,19 @@ from .api.models import (
 from .api.trip_page import TripPageParseError
 
 __all__ = [
+    "AlertDetail",
+    "AlertFeed",
+    "AlertFeedError",
+    "AlertPeriod",
     "AlertRecord",
+    "AlertSelector",
     "CallingStop",
     "CallingStopRealtime",
+    "GtfsRealtimeDecodeError",
     "JourneyPlanResult",
     "JourneySummary",
     "LocationSearchResult",
+    "NoticeSummary",
     "StopSummary",
     "StopTimeEventRecord",
     "StopTimeUpdateRecord",
@@ -53,9 +69,11 @@ __all__ = [
     "VehiclePositionRecord",
     "build_journey_summary",
     "calculate_plan_hash",
+    "parse_alert_feed",
     "parse_alerts",
     "parse_iso_datetime",
     "parse_trip_updates",
+    "parse_vehicle_position_records",
     "parse_vehicle_positions",
     "redact_sensitive",
 ]

@@ -11,13 +11,35 @@ customElements.define(
 );
 import "/custom_components/translink/frontend/translink-cards.js";
 const hass = await (await fetch("/frontend/test/fixtures/hass.json")).json();
+const alternatives = await (
+  await fetch("/frontend/test/fixtures/alternatives.json")
+).json();
+hass.callService = async (
+  _domain,
+  _service,
+  _data,
+  _target,
+  _notify,
+  response,
+) => {
+  if (!response) throw new Error("Expected a response-only action");
+  return { response: alternatives };
+};
 for (const [type, entity] of [
   ["journey", "sensor.renamed_journey_itinerary"],
   ["departures", "sensor.renamed_stop_departures_board"],
-  ["alerts", "sensor.renamed_journey_disruptions"],
+  ["alerts", "sensor.renamed_cairns_notices"],
+  ["progress", "sensor.renamed_journey_progress"],
 ]) {
   const card = document.createElement(`translink-${type}-card`);
-  card.setConfig({ type: `custom:translink-${type}-card`, entity });
+  card.setConfig({
+    type: `custom:translink-${type}-card`,
+    entity,
+    ...(type === "journey" ? { show_planner: true } : {}),
+    ...(type === "departures"
+      ? { show_arrivals: true, show_filters: true }
+      : {}),
+  });
   card.hass = hass;
   document.querySelector("main").append(card);
 }

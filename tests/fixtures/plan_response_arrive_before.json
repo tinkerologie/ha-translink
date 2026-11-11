@@ -1,0 +1,32 @@
+{
+  "enquiry": {
+    "timeSearchMode": "ArriveBefore",
+    "searchDate": "2026-10-06",
+    "searchTime": "10:25am"
+  },
+  "itineraries": [
+    {
+      "durationMins": 41,
+      "firstDepartureTimeUtc": "2026-10-05T23:43:00Z",
+      "lastArrivalTimeUtc": "2026-10-06T00:24:00Z",
+      "legs": [
+        {
+          "arrivalTimeUtc": "2026-10-06T00:24:00Z",
+          "departureTimeUtc": "2026-10-05T23:43:00Z",
+          "origin": {
+            "name": "Central station"
+          },
+          "legRoute": {
+            "code": "SPRP",
+            "name": "Springfield line"
+          },
+          "destination": {
+            "name": "Springfield Central station"
+          },
+          "travelMode": "Train",
+          "tripHeadsign": "Springfield Central station"
+        }
+      ]
+    }
+  ]
+}

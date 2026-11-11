@@ -5,6 +5,8 @@ from __future__ import annotations
 import struct
 from typing import Any
 
+import pytest
+
 from custom_components.translink.api.gtfs_realtime import (
     _decode_string,
     _decode_translated_string,
@@ -61,13 +63,12 @@ def test_varint_multibyte() -> None:
 
 
 def test_parse_fields_all_wire_types() -> None:
-    """Test _parse_fields handles wire types 0, 1, 2, 5 and breaks on unsupported types."""
+    """Test protobuf wire types used by the realtime feeds."""
     payload = (
         _encode_field(1, 0, 42)  # Varint
         + _encode_field(2, 1, 1000000)  # 64-bit
         + _encode_field(3, 2, b"hello")  # Length-delimited
         + _encode_field(4, 5, 3.14)  # 32-bit float
-        + _encode_field(5, 7, 0)  # Unsupported wire type (should break)
     )
 
     fields = _parse_fields(payload, limit=len(payload))
@@ -173,7 +174,7 @@ def test_parse_trip_updates_negative_delay_and_fields() -> None:
     entity_valid = _encode_field(1, 2, "ENT_TU_1") + _encode_field(3, 2, tu_body)
     entity_empty = _encode_field(1, 2, "ENT_TU_EMPTY")
     feed = (
-        _encode_field(1, 2, b"header")
+        _encode_field(1, 2, _encode_field(1, 2, "2.0"))
         + _encode_field(2, 2, entity_valid)
         + _encode_field(2, 2, entity_empty)
     )
@@ -185,6 +186,23 @@ def test_parse_trip_updates_negative_delay_and_fields() -> None:
     assert rec.stop_id == "STOP_TARGET"
     assert rec.timestamp == 1728180000
     assert rec.route_id == "ROUTE_NEG"
+
+
+def test_trip_delay_and_feed_timestamp_are_independent_of_field_order() -> None:
+    """Preserve trip-wide evidence separately from legacy stop aggregates."""
+    descriptor = _encode_field(1, 2, _encode_field(1, 2, "TRIP"))
+    event = _encode_field(3, 2, _encode_field(1, 0, 900))
+    visit = _encode_field(2, 2, event + _encode_field(4, 2, "STOP"))
+    trip_delay = _encode_field(5, 0, -120)
+    header = _encode_field(1, 2, _encode_field(3, 0, 1728180000))
+
+    for timing, legacy_delay in ((trip_delay + visit, 900), (visit + trip_delay, -120)):
+        entity = _encode_field(3, 2, descriptor + timing)
+        record = parse_trip_updates(_encode_field(2, 2, entity) + header)["TRIP"]
+        assert record.feed_timestamp == 1728180000
+        assert record.trip_delay_seconds == -120
+        assert record.delay_seconds == legacy_delay
+        assert record.stop_id == "STOP"
 
 
 def test_parse_vehicle_positions_custom_fields() -> None:
@@ -214,7 +232,7 @@ def test_parse_vehicle_positions_custom_fields() -> None:
     )
     entity_empty = _encode_field(1, 2, "ENT_EMPTY")
     feed = (
-        _encode_field(1, 2, b"header")
+        _encode_field(1, 2, _encode_field(1, 2, "2.0"))
         + _encode_field(2, 2, entity_valid)
         + _encode_field(2, 2, entity_no_pos)
         + _encode_field(2, 2, entity_empty)
@@ -234,28 +252,22 @@ def test_parse_vehicle_positions_custom_fields() -> None:
     assert rec.timestamp == 1728180000
 
 
-def test_gtfs_varint_truncated() -> None:
-    """Test varint loop terminates if bytes end before 0x80 bit is cleared."""
-    _, offset = _parse_varint(b"\x80\x80", 0)
-    assert offset == 2
-
-
-def test_gtfs_fields_truncated() -> None:
-    """Test _parse_fields terminates safely on truncated wire types 1, 2, 5."""
-    # Wire type 1 (64-bit) with only 4 bytes instead of 8
-    tag_wire1 = (1 << 3) | 1
-    data_wire1 = _encode_varint(tag_wire1) + b"\x00\x00\x00\x00"
-    assert _parse_fields(data_wire1) == []
-
-    # Wire type 2 (length-delimited) with length 10 but only 2 bytes remaining
-    tag_wire2 = (1 << 3) | 2
-    data_wire2 = _encode_varint(tag_wire2) + _encode_varint(10) + b"\x00\x00"
-    assert _parse_fields(data_wire2) == []
-
-    # Wire type 5 (32-bit fixed) with only 2 bytes instead of 4
-    tag_wire5 = (1 << 3) | 5
-    data_wire5 = _encode_varint(tag_wire5) + b"\x00\x00"
-    assert _parse_fields(data_wire5) == []
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (b"\x80\x80", "Truncated protobuf varint"),
+        (b"\xff" * 10, "Oversized protobuf varint"),
+        (b"\x00", "Invalid protobuf field number"),
+        (b"\x09" + b"\x00" * 4, "Truncated protobuf fixed64 field"),
+        (b"\x0a\x0a\x00\x00", "Truncated protobuf message field"),
+        (b"\x0d\x00\x00", "Truncated protobuf fixed32 field"),
+        (b"\x2f", "Unsupported protobuf wire type"),
+    ],
+)
+def test_gtfs_decoder_rejects_malformed_fields(payload: bytes, error: str) -> None:
+    """Never return partial records for a malformed realtime message."""
+    with pytest.raises(ValueError, match=error):
+        _parse_fields(payload)
 
 
 def test_gtfs_realtime_extra_and_unknown_fields() -> None:
@@ -469,3 +481,231 @@ def test_stop_predictions_preserve_absence_and_repeated_visits() -> None:
         is None
     )
     assert _parse_stop_update(_encode_field(99, 0, 1)).stop_id is None
+
+
+def test_vehicle_feed_preserves_colliding_trips_and_service_context() -> None:
+    """Keep all candidates, including multiple vehicles on one full trip ID."""
+    from custom_components.translink.client import parse_vehicle_position_records
+
+    def entity(index: int, trip: str, timestamp: int | None = None) -> bytes:
+        descriptor = (
+            _encode_field(1, 2, trip)
+            + _encode_field(2, 2, "05:00:00")
+            + _encode_field(3, 2, "20261006")
+        )
+        position = _encode_field(1, 5, -27.47) + _encode_field(2, 5, 153.02)
+        vehicle = (
+            _encode_field(1, 2, descriptor)
+            + _encode_field(2, 2, position)
+            + _encode_field(8, 2, _encode_field(1, 2, f"BUS{index}"))
+        )
+        if timestamp is not None:
+            vehicle += _encode_field(5, 0, timestamp)
+        return _encode_field(
+            2, 2, _encode_field(1, 2, f"E{index}") + _encode_field(4, 2, vehicle)
+        )
+
+    feed = (
+        entity(1, "123-one", 1791262800) + entity(2, "123-one") + entity(3, "123-two")
+    )
+    first, second, third, unknown = parse_vehicle_position_records(
+        feed + entity(4, " ")
+    )
+    assert [record.vehicle_id for record in (first, second, third)] == [
+        "BUS1",
+        "BUS2",
+        "BUS3",
+    ]
+    assert first.start_date == "20261006"
+    assert first.start_time == "05:00:00"
+    assert first.timestamp == 1791262800
+    assert second.timestamp is None
+    aliases = parse_vehicle_positions(feed)
+    assert aliases["123"] == first
+    assert aliases["123-one"] == second
+    assert aliases["123-two"] == third
+    assert parse_vehicle_positions(entity(4, " "))[" "] == unknown
+
+
+def test_vehicle_stop_progress_retains_presence() -> None:
+    """Explicit zero-valued sequence and status differ from missing fields."""
+    position = _encode_field(1, 5, -27.47) + _encode_field(2, 5, 153.02)
+    vehicle = _encode_field(2, 2, position)
+    observed = (
+        vehicle
+        + _encode_field(3, 0, 0)
+        + _encode_field(4, 0, 0)
+        + _encode_field(7, 2, "600321")
+    )
+
+    assert (
+        parse_vehicle_positions(_encode_field(2, 2, _encode_field(4, 2, vehicle)))[
+            ""
+        ].current_stop_sequence
+        is None
+    )
+    record = parse_vehicle_positions(
+        _encode_field(2, 2, _encode_field(4, 2, observed))
+    )[""]
+    assert record.current_stop_sequence == 0
+    assert record.current_status == "INCOMING_AT"
+    assert record.stop_id == "600321"
+
+
+def test_captured_vehicle_progress_keeps_both_candidates(
+    sample_vehicle_positions_bytes: bytes,
+) -> None:
+    """The exact trip ID in the captured feed has two distinct stop observations."""
+    from custom_components.translink.api.gtfs_realtime import (
+        parse_vehicle_position_records,
+    )
+    from custom_components.translink.api.progress import vehicle_candidates_for_trip
+
+    candidates = vehicle_candidates_for_trip(
+        parse_vehicle_position_records(sample_vehicle_positions_bytes),
+        "39084222-BT 26_27-44213",
+    )
+    assert [
+        (
+            record.current_stop_sequence,
+            record.current_status,
+            record.stop_id,
+            record.start_date,
+        )
+        for record in candidates
+    ] == [(30, "IN_TRANSIT_TO", "82", None), (1, "STOPPED_AT", "16510", None)]
+
+
+def test_parse_alert_feed_preserves_windows_selectors_and_language() -> None:
+    """Strict parsing preserves scope and the distinction between absent and zero."""
+    from custom_components.translink.api.gtfs_realtime import parse_alert_feed
+
+    def translation(text: str, language: str) -> bytes:
+        return _encode_field(
+            1, 2, _encode_field(1, 2, text) + _encode_field(2, 2, language)
+        )
+
+    header = _encode_field(1, 2, _encode_field(1, 2, "2.0") + _encode_field(3, 0, 42))
+    assert parse_alert_feed(header).alerts == ()
+    selector = (
+        _encode_field(1, 2, "agency")
+        + _encode_field(2, 2, "RPSP-5154")
+        + _encode_field(3, 0, 2)
+        + _encode_field(4, 2, _encode_field(1, 2, "trip") + _encode_field(5, 2, "RPSP"))
+        + _encode_field(5, 2, "stop")
+        + _encode_field(6, 0, 0)
+    )
+    alert = (
+        _encode_field(1, 2, _encode_field(1, 0, 0))
+        + _encode_field(1, 2, _encode_field(2, 0, 99))
+        + _encode_field(5, 2, selector)
+        + _encode_field(5, 2, _encode_field(1, 2, "other agency"))
+        + _encode_field(5, 2, b"")
+        + _encode_field(5, 2, _encode_field(99, 0, 0))
+        + _encode_field(6, 0, 6)
+        + _encode_field(7, 0, 99)
+        + _encode_field(10, 2, translation("Retard", "fr") + translation("Delay", "en"))
+        + _encode_field(11, 2, translation("Retard", "fr") + translation("Details", ""))
+        + _encode_field(14, 0, 3)
+    )
+    entity = _encode_field(2, 2, _encode_field(1, 2, "id") + _encode_field(5, 2, alert))
+    anonymous = _encode_field(2, 2, _encode_field(5, 2, b""))
+    feed = parse_alert_feed(header + entity + entity + anonymous)
+    assert feed.header_timestamp == 42
+    assert feed.gtfs_realtime_version == "2.0"
+    assert [record.entity_id for record in feed.alerts] == ["id", "id", ""]
+    record = feed.alerts[0]
+    assert (record.header_text, record.description_text) == ("Delay", "Details")
+    assert (record.cause, record.effect, record.severity) == (
+        "ACCIDENT",
+        "UNKNOWN_99",
+        "WARNING",
+    )
+    assert [(period.start, period.end) for period in record.periods] == [
+        (0, None),
+        (None, 99),
+    ]
+    combined, agency_only, empty, unknown = record.selectors
+    assert (combined.agency_id, combined.route_id, combined.route_type) == (
+        "agency",
+        "RPSP-5154",
+        2,
+    )
+    assert (
+        combined.trip_id,
+        combined.trip_route_id,
+        combined.stop_id,
+        combined.direction_id,
+    ) == ("trip", "RPSP", "stop", 0)
+    assert agency_only.agency_id == "other agency"
+    assert not empty.has_unknown_fields
+    assert unknown.has_unknown_fields
+    assert feed.alerts[-1].selectors == ()
+
+
+def test_parse_alert_feed_rejects_invalid_wire_data() -> None:
+    """Malformed data cannot look like a successfully cleared alert feed."""
+    import pytest
+
+    from custom_components.translink.api.gtfs_realtime import (
+        GtfsRealtimeDecodeError,
+        parse_alert_feed,
+    )
+
+    header = _encode_field(1, 2, _encode_field(1, 2, "2.0"))
+    for malformed in (
+        b"",
+        b"\x0a\x00",
+        b"\x08\x01",
+        header + b"\x80",
+        header + b"\x12\x80",
+        header + b"\x12\x0fshort",
+        header + b"\x12\x04\x2a\x02\x2a\x80",
+        header + b"\x12\x01\x0f",
+        header + b"\x12\x01\x29",
+        header + b"\x12\x01\x2d",
+        header + b"\x00",
+        header + b"\x80" * 10 + b"\x01",
+    ):
+        with pytest.raises(GtfsRealtimeDecodeError):
+            parse_alert_feed(malformed)
+
+
+def test_parse_alert_feed_skips_unrelated_fields_and_uses_first_translation() -> None:
+    """Unknown extensions do not displace alert content or change its language."""
+    from custom_components.translink.api.gtfs_realtime import parse_alert_feed
+
+    translations = (
+        _encode_field(2, 2, "extension")
+        + _encode_field(1, 2, _encode_field(2, 2, "en"))
+        + _encode_field(
+            1, 2, _encode_field(1, 2, "Premier") + _encode_field(2, 2, "fr")
+        )
+    )
+    feed = (
+        _encode_field(1, 2, _encode_field(1, 2, "2.0"))
+        + _encode_field(99, 0, 1)
+        + _encode_field(2, 2, _encode_field(1, 2, "no-alert"))
+        + _encode_field(2, 2, _encode_field(5, 2, _encode_field(10, 2, translations)))
+    )
+    assert [alert.header_text for alert in parse_alert_feed(feed).alerts] == ["Premier"]
+
+
+def test_legacy_alert_parser_preserves_records_before_truncated_data() -> None:
+    """The public legacy parser still returns complete alerts before malformed data."""
+    translated = _encode_field(1, 2, _encode_field(1, 2, "Delayed"))
+    alert = _encode_field(10, 2, translated)
+    entity = _encode_field(1, 2, "legacy-id") + _encode_field(5, 2, alert)
+    complete = _encode_field(2, 2, entity)
+
+    assert [row.entity_id for row in parse_alerts(complete + b"\x12\x0a\x00")] == [
+        "legacy-id"
+    ]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x2f")] == ["legacy-id"]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x09\x00")] == [
+        "legacy-id"
+    ]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x0d\x00")] == [
+        "legacy-id"
+    ]
+    assert [row.entity_id for row in parse_alerts(complete + b"\x80")] == ["legacy-id"]

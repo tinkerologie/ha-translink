@@ -1,6 +1,7 @@
 """Translink API client package."""
 
 from .client import (
+    AlertFeedError,
     TranslinkApiError,
     TranslinkClient,
     TranslinkConnectionError,
@@ -11,11 +12,18 @@ from .client import (
     redact_sensitive,
 )
 from .gtfs_realtime import (
+    AlertDetail,
+    AlertFeed,
+    AlertPeriod,
     AlertRecord,
+    AlertSelector,
+    GtfsRealtimeDecodeError,
     TripUpdateRecord,
     VehiclePositionRecord,
+    parse_alert_feed,
     parse_alerts,
     parse_trip_updates,
+    parse_vehicle_position_records,
     parse_vehicle_positions,
 )
 from .models import (
@@ -24,16 +32,24 @@ from .models import (
     JourneyPlanResult,
     JourneySummary,
     LocationSearchResult,
+    NoticeSummary,
     StopSummary,
 )
 
 __all__ = [
+    "AlertDetail",
+    "AlertFeed",
+    "AlertFeedError",
+    "AlertPeriod",
     "AlertRecord",
+    "AlertSelector",
+    "GtfsRealtimeDecodeError",
     "JourneyItinerary",
     "JourneyLeg",
     "JourneyPlanResult",
     "JourneySummary",
     "LocationSearchResult",
+    "NoticeSummary",
     "StopSummary",
     "TranslinkApiError",
     "TranslinkClient",
@@ -43,9 +59,11 @@ __all__ = [
     "VehiclePositionRecord",
     "build_journey_summary",
     "calculate_plan_hash",
+    "parse_alert_feed",
     "parse_alerts",
     "parse_iso_datetime",
     "parse_trip_updates",
+    "parse_vehicle_position_records",
     "parse_vehicle_positions",
     "redact_sensitive",
 ]

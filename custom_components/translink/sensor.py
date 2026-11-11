@@ -15,13 +15,27 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
-from .const import BRISBANE_TZ, CONF_NAME, DOMAIN, MODE_JOURNEY, get_vehicle_icon
+from .api.client import vehicle_position_expiry, vehicle_position_is_fresh
+from .api.models import JourneyProgress, JourneySummary, NoticeSummary, StopSummary
+from .const import (
+    BRISBANE_TZ,
+    CONF_NAME,
+    DEVICE_MODELS,
+    DOMAIN,
+    MODE_JOURNEY,
+    MODE_NOTICES,
+    MODE_STOP,
+    get_vehicle_icon,
+)
 from .coordinator import TranslinkCoordinator
+from .window_coordinator import WindowCoordinator, WindowData
 
 if TYPE_CHECKING:
     from . import TranslinkConfigEntry
@@ -34,6 +48,54 @@ def _format_brisbane_time(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.astimezone(ZoneInfo(BRISBANE_TZ)).strftime("%I:%M %p")
+
+
+def _predicted_time_attributes(dt: datetime | None) -> dict[str, str | None]:
+    """Use ISO timestamps for cards and templates."""
+    return {
+        "predicted_time": dt.isoformat() if dt is not None else None,
+        "predicted_readable_time": _format_brisbane_time(dt),
+    }
+
+
+def _delay_attributes(data: JourneySummary | StopSummary) -> dict[str, Any]:
+    return {
+        "delay_seconds": data.departure_delay_seconds,
+        "arrival_delay_seconds": data.arrival_delay_seconds,
+        "realtime_status": data.realtime_status,
+        "delay_source": data.delay_source,
+        "realtime_updated_at": data.realtime_updated_at.isoformat()
+        if data.realtime_updated_at is not None
+        else None,
+    }
+
+
+def _live_progress_observation_time(progress: JourneyProgress) -> datetime | None:
+    observation = progress.vehicle_observation
+    if (
+        observation is not None
+        and observation.fresh
+        and vehicle_position_is_fresh(
+            observation.observed_at.timestamp(), dt_util.utcnow()
+        )
+    ):
+        return observation.observed_at
+    return None
+
+
+def _progress_attributes(data: JourneySummary) -> dict[str, Any]:
+    progress = data.progress
+    if progress is None:
+        return {}
+    attributes = progress.model_dump(mode="json", exclude={"state", "transitions"})
+    attributes["progress_legs"] = attributes.pop("legs")
+    if (
+        progress.active_leg_source == "vehicle"
+        and _live_progress_observation_time(progress) is None
+    ):
+        attributes["vehicle_observation"] = None
+        attributes["active_leg_source"] = progress.active_leg_timing_source
+    return attributes
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -55,6 +117,7 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
             "origin": data.origin_name,
             "platform": data.origin_platform,
             "readable_time": _format_brisbane_time(data.departure_time),
+            **_predicted_time_attributes(data.predicted_departure_time),
         },
     ),
     TranslinkSensorEntityDescription(
@@ -66,6 +129,7 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
             "destination": data.destination_name,
             "platform": data.destination_platform,
             "readable_time": _format_brisbane_time(data.arrival_time),
+            **_predicted_time_attributes(data.predicted_arrival_time),
         },
     ),
     TranslinkSensorEntityDescription(
@@ -83,12 +147,29 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         options=[
             "scheduled",
             "on_time",
+            "early",
             "delayed",
+            "cancelled",
+            "boarding_skipped",
             "departed",
             "arrived",
             "no_service",
         ],
         value_fn=lambda data: data.status,
+        attributes_fn=lambda data: {
+            "boarding_relationship": data.boarding_relationship,
+            "alighting_skipped": data.alighting_skipped,
+        },
+    ),
+    TranslinkSensorEntityDescription(
+        key="journey_progress",
+        translation_key="journey_progress",
+        device_class=SensorDeviceClass.ENUM,
+        options=["no_service", "not_started", "in_progress", "finished", "cancelled"],
+        value_fn=lambda data: (
+            data.progress.state if data.progress is not None else None
+        ),
+        attributes_fn=_progress_attributes,
     ),
     TranslinkSensorEntityDescription(
         key="next_service",
@@ -140,6 +221,7 @@ JOURNEY_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         native_unit_of_measurement="min",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.delay_mins,
+        attributes_fn=_delay_attributes,
     ),
     TranslinkSensorEntityDescription(
         key="walking_distance",
@@ -197,6 +279,7 @@ STOP_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         attributes_fn=lambda data: {
             "platform": data.next_platform,
             "readable_time": _format_brisbane_time(data.next_departure_time),
+            **_predicted_time_attributes(data.predicted_departure_time),
         },
     ),
     TranslinkSensorEntityDescription(
@@ -229,6 +312,7 @@ STOP_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         native_unit_of_measurement="min",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.delay_mins,
+        attributes_fn=_delay_attributes,
     ),
     TranslinkSensorEntityDescription(
         key="disruptions",
@@ -264,8 +348,52 @@ STOP_SENSORS: tuple[TranslinkSensorEntityDescription, ...] = (
         value_fn=lambda data: f"{len(data.departures)} departures",
         attributes_fn=lambda data: {
             "departures": data.departures,
+            "arrivals": data.arrivals,
         },
     ),
+)
+
+
+def _notice_attributes(data: NoticeSummary) -> dict[str, Any]:
+    return {
+        "disruptions": data.disruptions,
+        "description": data.disruptions_description,
+        "summary": data.disruptions_summary,
+        "latest_title": data.latest_disruption_title,
+        "latest_description": data.latest_disruption_description,
+        "network": data.network,
+        "scope_type": data.scope_type,
+        "scope_value": data.scope_value,
+        "feed_timestamp": data.feed_timestamp,
+        "last_successful_fetch": data.last_successful_fetch,
+        "total_count": data.total_count,
+        "shown_count": data.shown_count,
+        "active_count": data.active_count,
+        "upcoming_count": data.upcoming_count,
+        "unclassified_count": data.unclassified_count,
+        "duplicates_dropped": data.duplicates_dropped,
+    }
+
+
+NOTICE_SENSORS = tuple(
+    TranslinkSensorEntityDescription(
+        key=description.key,
+        translation_key=description.translation_key,
+        entity_category=description.entity_category,
+        value_fn=description.value_fn,
+        attributes_fn=_notice_attributes
+        if description.key == "disruptions"
+        else description.attributes_fn,
+    )
+    for description in STOP_SENSORS
+    if description.key in {"disruptions", "disruption_description"}
+)
+NOTICE_FRESHNESS_SENSOR = TranslinkSensorEntityDescription(
+    key="last_successful_fetch",
+    translation_key="last_successful_fetch",
+    device_class=SensorDeviceClass.TIMESTAMP,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    value_fn=lambda data: data.last_successful_fetch,
 )
 
 
@@ -275,14 +403,39 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Translink sensors from config entry."""
-    coordinator: TranslinkCoordinator = (
+    coordinator: TranslinkCoordinator | WindowCoordinator = (
         getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
     )
+
+    if isinstance(coordinator, WindowCoordinator):
+        async_add_entities(
+            TranslinkWindowSensor(coordinator, description)
+            for description in WINDOW_SENSORS
+        )
+        return
+
+    if coordinator.mode == MODE_NOTICES:
+        async_add_entities(
+            [
+                *(
+                    TranslinkNoticeSensor(coordinator, description, entry)
+                    for description in NOTICE_SENSORS
+                ),
+                TranslinkNoticeFreshnessSensor(
+                    coordinator, NOTICE_FRESHNESS_SENSOR, entry
+                ),
+            ]
+        )
+        return
 
     descriptions = JOURNEY_SENSORS if coordinator.mode == MODE_JOURNEY else STOP_SENSORS
 
     async_add_entities(
-        TranslinkSensor(
+        (
+            TranslinkProgressSensor
+            if description.key == "journey_progress"
+            else TranslinkSensor
+        )(
             coordinator=coordinator,
             description=description,
             entry=entry,
@@ -299,7 +452,16 @@ class TranslinkSensor(
 
     entity_description: TranslinkSensorEntityDescription
     _attr_has_entity_name = True
-    _unrecorded_attributes = frozenset({"legs"})
+    _unrecorded_attributes = frozenset(
+        {
+            "legs",
+            "departures",
+            "arrivals",
+            "next_action",
+            "vehicle_observation",
+            "progress_legs",
+        }
+    )
 
     def __init__(
         self,
@@ -315,17 +477,11 @@ class TranslinkSensor(
         name = entry.data.get(CONF_NAME, "Translink")
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
 
-        device_model = (
-            "Public Transport Journey"
-            if coordinator.mode == MODE_JOURNEY
-            else "Station Departure Board"
-        )
-
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=name,
             manufacturer="Translink Queensland",
-            model=device_model,
+            model=DEVICE_MODELS.get(coordinator.mode, DEVICE_MODELS[MODE_STOP]),
             entry_type=DeviceEntryType.SERVICE,
         )
 
@@ -351,3 +507,134 @@ class TranslinkSensor(
         if not self.coordinator.data or not self.entity_description.attributes_fn:
             return {}
         return self.entity_description.attributes_fn(self.coordinator.data)
+
+
+class TranslinkProgressSensor(TranslinkSensor):
+    """Expire vehicle observations independently of coordinator polling."""
+
+    _cancel_expiry: CALLBACK_TYPE | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Schedule expiry for the first observation and clean up on removal."""
+        await super().async_added_to_hass()
+        self.async_on_remove(self._async_cancel_expiry)
+        self._async_schedule_expiry()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._async_schedule_expiry()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _async_schedule_expiry(self) -> None:
+        self._async_cancel_expiry()
+        data = self.coordinator.data
+        if (
+            self.available
+            and isinstance(data, JourneySummary)
+            and data.progress is not None
+            and (observed_at := _live_progress_observation_time(data.progress))
+            is not None
+        ):
+            self._cancel_expiry = async_track_point_in_time(
+                self.hass,
+                self._async_observation_expired,
+                vehicle_position_expiry(observed_at),
+            )
+
+    @callback
+    def _async_cancel_expiry(self) -> None:
+        if self._cancel_expiry is not None:
+            self._cancel_expiry()
+            self._cancel_expiry = None
+
+    @callback
+    def _async_observation_expired(self, _now: datetime) -> None:
+        self._cancel_expiry = None
+        self.async_write_ha_state()
+
+
+class TranslinkNoticeSensor(TranslinkSensor):
+    """Publish service notices while excluding alert rows from the recorder."""
+
+    _unrecorded_attributes = TranslinkSensor._unrecorded_attributes | {"disruptions"}
+
+
+class TranslinkNoticeFreshnessSensor(TranslinkSensor):
+    """Show the last successful fetch even during a feed failure."""
+
+    @property
+    def available(self) -> bool:
+        """Report availability once a feed has been read successfully."""
+        return self.coordinator.data is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Show the feed timestamp and health of the last refresh separately."""
+        data = self.coordinator.data
+        if not isinstance(data, NoticeSummary):
+            return {}
+        return {
+            "feed_timestamp": data.feed_timestamp,
+            "last_update_success": self.coordinator.last_update_success,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class TranslinkWindowSensorDescription(SensorEntityDescription):
+    """Describe a state from the commute window coordinator."""
+
+    value_fn: Callable[[WindowData], Any]
+
+
+WINDOW_SENSORS = (
+    TranslinkWindowSensorDescription(
+        key="window_status",
+        translation_key="window_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=["idle", "active", "expired"],
+        value_fn=lambda data: data.status,
+    ),
+    TranslinkWindowSensorDescription(
+        key="window_next_start",
+        translation_key="window_next_start",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda data: data.next_start,
+    ),
+    TranslinkWindowSensorDescription(
+        key="window_tracked_trips",
+        translation_key="window_tracked_trips",
+        value_fn=lambda data: len(data.trips),
+    ),
+)
+
+
+class TranslinkWindowSensor(CoordinatorEntity[WindowCoordinator], SensorEntity):
+    """Expose a commute window's schedule and tracked service state."""
+
+    entity_description: TranslinkWindowSensorDescription
+    _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"trips"})
+
+    def __init__(
+        self,
+        coordinator: WindowCoordinator,
+        description: TranslinkWindowSensorDescription,
+    ) -> None:
+        """Initialize the entity on the commute window device."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_{description.key}"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> Any:
+        """Return the configured value from the window."""
+        return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Provide current observations for the tracked trips sensor."""
+        if self.entity_description.key == "window_tracked_trips":
+            return {"trips": [trip.as_state() for trip in self.coordinator.data.trips]}
+        return None

@@ -68,7 +68,10 @@ def test_captured_overlay_and_service_date(captured_case):
     assert calls[1].platform is None
     assert updated == datetime.fromtimestamp(update.timestamp, UTC).isoformat()
     summary = build_journey_summary(
-        plan, trip_updates={"39040861": update}, trip_timetables={leg.tripId: timetable}
+        plan,
+        trip_updates={"39040861": update},
+        trip_timetables={leg.tripId: timetable},
+        now=datetime.fromtimestamp(update.timestamp, UTC),
     )
     assert summary.itinerary_legs[0]["callingStopsSource"] == source
     assert summary.itinerary_legs[0]["skippedStops"] == [
@@ -77,6 +80,7 @@ def test_captured_overlay_and_service_date(captured_case):
     wrong_date = deepcopy(update)
     wrong_date.start_date = "20261007"
     assert _match_trip_record(leg.tripId, {"39040861": wrong_date}, "RPSP") is None
+    wrong_date.trip_id = leg.tripId
     assert (
         _match_trip_record(leg.tripId, {leg.tripId: wrong_date}, "RPSP") is wrong_date
     )
@@ -169,12 +173,24 @@ def test_route_suffixes_preserve_route_identity(captured_case):
 
 def test_wrong_timetable_identity_and_skipped_relationship(captured_case):
     """A mismatched page cannot supply scheduled calling times."""
-    _, leg, update, timetable = captured_case
+    plan, leg, update, timetable = captured_case
     wrong = timetable.model_copy(update={"id": "another-trip"})
     assert build_calling_stops(leg, wrong, None) == ([], "unavailable", None)
     calls, source, _ = build_calling_stops(leg, wrong, update)
     assert source == "realtime_partial"
     assert all(stop.scheduledTimeUtc is None for stop in calls)
+    for trip_updates, expected_source in [
+        ({}, "unavailable"),
+        ({leg.tripId: update}, "realtime_partial"),
+    ]:
+        summary = build_journey_summary(
+            plan,
+            trip_updates=trip_updates,
+            trip_timetables={leg.tripId: wrong},
+            now=datetime.fromtimestamp(update.timestamp, UTC),
+        )
+        assert summary.itinerary_legs[0]["callingStopsSource"] == expected_source
+        assert summary.itinerary_legs[0]["timetableUrl"] is None
     result = _realtime_stop(
         StopTimeUpdateRecord(
             stop_sequence=2,

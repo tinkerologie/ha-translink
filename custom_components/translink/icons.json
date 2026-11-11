@@ -15,7 +15,10 @@
         "state": {
           "scheduled": "mdi:calendar-clock",
           "on_time": "mdi:check-circle-outline",
+          "early": "mdi:clock-fast",
           "delayed": "mdi:alert-circle-outline",
+          "cancelled": "mdi:cancel",
+          "boarding_skipped": "mdi:skip-next",
           "departed": "mdi:bus-clock",
           "arrived": "mdi:map-marker-check",
           "no_service": "mdi:cancel"
@@ -41,6 +44,9 @@
       },
       "disruptions": {
         "default": "mdi:alert"
+      },
+      "last_successful_fetch": {
+        "default": "mdi:clock-check-outline"
       },
       "disruption_description": {
         "default": "mdi:alert-box-outline"
