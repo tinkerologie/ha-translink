@@ -66,6 +66,28 @@ export interface CardConfig {
   calendar_entity?: string;
 }
 export type Row = Record<string, unknown>;
+export interface NoticePeriod {
+  start?: string | null;
+  end?: string | null;
+}
+export interface NoticeSelector {
+  scope: "network" | "route" | "mode" | "stop" | "trip" | "unknown";
+  agency_id?: string | null;
+  route_id?: string | null;
+  trip_route_id?: string | null;
+  route_type?: number | null;
+  mode?: string | null;
+  stop_id?: string | null;
+  trip_id?: string | null;
+}
+export interface NoticeAlertRow extends Row {
+  active_periods?: NoticePeriod[];
+  informed_entities?: NoticeSelector[];
+  active_periods_omitted?: number;
+  informed_entities_omitted?: number;
+  status?: "active" | "upcoming";
+  match?: NoticeSelector["scope"];
+}
 export interface JourneyLegAttributes extends Row {
   timetableUrl?: string | null;
   originIsPublicStop?: boolean;

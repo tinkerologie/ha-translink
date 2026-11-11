@@ -82,57 +82,128 @@ class AlertRecord:
     stop_ids: tuple[str, ...] = ()
 
 
-def _parse_varint(data: bytes, offset: int) -> tuple[int, int]:
+@dataclass(frozen=True, slots=True)
+class AlertPeriod:
+    """A feed-supplied time range with independently optional endpoints."""
+
+    start: int | None = None
+    end: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AlertSelector:
+    """One informed entity, with its constraints kept together."""
+
+    agency_id: str | None = None
+    route_id: str | None = None
+    route_type: int | None = None
+    stop_id: str | None = None
+    trip_id: str | None = None
+    trip_route_id: str | None = None
+    direction_id: int | None = None
+    has_unknown_fields: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AlertDetail:
+    """Service alert preserving selector groups and all time periods."""
+
+    entity_id: str = ""
+    header_text: str = ""
+    description_text: str | None = None
+    cause: str | None = None
+    effect: str | None = None
+    severity: str | None = None
+    periods: tuple[AlertPeriod, ...] = ()
+    selectors: tuple[AlertSelector, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AlertFeed:
+    """Validated GTFS-RT Alerts feed and its header metadata."""
+
+    header_timestamp: int | None
+    gtfs_realtime_version: str
+    alerts: tuple[AlertDetail, ...]
+
+
+class GtfsRealtimeDecodeError(ValueError):
+    """A GTFS-RT payload was structurally malformed."""
+
+
+def _parse_varint(
+    data: bytes, offset: int, *, strict: bool = False, limit: int | None = None
+) -> tuple[int, int]:
     """Parse a variable-length integer (varint) from binary data."""
     res = 0
     shift = 0
-    data_len = len(data)
+    data_len = len(data) if limit is None else limit
     while offset < data_len:
         b = data[offset]
         offset += 1
+        if strict and shift == 63 and b > 1:
+            raise GtfsRealtimeDecodeError("Varint exceeds 64 bits")
         res |= (b & 0x7F) << shift
         if not (b & 0x80):
-            break
+            return res, offset
         shift += 7
+    if strict:
+        raise GtfsRealtimeDecodeError("Truncated varint")
     return res, offset
 
 
 def _parse_fields(
-    data: bytes, offset: int = 0, limit: int | None = None
+    data: bytes,
+    offset: int = 0,
+    limit: int | None = None,
+    *,
+    strict: bool = False,
 ) -> list[tuple[int, int, Any]]:
     """Parse protobuf fields into (field_number, wire_type, raw_value)."""
     if limit is None:
         limit = len(data)
     fields: list[tuple[int, int, Any]] = []
     val: Any
+    varint_limit = limit if strict else None
     while offset < limit:
-        tag, offset = _parse_varint(data, offset)
+        tag, offset = _parse_varint(data, offset, strict=strict, limit=varint_limit)
         field_num = tag >> 3
         wire_type = tag & 0x07
+        if strict and not 1 <= field_num < (1 << 29):
+            raise GtfsRealtimeDecodeError("Invalid field number")
         if wire_type == 0:  # Varint
-            val, offset = _parse_varint(data, offset)
+            val, offset = _parse_varint(data, offset, strict=strict, limit=varint_limit)
             fields.append((field_num, wire_type, val))
         elif wire_type == 1:  # 64-bit
             if offset + 8 > limit:
+                if strict:
+                    raise GtfsRealtimeDecodeError("Truncated fixed64 field")
                 break
             val = struct.unpack("<Q", data[offset : offset + 8])[0]
             offset += 8
             fields.append((field_num, wire_type, val))
         elif wire_type == 2:  # Length-delimited (string / bytes / submessage)
-            length, offset = _parse_varint(data, offset)
+            length, offset = _parse_varint(
+                data, offset, strict=strict, limit=varint_limit
+            )
             if offset + length > limit:
+                if strict:
+                    raise GtfsRealtimeDecodeError("Truncated length-delimited field")
                 break
             val = data[offset : offset + length]
             offset += length
             fields.append((field_num, wire_type, val))
         elif wire_type == 5:  # 32-bit float / fixed32
             if offset + 4 > limit:
+                if strict:
+                    raise GtfsRealtimeDecodeError("Truncated fixed32 field")
                 break
             val = struct.unpack("<f", data[offset : offset + 4])[0]
             offset += 4
             fields.append((field_num, wire_type, val))
         else:
-            # Skip unsupported wire type or stop
+            if strict:
+                raise GtfsRealtimeDecodeError(f"Unsupported wire type {wire_type}")
             break
     return fields
 
@@ -465,3 +536,164 @@ def parse_alerts(raw_bytes: bytes) -> list[AlertRecord]:
             )
 
     return result
+
+
+_ALERT_CAUSES = (
+    "UNKNOWN_CAUSE",
+    "OTHER_CAUSE",
+    "TECHNICAL_PROBLEM",
+    "STRIKE",
+    "DEMONSTRATION",
+    "ACCIDENT",
+    "HOLIDAY",
+    "WEATHER",
+    "MAINTENANCE",
+    "CONSTRUCTION",
+    "POLICE_ACTIVITY",
+    "MEDICAL_EMERGENCY",
+)
+_ALERT_EFFECTS = (
+    "NO_SERVICE",
+    "REDUCED_SERVICE",
+    "SIGNIFICANT_DELAYS",
+    "DETOUR",
+    "ADDITIONAL_SERVICE",
+    "MODIFIED_SERVICE",
+    "OTHER_EFFECT",
+    "UNKNOWN_EFFECT",
+    "STOP_MOVED",
+    "NO_EFFECT",
+    "ACCESSIBILITY_ISSUE",
+)
+_ALERT_SEVERITIES = ("UNKNOWN_SEVERITY", "INFO", "WARNING", "SEVERE")
+_SELECTOR_WIRES = {1: 2, 2: 2, 3: 0, 4: 2, 5: 2, 6: 0}
+
+
+def _strict_fields(data: bytes, expected: dict[int, int]) -> list[tuple[int, int, Any]]:
+    fields = _parse_fields(data, strict=True)
+    for field, wire, _ in fields:
+        if expected.get(field, wire) != wire:
+            raise GtfsRealtimeDecodeError(f"Wrong wire type for field {field}")
+    return fields
+
+
+def _strict_values(data: bytes, expected: dict[int, int]) -> dict[int, Any]:
+    return {field: value for field, _, value in _strict_fields(data, expected)}
+
+
+def _decode_optional_string(value: bytes | None) -> str | None:
+    return _decode_string(value) or None if value is not None else None
+
+
+def _decode_alert_text(data: bytes | None) -> str | None:
+    if data is None:
+        return None
+    translations: dict[str | None, str] = {}
+    for field, _, value in _strict_fields(data, {1: 2}):
+        if field == 1:
+            translation = _strict_values(value, {1: 2, 2: 2})
+            text = _decode_optional_string(translation.get(1))
+            if text:
+                translations.setdefault(
+                    _decode_optional_string(translation.get(2)), text
+                )
+    return (
+        translations.get("en")
+        or translations.get(None)
+        or next(iter(translations.values()), None)
+    )
+
+
+def _decode_alert_period(data: bytes) -> AlertPeriod:
+    fields = _strict_values(data, {1: 0, 2: 0})
+    return AlertPeriod(start=fields.get(1), end=fields.get(2))
+
+
+def _decode_alert_selector(data: bytes) -> AlertSelector:
+    fields = _strict_values(data, _SELECTOR_WIRES)
+    trip = _strict_values(fields.get(4, b""), {1: 2, 2: 2, 3: 2, 4: 0, 5: 2, 6: 0})
+    trip_id = _decode_optional_string(trip.get(1))
+    trip_route_id = _decode_optional_string(trip.get(5))
+    return AlertSelector(
+        agency_id=_decode_optional_string(fields.get(1)),
+        route_id=_decode_optional_string(fields.get(2)),
+        route_type=_to_int32(fields[3]) if 3 in fields else None,
+        stop_id=_decode_optional_string(fields.get(5)),
+        trip_id=trip_id,
+        trip_route_id=trip_route_id,
+        direction_id=fields.get(6, trip.get(6)),
+        has_unknown_fields=bool(fields.keys() - _SELECTOR_WIRES.keys())
+        or bool(trip.keys() - {1, 5, 6})
+        or (4 in fields and trip_id is None and trip_route_id is None),
+    )
+
+
+def _alert_enum(value: int | None, names: tuple[str, ...]) -> str | None:
+    if value is None:
+        return None
+    if 1 <= value <= len(names):
+        return names[value - 1]
+    return f"UNKNOWN_{value}"
+
+
+def _decode_alert(entity_id: str, data: bytes) -> AlertDetail:
+    fields = _strict_fields(
+        data,
+        {
+            1: 2,
+            5: 2,
+            6: 0,
+            7: 0,
+            8: 2,
+            10: 2,
+            11: 2,
+            12: 2,
+            13: 2,
+            14: 0,
+            15: 2,
+            16: 2,
+            17: 2,
+            18: 2,
+        },
+    )
+    values = {field: value for field, _, value in fields}
+    return AlertDetail(
+        entity_id=entity_id,
+        header_text=_decode_alert_text(values.get(10)) or "",
+        description_text=_decode_alert_text(values.get(11)),
+        cause=_alert_enum(values.get(6), _ALERT_CAUSES),
+        effect=_alert_enum(values.get(7), _ALERT_EFFECTS),
+        severity=_alert_enum(values.get(14), _ALERT_SEVERITIES),
+        periods=tuple(
+            _decode_alert_period(value) for field, _, value in fields if field == 1
+        ),
+        selectors=tuple(
+            _decode_alert_selector(value) for field, _, value in fields if field == 5
+        ),
+    )
+
+
+def parse_alert_feed(raw_bytes: bytes) -> AlertFeed:
+    """Decode an Alerts feed strictly while preserving every notice and selector."""
+    fields = _strict_fields(raw_bytes, {1: 2, 2: 2})
+    header: dict[int, Any] = {}
+    alerts: list[AlertDetail] = []
+    for field, _, value in fields:
+        if field == 1:
+            header.update(_strict_values(value, {1: 2, 2: 0, 3: 0, 4: 2}))
+        elif field == 2:
+            entity = _strict_values(
+                value, {1: 2, 2: 0, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
+            )
+            if 5 in entity:
+                alerts.append(
+                    _decode_alert(_decode_string(entity.get(1, b"")), entity[5])
+                )
+    version = _decode_optional_string(header.get(1))
+    if not version:
+        raise GtfsRealtimeDecodeError("Missing GTFS-RT feed header or version")
+    return AlertFeed(
+        header_timestamp=header.get(3),
+        gtfs_realtime_version=version,
+        alerts=tuple(alerts),
+    )

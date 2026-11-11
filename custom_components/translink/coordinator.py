@@ -13,15 +13,18 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api.client import stop_disruption_fields
 from .api.models import (
+    NoticeSummary,
     StopDepartureItem,
     StopDeparturePlatformChange,
     StopTimetable,
     TimetableDeparture,
     TimetableRoute,
 )
+from .api.notices import build_notice_summary
 from .client import (
     JourneyPlanResult,
     JourneySummary,
@@ -39,6 +42,10 @@ from .const import (
     CONF_FARE_PREFERENCE,
     CONF_MAX_WALKING_DISTANCE,
     CONF_MODE,
+    CONF_NOTICE_NETWORK,
+    CONF_NOTICE_ROUTE_ID,
+    CONF_NOTICE_ROUTE_MODE,
+    CONF_NOTICE_SCOPE,
     CONF_SCAN_INTERVAL,
     CONF_START_LOCATION_ID,
     CONF_START_NAME,
@@ -59,6 +66,8 @@ from .const import (
     DOMAIN,
     MIN_SCAN_INTERVAL,
     MODE_JOURNEY,
+    MODE_NOTICES,
+    NOTICE_ROUTE_TYPES,
     TRIP_PAGE_CACHE_LIMIT,
     TRIP_PAGE_MAX_PER_REFRESH,
     TRIP_PAGE_NEGATIVE_TTL,
@@ -204,7 +213,9 @@ def _stop_board_rows(
     return departures, arrivals
 
 
-class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
+class TranslinkCoordinator(
+    DataUpdateCoordinator[JourneySummary | StopSummary | NoticeSummary]
+):
     """Coordinator to fetch and update data from Translink Queensland."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -333,11 +344,13 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
             )
         )
 
-    async def _async_update_data(self) -> JourneySummary | StopSummary:
+    async def _async_update_data(self) -> JourneySummary | StopSummary | NoticeSummary:
         """Fetch updated data from Translink."""
         try:
             if self.mode == MODE_JOURNEY:
                 return await self._async_update_journey()
+            if self.mode == MODE_NOTICES:
+                return await self._async_update_notices()
             return await self._async_update_stop()
         except TranslinkApiError as err:
             raise UpdateFailed(
@@ -348,6 +361,19 @@ class TranslinkCoordinator(DataUpdateCoordinator[JourneySummary | StopSummary]):
             raise UpdateFailed(
                 f"Unexpected error fetching Translink data: {_describe_error(err)}"
             ) from err
+
+    async def _async_update_notices(self) -> NoticeSummary:
+        """Refresh the configured regional alert scope independently."""
+        data = self.entry.data
+        network = data[CONF_NOTICE_NETWORK]
+        scope = data[CONF_NOTICE_SCOPE]
+        value: str | int | None = None
+        if scope == "route":
+            value = data[CONF_NOTICE_ROUTE_ID]
+        elif scope == "mode":
+            value = NOTICE_ROUTE_TYPES[data[CONF_NOTICE_ROUTE_MODE]]
+        feed = await self.client.fetch_alert_feed(network)
+        return build_notice_summary(feed, network, scope, value, dt_util.utcnow())
 
     async def _async_update_journey(self) -> JourneySummary:
         """Update journey planner data and live vehicle tracking."""

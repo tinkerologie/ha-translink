@@ -28,7 +28,7 @@ hass.callService = async (
 for (const [type, entity] of [
   ["journey", "sensor.renamed_journey_itinerary"],
   ["departures", "sensor.renamed_stop_departures_board"],
-  ["alerts", "sensor.renamed_journey_disruptions"],
+  ["alerts", "sensor.renamed_cairns_notices"],
 ]) {
   const card = document.createElement(`translink-${type}-card`);
   card.setConfig({

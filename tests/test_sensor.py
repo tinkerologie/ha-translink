@@ -407,3 +407,26 @@ async def test_itinerary_calling_stops_contract(
     )
     assert "legs" not in recorded
     assert "polyline" in recorded
+
+
+async def test_notice_recorder_exclusion_and_initial_freshness_availability() -> None:
+    """Only notice sensors exclude their detailed notices from recorded history."""
+    from custom_components.translink.const import MODE_NOTICES
+
+    for mode in (MODE_NOTICES, MODE_JOURNEY, MODE_STOP):
+        entry = FakeEntry(mode=mode)
+        coordinator = FakeCoordinator(mode=mode)
+        entry.runtime_data = coordinator
+        entities: list[TranslinkSensor] = []
+        await async_setup_entry(MagicMock(), entry, entities.extend)
+        sensors = {entity.translation_key: entity for entity in entities}
+        for key in ("disruptions", "disruption_description"):
+            assert ("disruptions" in sensors[key]._unrecorded_attributes) == (
+                mode == MODE_NOTICES
+            )
+        if mode == MODE_NOTICES:
+            freshness = sensors["last_successful_fetch"]
+            assert not freshness.available
+            assert freshness.native_value is None
+            assert freshness.extra_state_attributes == {}
+            assert "disruptions" not in freshness._unrecorded_attributes

@@ -10,7 +10,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_NAME, DOMAIN, MODE_JOURNEY
+from .const import CONF_NAME, DEVICE_MODELS, DOMAIN, MODE_NOTICES, MODE_STOP
 from .coordinator import TranslinkCoordinator
 
 if TYPE_CHECKING:
@@ -56,16 +56,11 @@ class TranslinkDisruptionEvent(
         self._last_disruption_ids: set[str] = set()
 
         name = entry.data.get(CONF_NAME, "Translink")
-        device_model = (
-            "Public Transport Journey"
-            if coordinator.mode == MODE_JOURNEY
-            else "Station Departure Board"
-        )
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=name,
             manufacturer="Translink Queensland",
-            model=device_model,
+            model=DEVICE_MODELS.get(coordinator.mode, DEVICE_MODELS[MODE_STOP]),
             entry_type=DeviceEntryType.SERVICE,
         )
 
@@ -91,7 +86,10 @@ class TranslinkDisruptionEvent(
 
     def _process_disruptions(self) -> None:
         """Evaluate disruption changes and trigger events accordingly."""
-        if not self.coordinator.data:
+        if not self.coordinator.data or (
+            self.coordinator.mode == MODE_NOTICES
+            and not self.coordinator.last_update_success
+        ):
             return
 
         disruptions = getattr(self.coordinator.data, "disruptions", [])

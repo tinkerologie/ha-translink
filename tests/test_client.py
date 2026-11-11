@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
+import aiohttp
 import pytest
 
 from custom_components.translink.api.client import (
@@ -1973,3 +1974,61 @@ async def test_plan_journey_uses_brisbane_date_boundary(
     assert leg["route_code"] == "SPRP"
     assert leg["route_name"] == "Springfield line"
     assert leg["departure"] == "2026-10-05T23:43:00+00:00"
+
+
+@pytest.mark.parametrize("network", ["SEQ", "CNS"])
+async def test_fetch_alert_feed_requests_supported_regional_feed(network: str) -> None:
+    """Read a complete regional feed with redirects disabled."""
+    body = b"\x0a\x05\x0a\x032.0\x12\x06\x0a\x02id\x2a\x00"
+    session = stop_timetable_session(body)
+    result = await TranslinkClient(session=session).fetch_alert_feed(network)
+    assert [alert.entity_id for alert in result.alerts] == ["id"]
+    assert session.get.call_args.args == (
+        f"https://gtfsrt.api.translink.com.au/api/realtime/{network}/Alerts",
+    )
+    assert session.get.call_args.kwargs["headers"] == {
+        "Accept": "application/x-protobuf"
+    }
+    assert session.get.call_args.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.parametrize(
+    ("status", "declared", "body", "reason"),
+    [
+        (503, None, b"", "status 503"),
+        (200, 2097153, b"", "size bound"),
+        (200, None, b" " * 2097153, "size bound"),
+        (200, None, b"\x0a", "Malformed"),
+    ],
+    ids=["http", "declared-size", "streamed-size", "malformed"],
+)
+async def test_fetch_alert_feed_distinguishes_failure_from_an_empty_feed(
+    status: int, declared: int | None, body: bytes, reason: str
+) -> None:
+    """Invalid responses fail instead of clearing known notices."""
+    from custom_components.translink.client import AlertFeedError
+
+    session = stop_timetable_session(body, status=status, content_length=declared)
+    with pytest.raises(AlertFeedError, match=reason):
+        await TranslinkClient(session=session).fetch_alert_feed("SEQ")
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, aiohttp.ClientError])
+async def test_fetch_alert_feed_wraps_transport_error(failure: type[Exception]) -> None:
+    """Connection errors are exposed as alert feed failures."""
+    from custom_components.translink.client import AlertFeedError
+
+    session = MagicMock(closed=False)
+    session.get.side_effect = failure
+    with pytest.raises(AlertFeedError, match="Unable to fetch"):
+        await TranslinkClient(session=session).fetch_alert_feed("SEQ")
+
+
+async def test_fetch_alert_feed_rejects_unsupported_network() -> None:
+    """An unrecognised network cannot change the request path."""
+    from custom_components.translink.client import AlertFeedError
+
+    session = MagicMock(closed=False)
+    with pytest.raises(AlertFeedError, match="Unsupported"):
+        await TranslinkClient(session=session).fetch_alert_feed("other")
+    session.get.assert_not_called()

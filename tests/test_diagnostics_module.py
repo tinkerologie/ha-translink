@@ -61,3 +61,31 @@ async def test_diagnostics_output() -> None:
     assert diagnostics["data"]["status"] == "on_time"
     assert diagnostics["data"]["vehicle_latitude"] == "**REDACTED**"
     assert diagnostics["data"]["vehicle_longitude"] == "**REDACTED**"
+
+
+async def test_notice_diagnostics_serializes_timestamps_and_scope() -> None:
+    """Notice diagnostics serialize with no fabricated journey data."""
+    from datetime import UTC, datetime
+
+    from custom_components.translink.api.gtfs_realtime import AlertFeed
+    from custom_components.translink.api.notices import build_notice_summary
+
+    coordinator = MagicMock()
+    coordinator.data = build_notice_summary(
+        AlertFeed(None, "2.0", ()),
+        "CNS",
+        "network",
+        None,
+        datetime(2026, 11, 11, tzinfo=UTC),
+    )
+    entry = FakeEntry()
+    entry.runtime_data = coordinator
+    entry.data = {"mode": "notices", "notice_network": "CNS"}
+    diagnostics = await async_get_config_entry_diagnostics(MagicMock(), entry)
+
+    assert diagnostics["data"]["last_successful_fetch"] == "2026-11-11T00:00:00Z"
+    assert diagnostics["data"]["network"] == "CNS"
+    assert diagnostics["data"]["scope_type"] == "network"
+    assert diagnostics["data"]["disruptions"] == []
+    assert "stop_id" not in diagnostics["data"]
+    assert "origin_name" not in diagnostics["data"]

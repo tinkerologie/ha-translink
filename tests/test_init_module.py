@@ -113,3 +113,14 @@ def test_icons_json_validity() -> None:
 
     sensor_icons = icons_data.get("entity", {}).get("sensor", {})
     assert sensor_icons.get("platform", {}).get("default") == "mdi:bus-stop-uncovered"
+
+
+def test_english_translations_match_config_flow_strings() -> None:
+    """English translations include all integration string keys and values."""
+    import json
+    from pathlib import Path
+
+    component = Path(__file__).parents[1] / "custom_components" / "translink"
+    assert json.loads((component / "strings.json").read_text()) == json.loads(
+        (component / "translations" / "en.json").read_text()
+    )

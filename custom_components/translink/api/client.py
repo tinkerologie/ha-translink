@@ -17,6 +17,10 @@ from pydantic import ValidationError
 from yarl import URL
 
 from ..const import (
+    ALERT_FEED_MAX_BYTES,
+    ALERT_FEED_PATH,
+    ALERT_FEED_TIMEOUT,
+    ALERT_NETWORK_NAMES,
     BRISBANE_TZ,
     ENDPOINT_LOCATION_SEARCH,
     ENDPOINT_PLAN,
@@ -44,11 +48,14 @@ from .gtfs_realtime import (
     STOP_SKIPPED,
     TRIP_CANCELED,
     TRIP_DELETED,
+    AlertFeed,
     AlertRecord,
+    GtfsRealtimeDecodeError,
     StopTimeUpdateRecord,
     TripUpdateRecord,
     VehiclePositionRecord,
     extract_base_trip_id,
+    parse_alert_feed,
     parse_alerts,
     parse_trip_updates,
     parse_vehicle_position_records,
@@ -93,6 +100,10 @@ class TranslinkConnectionError(TranslinkApiError):
 
 class TranslinkResponseError(TranslinkApiError):
     """Raised when Translink returns an error status code."""
+
+
+class AlertFeedError(TranslinkApiError):
+    """A regional service-alert feed could not be fetched or decoded."""
 
 
 def calculate_plan_hash(query_string: str) -> int:
@@ -496,6 +507,39 @@ class TranslinkClient:
         except (TimeoutError, aiohttp.ClientError) as err:
             _LOGGER.debug("Failed to fetch live trip updates feed: %r", err)
             return {}
+
+    async def fetch_alert_feed(self, network: str) -> AlertFeed:
+        """Fetch a bounded, validated service-alert feed for a supported network."""
+        if network not in ALERT_NETWORK_NAMES:
+            raise AlertFeedError("Unsupported alerts network")
+        url = f"{self._gtfsrt_base_url}{ALERT_FEED_PATH.format(network=network)}"
+        try:
+            session = await self._get_session()
+            async with session.get(
+                url,
+                headers={"Accept": "application/x-protobuf"},
+                timeout=aiohttp.ClientTimeout(total=ALERT_FEED_TIMEOUT),
+                allow_redirects=False,
+            ) as response:
+                if response.status != 200:
+                    raise AlertFeedError(
+                        f"Alerts feed returned status {response.status}"
+                    )
+                if (
+                    response.content_length is not None
+                    and response.content_length > ALERT_FEED_MAX_BYTES
+                ):
+                    raise AlertFeedError("Alerts feed exceeds size bound")
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    if len(body) + len(chunk) > ALERT_FEED_MAX_BYTES:
+                        raise AlertFeedError("Alerts feed exceeds size bound")
+                    body.extend(chunk)
+            return parse_alert_feed(bytes(body))
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise AlertFeedError(f"Unable to fetch {network} Alerts feed") from err
+        except GtfsRealtimeDecodeError as err:
+            raise AlertFeedError(f"Malformed {network} Alerts feed") from err
 
     async def fetch_alerts(self) -> list[AlertRecord]:
         """Fetch and parse live service disruptions from Translink GTFS-RT feed."""

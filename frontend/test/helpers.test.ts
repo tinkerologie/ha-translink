@@ -9,6 +9,8 @@ import {
   available,
   modeIcon,
   normalizeDepartures,
+  normalizeNoticePeriods,
+  normalizeNoticeSelectors,
   number,
   routeColors,
   rows,
@@ -283,4 +285,49 @@ it("uses the next Brisbane calendar day at UTC 14:00", () => {
     date: "2026-10-06",
     time: "00:00",
   });
+});
+
+it("keeps valid open periods and filters malformed or inverted windows", () => {
+  const start = "2026-11-11T01:00:00Z";
+  const end = "2026-11-12T01:00:00Z";
+  expect(
+    normalizeNoticePeriods([
+      { start, end },
+      { start, end: null },
+      { start: null, end },
+      { start, end: "bad" },
+      { start: end, end: start },
+      { start: 0 },
+      {},
+      [],
+      null,
+      "invalid",
+    ]),
+  ).toEqual([{ start, end }, { start }, { end }]);
+});
+
+it("keeps classified selectors with evidence for their scope and unknown selectors", () => {
+  const source = [
+    { scope: "network", agency_id: "QR" },
+    { scope: "route", route_id: "RPSP" },
+    { scope: "mode", route_type: 0, mode: "Tram" },
+    { scope: "stop", stop_id: "600029" },
+    { scope: "trip", trip_id: "id" },
+    { scope: "unknown", unrelated: "unknown" },
+    { scope: "network" },
+    { scope: "stop", stop_id: 42 },
+    { scope: "mode", route_type: "2" },
+    { scope: "other" },
+    ["network"],
+    "network",
+    null,
+  ];
+  expect(normalizeNoticeSelectors(source)).toMatchObject([
+    { scope: "network", agency_id: "QR" },
+    { scope: "route", route_id: "RPSP" },
+    { scope: "mode", route_type: 0, mode: "Tram" },
+    { scope: "stop", stop_id: "600029" },
+    { scope: "trip", trip_id: "id" },
+    { scope: "unknown" },
+  ]);
 });

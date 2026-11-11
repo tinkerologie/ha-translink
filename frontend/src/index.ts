@@ -33,7 +33,7 @@ for (const [tag, constructor, name, description] of [
     "translink-alerts-card",
     AlertsCard,
     "Translink Service Alerts",
-    "Disruptions affecting your journey or stop.",
+    "Disruptions for a journey, stop or network/route",
   ],
 ] as const) {
   if (!customElements.get(tag)) customElements.define(tag, constructor);

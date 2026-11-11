@@ -7,6 +7,8 @@ import type {
   HomeAssistant,
   JourneyAlternative,
   JourneySort,
+  NoticePeriod,
+  NoticeSelector,
   Row,
 } from "./types";
 
@@ -30,6 +32,53 @@ export const validTime = (value: unknown): string | undefined => {
   const result = text(value);
   return result && Number.isFinite(Date.parse(result)) ? result : undefined;
 };
+export function normalizeNoticePeriods(value: unknown): NoticePeriod[] {
+  return rows(value).flatMap((row) => {
+    const start = validTime(row.start);
+    const end = validTime(row.end);
+    if ((row.start != null && !start) || (row.end != null && !end)) return [];
+    if (!start && !end) return [];
+    if (start && end && Date.parse(start) >= Date.parse(end)) return [];
+    return [{ start, end }];
+  });
+}
+export function normalizeNoticeSelectors(value: unknown): NoticeSelector[] {
+  return rows(value).flatMap<NoticeSelector>((row) => {
+    const selector = {
+      agency_id: text(row.agency_id),
+      route_id: text(row.route_id),
+      trip_route_id: text(row.trip_route_id),
+      route_type:
+        typeof row.route_type === "number" && Number.isInteger(row.route_type)
+          ? row.route_type
+          : undefined,
+      mode: text(row.mode),
+      stop_id: text(row.stop_id),
+      trip_id: text(row.trip_id),
+    };
+    const scope = row.scope;
+    switch (scope) {
+      case "network":
+        return selector.agency_id ? [{ ...selector, scope }] : [];
+      case "route":
+        return selector.route_id || selector.trip_route_id
+          ? [{ ...selector, scope }]
+          : [];
+      case "mode":
+        return selector.route_type !== undefined
+          ? [{ ...selector, scope }]
+          : [];
+      case "stop":
+        return selector.stop_id ? [{ ...selector, scope }] : [];
+      case "trip":
+        return selector.trip_id ? [{ ...selector, scope }] : [];
+      case "unknown":
+        return [{ scope }];
+      default:
+        return [];
+    }
+  });
+}
 function clockFormatter(hass?: HomeAssistant, date = false) {
   const preference = hass?.locale?.time_format;
   const language = hass?.locale?.language ?? hass?.language ?? "en-AU";

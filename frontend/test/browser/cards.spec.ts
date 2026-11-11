@@ -28,6 +28,20 @@ for (const width of [320, 768, 1440]) {
       await expect(
         page.getByRole("heading", { name: "Service alerts" }),
       ).toBeVisible();
+      const notices = page.locator("translink-alerts-card");
+      await expect(
+        notices.getByText("Cairns · Route RPSP", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        notices.getByText("Upcoming", { exact: true }),
+      ).toBeVisible();
+      await expect(notices.getByText("Last successful fetch")).toBeVisible();
+      const noticeDetails = notices.locator("summary").first();
+      await noticeDetails.focus();
+      await page.keyboard.press("Enter");
+      await expect(
+        notices.getByText("Travel on replacement services."),
+      ).toBeVisible();
       const tracker = page.locator("translink-journey-card .active-vehicle");
       await expect(tracker.getByRole("status")).toHaveText(/Live position ·/);
       await expect(tracker).toContainText("Train 103");

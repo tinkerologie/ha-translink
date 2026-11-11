@@ -13,6 +13,8 @@ import {
   filterDepartures,
   modeIcon,
   normalizeDepartures,
+  normalizeNoticePeriods,
+  normalizeNoticeSelectors,
   number,
   orderDepartures,
   routeColors,
@@ -46,6 +48,9 @@ import type {
   JourneyAlternatives,
   JourneyLegAttributes,
   JourneySort,
+  NoticeAlertRow,
+  NoticePeriod,
+  NoticeSelector,
   RegistryEntry,
   Row,
   VehicleTrackerAttributes,
@@ -1357,6 +1362,37 @@ export class DeparturesCard extends TranslinkCard {
   }
 }
 
+function noticeScope(attributes: Row): string | undefined {
+  const { network, scope_type: scope, scope_value: value } = attributes;
+  if (network !== "SEQ" && network !== "CNS") return undefined;
+  const route = text(value);
+  const mode = typeof value === "number" && strings.notice.modeName[value];
+  const detail =
+    scope === "route" && route
+      ? `${strings.route} ${route}`
+      : scope === "mode" && mode
+        ? mode
+        : strings.notice.network;
+  return `${strings.notice.networkName[network]} · ${detail}`;
+}
+
+function noticeSelectorLabel(selector: NoticeSelector): string {
+  if (selector.scope === "network") return strings.notice.networkWide;
+  if (selector.scope === "unknown") return strings.notice.unknown;
+  const route = selector.route_id ?? selector.trip_route_id;
+  return [
+    route && `${strings.route} ${route}`,
+    selector.mode ??
+      (selector.route_type != null
+        ? `${strings.notice.routeType} ${selector.route_type}`
+        : undefined),
+    selector.stop_id && `${strings.notice.stop} ${selector.stop_id}`,
+    selector.trip_id && `${strings.notice.trip} ${selector.trip_id}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export class AlertsCard extends TranslinkCard {
   static override role = "disruptions";
   static override title = strings.alerts;
@@ -1366,63 +1402,136 @@ export class AlertsCard extends TranslinkCard {
   protected entityRole = "disruptions";
   protected defaultTitle = strings.alerts;
   protected icon = "mdi:alert-circle-outline";
+
+  protected override renderExtra(entry?: RegistryEntry) {
+    const freshness = this.related.last_successful_fetch;
+    return entry?.platform === "translink" &&
+      entry.translation_key === this.entityRole &&
+      available(freshness) &&
+      validTime(freshness.state)
+      ? html`<div class="note">
+          ${strings.notice.lastSuccessfulFetch}
+          <time datetime=${freshness.state}
+            >${this.formatTime(freshness.state, true)}</time
+          >
+        </div>`
+      : nothing;
+  }
+
   protected renderContent(state: EntityState) {
-    const alerts = rows(state.attributes.disruptions);
+    const alerts: NoticeAlertRow[] = rows(state.attributes.disruptions);
+    const scope = noticeScope(state.attributes);
+    const heading = scope
+      ? html`<div class="notice-scope secondary">${scope}</div>`
+      : nothing;
     if (!alerts.length)
-      return html`<div class="state" role="status">
-        <ha-icon icon="mdi:check-circle-outline" aria-hidden="true"></ha-icon
-        >${strings.noAlerts}
-      </div>`;
-    return html`<div class="secondary">
-        ${alerts.length} service alert${alerts.length === 1 ? "" : "s"} reported
+      return html`${heading}
+        <div class="state" role="status">
+          <ha-icon icon="mdi:check-circle-outline" aria-hidden="true"></ha-icon
+          >${scope ? strings.notice.noMatches : strings.noAlerts}
+        </div>`;
+
+    const count = scope ? number(state.attributes.total_count) : undefined;
+    const total = Math.max(alerts.length, count ?? 0);
+    const visible = alerts.slice(0, this.config.max_alerts ?? 5);
+    return html`${heading}
+      <div class="secondary">
+        ${total} service alert${total === 1 ? "" : "s"} reported
       </div>
       <ul class="alerts">
-        ${alerts.slice(0, this.config.max_alerts ?? 5).map(
-          (alert, index) =>
-            html`<li class="alert">
-              <div class="alert-title">
-                <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>
-                <div>
-                  <h3>${text(alert.title) ?? "Service disruption"}</h3>
-                  <div class="secondary">
-                    ${[text(alert.severity), text(alert.route), text(alert.leg)]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </div>
-                </div>
-              </div>
-              ${validTime(alert.starts_utc) || validTime(alert.ends_utc)
-                ? html`<div class="note">
-                    ${validTime(alert.starts_utc)
-                      ? `From ${this.formatTime(alert.starts_utc, true)}`
-                      : ""}${validTime(alert.ends_utc)
-                      ? ` Until ${this.formatTime(alert.ends_utc, true)}`
-                      : ""}
-                  </div>`
-                : nothing}
-              ${text(alert.cause) || text(alert.effect)
-                ? html`<div class="note">
-                    ${[text(alert.cause), text(alert.effect)]
-                      .filter(Boolean)
-                      .map((v) => v!.replaceAll("_", " "))
-                      .join(" · ")}
-                  </div>`
-                : nothing}
-              ${text(alert.description)
-                ? html`<details>
-                    <summary aria-label=${`Details for alert ${index + 1}`}>
-                      Show alert details
-                    </summary>
-                    <div class="description">${alert.description}</div>
-                  </details>`
-                : nothing}
-            </li>`,
-        )}
+        ${visible.map((alert, index) => this.renderAlert(alert, index))}
       </ul>
-      ${alerts.length > (this.config.max_alerts ?? 5)
+      ${total > visible.length
         ? html`<div class="note">
-            Showing ${this.config.max_alerts ?? 5} of ${alerts.length} alerts
+            Showing ${visible.length} of ${total} alerts
           </div>`
         : nothing}`;
+  }
+
+  private renderAlert(alert: NoticeAlertRow, index: number) {
+    const status =
+      alert.status === "active" || alert.status === "upcoming"
+        ? strings.notice[alert.status]
+        : undefined;
+    const selectorLabels = normalizeNoticeSelectors(
+      alert.informed_entities,
+    ).map(noticeSelectorLabel);
+    if (!selectorLabels.length && alert.match === "unknown")
+      selectorLabels.push(strings.notice.unknown);
+    const omittedSelectors = alert.informed_entities_omitted;
+    if (
+      omittedSelectors &&
+      Number.isInteger(omittedSelectors) &&
+      omittedSelectors > 0
+    )
+      selectorLabels.push(strings.notice.more(omittedSelectors, "selector"));
+    const context = [
+      text(alert.severity),
+      text(alert.route),
+      text(alert.leg),
+      ...selectorLabels,
+    ].filter(Boolean);
+
+    return html`<li class="alert">
+      <div class="alert-title">
+        <ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>
+        <div>
+          <h3>${text(alert.title) ?? "Service disruption"}</h3>
+          ${status
+            ? html`<div class="departure-status">
+                <span class="notice-status">${status}</span>
+              </div>`
+            : nothing}
+          ${context.length
+            ? html`<div class="secondary">${context.join(" · ")}</div>`
+            : nothing}
+        </div>
+      </div>
+      ${this.renderAlertPeriods(alert)}
+      ${text(alert.cause) || text(alert.effect)
+        ? html`<div class="note">
+            ${[text(alert.cause), text(alert.effect)]
+              .filter(Boolean)
+              .map((v) => v!.replaceAll("_", " "))
+              .join(" · ")}
+          </div>`
+        : nothing}
+      ${text(alert.description)
+        ? html`<details>
+            <summary aria-label=${`Details for alert ${index + 1}`}>
+              Show alert details
+            </summary>
+            <div class="description">${alert.description}</div>
+          </details>`
+        : nothing}
+    </li>`;
+  }
+
+  private renderAlertPeriods(alert: NoticeAlertRow) {
+    const periods = normalizeNoticePeriods(alert.active_periods);
+    if (!periods.length) {
+      const start = validTime(alert.starts_utc);
+      const end = validTime(alert.ends_utc);
+      if (start || end) periods.push({ start, end });
+    }
+    const omitted = alert.active_periods_omitted;
+    const hasOmitted =
+      omitted !== undefined && Number.isInteger(omitted) && omitted > 0;
+    return periods.length || hasOmitted
+      ? html`<div class="note">
+          ${periods.map((period) => this.renderPeriod(period))}
+          ${hasOmitted
+            ? html`<div>${strings.notice.more(omitted, "period")}</div>`
+            : nothing}
+        </div>`
+      : nothing;
+  }
+
+  private renderPeriod({ start, end }: NoticePeriod) {
+    const labels = [
+      start && `${strings.notice.from} ${this.formatTime(start, true)}`,
+      end && `${strings.notice.until} ${this.formatTime(end, true)}`,
+    ].filter(Boolean);
+    return html`<div class="notice-period">${labels.join(" ")}</div>`;
   }
 }
