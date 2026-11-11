@@ -186,6 +186,7 @@ def test_wrong_timetable_identity_and_skipped_relationship(captured_case):
             plan,
             trip_updates=trip_updates,
             trip_timetables={leg.tripId: wrong},
+            now=datetime.fromtimestamp(update.timestamp, UTC),
         )
         assert summary.itinerary_legs[0]["callingStopsSource"] == expected_source
         assert summary.itinerary_legs[0]["timetableUrl"] is None
