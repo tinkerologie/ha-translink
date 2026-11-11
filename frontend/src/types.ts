@@ -11,6 +11,14 @@ export interface RegistryEntry {
   device_id?: string;
 }
 export interface HomeAssistant {
+  callService?(
+    domain: string,
+    service: string,
+    serviceData: Record<string, unknown>,
+    target: undefined,
+    notifyOnError: boolean,
+    returnResponse: true,
+  ): Promise<{ response: JourneyAlternatives }>;
   states: Record<string, EntityState>;
   entities?: Record<string, RegistryEntry>;
   devices?: Record<string, { name?: string; name_by_user?: string }>;
@@ -28,6 +36,8 @@ export interface CardConfig {
   show_platform?: boolean;
   max_departures?: number;
   max_alerts?: number;
+  show_planner?: boolean;
+  alternatives_limit?: number;
 }
 export type Row = Record<string, unknown>;
 export interface Departure {
@@ -50,4 +60,41 @@ export interface Departure {
   headsign?: string;
   platform?: string;
   color?: string;
+}
+
+export type JourneySort = "departure" | "arrival" | "duration";
+
+export interface JourneyAlternative {
+  planner_index: number;
+  planner_first: boolean;
+  departure: string | null;
+  arrival: string | null;
+  duration_mins: number | null;
+  transfers: number | null;
+  legs: Array<{
+    mode: string;
+    route_code: string | null;
+    route_name: string | null;
+    headsign: string | null;
+    origin: string | null;
+    destination: string | null;
+    departure: string | null;
+    arrival: string | null;
+  }>;
+  legs_truncated: boolean;
+  notices: PlannerNotice[];
+}
+
+export interface PlannerNotice {
+  id: number | string;
+  title: string | null;
+}
+
+export interface JourneyAlternatives {
+  sort_by: JourneySort;
+  total_alternatives: number;
+  returned: number;
+  truncated: boolean;
+  alternatives: JourneyAlternative[];
+  plan_notices: PlannerNotice[];
 }

@@ -124,7 +124,9 @@ A departure includes a trip ID, route ID, direction, headsign, scheduled UTC
 time, platform and boarding value. The response has no stop ID on each
 departure. A trip can visit the selected station multiple times. The board
 uses trip ID, scheduled time and platform together for identity, preferring
-a duplicate with realtime metadata. It excludes explicit `Alighting` visits.
+a duplicate with realtime metadata. Visits missing any part of the key stay
+separate. The board excludes explicit `Alighting` visits and labels `Boarding`
+visits as **Boarding only**.
 A realtime object can supply expected UTC time and cancellation, skip, extra
 service and platform-change fields. Platform changes can appear as two visits
 on different platforms. The board keeps the listed platform and exposes

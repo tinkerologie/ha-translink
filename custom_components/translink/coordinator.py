@@ -175,7 +175,11 @@ def _stop_departure_rows(
                 ),
                 separators=(",", ":"),
             )
-            if departure.id and departure.scheduledDepartureUtc
+            if (
+                departure.id
+                and departure.scheduledDepartureUtc
+                and departure.departurePlatform
+            )
             else f"unidentified:{index}"
         )
         previous = visits.get(visit_id)

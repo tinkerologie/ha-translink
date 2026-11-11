@@ -187,5 +187,66 @@
         }
       }
     }
+  },
+  "services": {
+    "plan_journey": {
+      "name": "Plan a journey",
+      "description": "Find scheduled alternatives for a configured Translink journey at a selected Brisbane date and time.",
+      "fields": {
+        "entity_id": {
+          "name": "Itinerary sensor",
+          "description": "The itinerary sensor of the journey to plan."
+        },
+        "date": {
+          "name": "Date (Brisbane)",
+          "description": "The calendar date in Australia/Brisbane."
+        },
+        "time": {
+          "name": "Time (Brisbane)",
+          "description": "The local time in Australia/Brisbane."
+        },
+        "time_search_mode": {
+          "name": "Time preference",
+          "description": "Choose whether the journey should leave after or arrive before the selected time."
+        },
+        "sort_by": {
+          "name": "Sort by",
+          "description": "Sort alternatives by scheduled departure, scheduled arrival, or duration."
+        },
+        "limit": {
+          "name": "Maximum alternatives",
+          "description": "The maximum number of alternatives to return."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "planner_entity": {
+      "message": "Select a registered Translink itinerary sensor."
+    },
+    "planner_itinerary": {
+      "message": "The selected entity must be a Translink itinerary sensor."
+    },
+    "planner_entry": {
+      "message": "The selected sensor is missing a Translink configuration entry."
+    },
+    "planner_unloaded": {
+      "message": "The selected Translink journey is unavailable. Check that the integration entry is loaded."
+    },
+    "planner_journey_mode": {
+      "message": "Select an itinerary sensor from an entry configured in Journey mode."
+    },
+    "planner_upstream": {
+      "message": "Translink could not plan the journey. Check the selected date and time and try again."
+    }
+  },
+  "selector": {
+    "planner_sort": {
+      "options": {
+        "departure": "Departure",
+        "arrival": "Arrival",
+        "duration": "Duration"
+      }
+    }
   }
 }

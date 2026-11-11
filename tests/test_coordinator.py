@@ -290,6 +290,7 @@ async def test_stop_board_keeps_unresolved_modes_and_incomplete_visit_ids(
     duplicate = board["departures"][1]
     without_id = {**duplicate, "id": None}
     without_time = {"id": "untimed", "routeId": "other"}
+    without_platform = {**duplicate, "id": "no-platform", "departurePlatform": None}
     board["departures"].extend(
         [
             duplicate,
@@ -297,6 +298,8 @@ async def test_stop_board_keeps_unresolved_modes_and_incomplete_visit_ids(
             without_id,
             without_time,
             without_time,
+            without_platform,
+            without_platform,
             {
                 "id": "ferry",
                 "routeId": "ferry-local",
@@ -321,6 +324,7 @@ async def test_stop_board_keeps_unresolved_modes_and_incomplete_visit_ids(
     assert {row["vehicle"] for row in rows} == {"Train", None}
     assert len([row for row in rows if row["trip_id"] is None]) == 2
     assert len([row for row in rows if row["trip_id"] == "untimed"]) == 2
+    assert len([row for row in rows if row["trip_id"] == "no-platform"]) == 2
     assert rows[-1]["scheduled_departure_time"] is None
     assert len({row["visit_id"] for row in rows}) == len(rows)
     first_loop = next(row for row in rows if row["trip_id"] == "loop")

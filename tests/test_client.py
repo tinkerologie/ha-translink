@@ -1,4 +1,4 @@
-"""Unit tests for Translink API client, Protobuf parser, and models."""
+"""Test the Translink API client and models using synthetic alternatives fixtures."""
 
 from __future__ import annotations
 
@@ -6,12 +6,16 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from custom_components.translink.api.client import (
     DELAYED_THRESHOLD_MINUTES,
     EARLY_THRESHOLD_MINUTES,
+    JourneySort,
+    build_journey_alternatives,
 )
 from custom_components.translink.api.gtfs_realtime import (
     TripUpdateRecord,
@@ -1687,3 +1691,179 @@ async def test_fetch_stop_timetable_preserves_alert_availability(
     else:
         assert timetable.serviceAlerts is not None
         assert [notice.id for notice in timetable.serviceAlerts.current] == expected
+
+
+def test_journey_alternatives_sort_before_limiting(
+    plan_response_data: dict[str, Any],
+) -> None:
+    """The planner's first result may leave later than another alternative."""
+    result = build_journey_alternatives(
+        JourneyPlanResult.model_validate(plan_response_data), "departure", 1
+    )
+
+    assert result["sort_by"] == "departure"
+    assert result["total_alternatives"] == 2
+    assert result["returned"] == 1
+    assert result["truncated"] is True
+    alternative = result["alternatives"][0]
+    assert alternative["planner_index"] == 1
+    assert alternative["planner_first"] is False
+    assert alternative["departure"] == "2026-10-05T23:28:00+00:00"
+    assert alternative["arrival"] == "2026-10-06T00:24:00+00:00"
+    assert alternative["duration_mins"] == 56
+    assert alternative["transfers"] == 1
+
+
+@pytest.mark.parametrize(
+    ("sort_by", "indexes"),
+    [
+        ("departure", [5, 7, 2, 0, 1, 6, 3, 4]),
+        ("arrival", [3, 6, 2, 0, 1, 5, 7, 4]),
+        ("duration", [3, 7, 2, 0, 1, 6, 5, 4]),
+    ],
+)
+def test_journey_alternatives_ties_and_missing(
+    plan_response_ties: dict[str, Any], sort_by: JourneySort, indexes: list[int]
+) -> None:
+    """Each sort handles timezone offsets, missing values and final ties."""
+    result = build_journey_alternatives(
+        JourneyPlanResult.model_validate(plan_response_ties), sort_by, 10
+    )
+    alternatives = result["alternatives"]
+    assert [item["planner_index"] for item in alternatives] == indexes
+    assert result["truncated"] is False
+    by_index = {item["planner_index"]: item for item in alternatives}
+    assert by_index[0]["planner_first"] is True
+    assert (
+        by_index[0]["arrival"] == by_index[1]["arrival"] == "2026-10-06T10:40:00+00:00"
+    )
+    assert by_index[0]["transfers"] is None
+    assert by_index[3]["departure"] is None
+    assert by_index[3]["duration_mins"] == 0
+    assert by_index[3]["transfers"] == 0
+    assert by_index[4]["departure"] is None
+    assert by_index[4]["arrival"] is None
+    assert by_index[4]["duration_mins"] is None
+    assert by_index[5]["duration_mins"] is None
+
+
+def test_journey_alternatives_notice_scope_and_response_caps() -> None:
+    """Bound output without treating omitted leg references as plan-wide notices."""
+    leg_notices = [{"id": notice_id} for notice_id in range(12)]
+    plan = JourneyPlanResult.model_validate(
+        {
+            "itineraries": [
+                {
+                    "durationMins": 0,
+                    "legs": [
+                        {"travelMode": "Train", "notices": leg_notices},
+                        *[{"travelMode": "Walk"}] * 19,
+                        {"travelMode": "Train", "notices": [{"id": 20}]},
+                    ],
+                },
+                {
+                    "durationMins": 1,
+                    "legs": [{"notices": [{"id": "22"}]}],
+                },
+                *[{"durationMins": 2}] * 11,
+                {"durationMins": 3, "legs": [{"notices": [{"id": 21}]}]},
+            ],
+            "notices": [
+                {"id": "0", "title": "Train maintenance"},
+                {"id": 20},
+                {"id": 21},
+                {"id": 22},
+                {"id": 23, "title": "General advice"},
+                {"id": "23", "title": "Duplicate"},
+                *[{"id": notice_id} for notice_id in range(24, 37)],
+            ],
+        }
+    )
+
+    result = build_journey_alternatives(plan, "duration", 20)
+
+    assert result["total_alternatives"] == 14
+    assert result["returned"] == 10
+    assert result["truncated"] is True
+    first, second, *_ = result["alternatives"]
+    assert len(first["legs"]) == 20
+    assert first["legs_truncated"] is True
+    assert first["transfers"] == 1
+    assert [notice["id"] for notice in first["notices"]] == list(range(10))
+    assert first["notices"][0]["title"] == "Train maintenance"
+    assert second["legs_truncated"] is False
+    assert [notice["id"] for notice in second["notices"]] == ["22"]
+    assert [notice["id"] for notice in result["plan_notices"]] == list(range(23, 33))
+    assert result["plan_notices"][0]["title"] == "General advice"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0001-01-01T00:00:00+23:00", "2026-10-06Z10:00:00+00:00"],
+)
+def test_journey_alternatives_treat_unusable_timestamps_as_missing(value: str) -> None:
+    """An unrepresentable UTC instant or unsupported notation stays missing."""
+    plan = JourneyPlanResult.model_validate(
+        {"itineraries": [{"firstDepartureTimeUtc": value}]}
+    )
+    assert (
+        build_journey_alternatives(plan, "departure", 5)["alternatives"][0]["departure"]
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_date", "expected_time", "mode"),
+    [
+        (
+            datetime(2026, 10, 5, 23, 59, tzinfo=ZoneInfo("Australia/Brisbane")),
+            "2026-10-05",
+            "11:59pm",
+            "LeaveAfter",
+        ),
+        (
+            datetime(2026, 10, 6, 0, 0, tzinfo=ZoneInfo("Australia/Brisbane")),
+            "2026-10-06",
+            "12:00am",
+            "ArriveBefore",
+        ),
+        (
+            datetime(2026, 10, 5, 14, 1, tzinfo=UTC),
+            "2026-10-06",
+            "12:01am",
+            "ArriveBefore",
+        ),
+    ],
+)
+async def test_plan_journey_uses_brisbane_date_boundary(
+    target: datetime,
+    expected_date: str,
+    expected_time: str,
+    mode: str,
+    plan_response_arrive_before: dict[str, Any],
+) -> None:
+    """Send explicit Brisbane wall time across the local date boundary."""
+    response = MagicMock(status=200)
+    response.json = AsyncMock(return_value=plan_response_arrive_before)
+    session = MagicMock(closed=False)
+    session.post.return_value.__aenter__ = AsyncMock(return_value=response)
+
+    result = await TranslinkClient(session=session).plan_journey(
+        "ST:place_censta",
+        "Central",
+        "ST:place_spcsta",
+        target_datetime=target,
+        time_search_mode=mode,
+    )
+
+    form = parse_qs(session.post.call_args.kwargs["data"])
+    assert form["searchDate"] == [expected_date]
+    assert form["searchTime"] == [expected_time]
+    assert form["timeSearchMode"] == [mode]
+    [alternative] = build_journey_alternatives(result, "arrival", 5)["alternatives"]
+    [leg] = alternative["legs"]
+    assert leg["origin"] == "Central station"
+    assert leg["destination"] == "Springfield Central station"
+    assert leg["route_code"] == "SPRP"
+    assert leg["route_name"] == "Springfield line"
+    assert leg["departure"] == "2026-10-05T23:43:00+00:00"

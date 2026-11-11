@@ -13,6 +13,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import DOMAIN
 from .coordinator import TranslinkCoordinator
 from .frontend import async_register_frontend
+from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,7 +25,8 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.DEVICE_TRACKER, Platform.
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up shared dashboard assets once for all Translink entries."""
+    """Set up shared dashboard assets and actions for all Translink entries."""
+    async_setup_services(hass)
     await async_register_frontend(hass)
     return True
 

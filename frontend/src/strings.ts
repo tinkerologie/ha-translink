@@ -13,6 +13,7 @@ export const strings = {
   cancelled: "Cancelled",
   skipped: "Skipped",
   extraService: "Extra service",
+  boardingOnly: "Boarding only",
   platformChange: "Platform change",
   moreInfo: "Open entity details",
   journey: "Your journey",

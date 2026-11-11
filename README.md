@@ -188,7 +188,7 @@ Use each card's visual editor to choose the appropriate Translink sensor:
 
 | Card | Entity to select | Options |
 | --- | --- | --- |
-| `custom:translink-journey-card` | Journey **Itinerary** sensor | `title`, `show_fare`, `legs_expanded`, `show_disruptions` |
+| `custom:translink-journey-card` | Journey **Itinerary** sensor | `title`, `show_fare`, `legs_expanded`, `show_disruptions`, `show_planner` (default false), `alternatives_limit` (1–10, default 5) |
 | `custom:translink-departures-card` | Stop **Departures board** sensor | `title`, `max_departures` (1–20, default 5), `show_platform` |
 | `custom:translink-alerts-card` | Journey or stop **Disruptions** count sensor | `title`, `max_alerts` (1–20, default 5) |
 
@@ -197,7 +197,8 @@ identity, so renamed entity IDs are supported. They follow the dashboard theme,
 locale/time preferences and Sections sizing. Journey details and alert descriptions
 expand with keyboard-accessible controls. The stop timetable card shows
 **Scheduled** and **Expected** times separately. It shows **Cancelled**,
-**Skipped**, **Extra service** and platform changes when supplied for that visit.
+**Skipped**, **Extra service**, **Boarding only** and platform changes when supplied
+for that visit.
 An empty board shows any current stop notices alongside the no-services
 message. A reported delay belongs to the next-service summary.
 
@@ -246,7 +247,8 @@ For YAML resource mode, add this under your existing `lovelace.resources` list:
 Increment `v` after updating the integration to refresh a manually registered
 resource. If a card is missing, check **Settings → Dashboards → Resources**, verify
 that the bundled file was copied with the integration, and refresh the browser.
-The cards show entity information only; they never contact Translink directly.
+The Journey card's optional planner calls a Home Assistant action. The cards
+get all data through Home Assistant.
 Use Home Assistant's native map card below for vehicle positions. The tracker may
 fall back to the origin station when live GPS is unavailable; a map position alone
 is not evidence of live tracking.
@@ -268,6 +270,65 @@ Research, official app image references and compatibility evidence are in
 [the frontend research note](docs/frontend-research.md).
 
 ---
+
+## Plan a journey for a specific time
+
+The response-only `translink.plan_journey` action uses a loaded journey's
+origin, destination, transport modes and walking preferences to request a
+schedule from Translink.
+
+| Field | Accepted value | Default |
+| --- | --- | --- |
+| `entity_id` | Translink Journey **Itinerary** sensor | Required |
+| `date` | Date in `YYYY-MM-DD` format | Required |
+| `time` | Time in `HH:MM` or `HH:MM:SS` format | Required |
+| `time_search_mode` | `LeaveAfter` or `ArriveBefore` | `LeaveAfter` |
+| `sort_by` | `departure`, `arrival` or `duration` | `departure` |
+| `limit` | Integer from 1 to 10 | 5 |
+
+The action interprets `date` and `time` in `Australia/Brisbane`. Each call makes
+one planner request and leaves the current sensors and polling schedule alone.
+
+The response contains `sort_by`, `total_alternatives`, `returned`, `truncated`,
+`alternatives` and `plan_notices`. Each alternative includes its zero-based
+`planner_index`, `planner_first`, scheduled UTC `departure` and `arrival`,
+`duration_mins`, `transfers`, compact scheduled `legs`, `legs_truncated` and
+`notices`. `planner_first` identifies the planner's original first itinerary
+for this request. Sorting may move it to another position, and sensors plan
+on their own schedule. Missing schedule and duration values are `null`.
+Transfers are estimated from the number of non-walking legs, minus one
+with a minimum of zero. An itinerary with no legs has `null` transfers.
+
+Departure sort breaks ties by arrival and duration. Arrival sort breaks ties by
+departure and duration. Duration sort breaks ties by departure and arrival.
+Each comparison puts missing values last and uses the original planner index
+as its final tie-breaker. The action sorts before applying the limit. A search
+with no journeys returns an empty alternatives list.
+
+Each alternative contains up to 20 legs and up to 10 notices. Leg notices are
+deduplicated and enriched from the planner details. `plan_notices` contains up
+to 10 deduplicated notices whose IDs are unreferenced by all legs in the
+planner response, including legs and alternatives beyond the result limits.
+
+Use `response_variable` in a script or an automation action:
+
+```yaml
+- action: translink.plan_journey
+  data:
+    entity_id: sensor.work_commute_itinerary
+    date: "2026-11-16"
+    time: "08:30"
+    time_search_mode: ArriveBefore
+    sort_by: arrival
+  response_variable: commute_plan
+```
+
+Enable **Show journey planner** (`show_planner: true`) in the Journey card to
+use the Brisbane date and time picker. **Maximum alternatives**
+(`alternatives_limit`) controls how many results appear. The card requests up
+to 10 alternatives when you press **Plan**. Changing **Sort by** reorders
+those results locally. Press **Plan** with the new sort order to search across
+all upstream alternatives when the previous response was truncated.
 
 ## Dashboard Examples
 

@@ -6,6 +6,10 @@ This project uses Home Assistant's calendar versioning scheme (`YYYY.M.P`, for e
 
 ## [Unreleased]
 
+### Added
+
+- Added the response-only `translink.plan_journey` action and an opt-in Journey card planner for comparing scheduled alternatives at a selected Brisbane date and time. [#53](https://github.com/tinkerologie/ha-translink/issues/53)
+
 ### Changed
 
 - **Behaviour change:** Delay now reports signed boarding offsets and shows `unknown` when no applicable prediction is available. Journey Status distinguishes scheduled, early, cancelled, and skipped boarding services. Departure and arrival sensors keep their scheduled states and expose predicted times as attributes. [#48](https://github.com/tinkerologie/ha-translink/issues/48)
