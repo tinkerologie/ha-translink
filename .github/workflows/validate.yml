@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   validate-version:
+    timeout-minutes: 30
     name: Version
     runs-on: ubuntu-latest
     steps:
@@ -56,6 +57,7 @@ jobs:
           EOF
 
   validate-hacs:
+    timeout-minutes: 30
     name: HACS
     runs-on: ubuntu-latest
     steps:
@@ -68,6 +70,7 @@ jobs:
           category: integration
 
   validate-hassfest:
+    timeout-minutes: 30
     name: Hassfest
     runs-on: ubuntu-latest
     steps:
@@ -78,6 +81,7 @@ jobs:
         uses: home-assistant/actions/hassfest@86d4564712fa02543c808e3a693dd04f9d3f8361 # master
 
   release-zip:
+    timeout-minutes: 30
     name: Release zip
     runs-on: ubuntu-latest
     steps:
